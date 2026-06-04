@@ -1,0 +1,526 @@
+import type { Express } from 'express';
+import { randomUUID } from 'node:crypto';
+import type {
+  CreateProjectIdeationRequest,
+  CreateProjectPlanRequest,
+  DeliveryPlan,
+  PlanningToolOption,
+  ProjectIdeaOption,
+  ProjectIdeationSession,
+  ProjectIntentBrief,
+  ProjectPlan,
+  ProjectStackDecision,
+  ProjectToolConnection,
+  RepoPlan,
+  ScaffoldPlan,
+  UpdateProjectPlanRequest,
+} from '@open-design/contracts';
+import {
+  deletePlan,
+  getPlan,
+  insertPlan,
+  insertPlanIdeationSession,
+  listPlanIdeationSessions,
+  listPlans,
+  updatePlan,
+} from './db.js';
+import type { RouteDeps } from './server-context.js';
+
+export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {}
+
+interface ProjectPlanBuildInput {
+  id: string;
+  name: string;
+  intent: ProjectIntentBrief;
+  selectedTools?: ProjectToolConnection[];
+  stack?: ProjectStackDecision;
+  repo?: Partial<RepoPlan>;
+  delivery?: DeliveryPlan[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+const APPROVED_TOOLS: PlanningToolOption[] = [
+  { id: 'github', kind: 'source-control', label: 'GitHub', notes: 'Canonical source control and repo creation target.' },
+  { id: 'cloudflare-hosting', kind: 'hosting', label: 'Cloudflare', notes: 'Workers, Pages, Access, D1, R2, AI Gateway, and edge deploys.' },
+  { id: 'vercel', kind: 'hosting', label: 'Vercel', notes: 'Next.js-first hosting and preview deploy target.' },
+  { id: 'coolify', kind: 'hosting', label: 'Coolify', notes: 'Self-hosted deployment control plane for VPS/container stacks.' },
+  { id: 'hostinger', kind: 'hosting', label: 'Hostinger', notes: 'VPS and managed hosting target, often paired with Coolify.' },
+  { id: 'supabase-database', kind: 'database', label: 'Supabase', notes: 'Postgres, Auth, Storage, Realtime, and Edge Functions.' },
+  { id: 'cloudflare-data', kind: 'database', label: 'Cloudflare D1/R2/Vectorize', notes: 'Cloudflare-native data resources for edge apps.' },
+  { id: 'convex', kind: 'database', label: 'Convex', notes: 'Reactive TypeScript backend and database option.' },
+  { id: 'postgres-coolify', kind: 'database', label: 'Postgres on Coolify', notes: 'Self-hosted Postgres for Coolify/VPS deployments.' },
+  { id: 'stripe', kind: 'payments', label: 'Stripe', notes: 'Payment, billing, checkout, and customer portal layer.' },
+  { id: 'linear', kind: 'project-management', label: 'Linear', notes: 'Product planning, issues, projects, Diffs, and agent workflows.' },
+  { id: 'github-issues', kind: 'project-management', label: 'GitHub Issues', notes: 'Repo-native issues, milestones, and project boards.' },
+  { id: 'google-docs', kind: 'project-management', label: 'Google Docs', notes: 'Planning docs, specs, PRDs, and external collaboration.' },
+  { id: 'codex', kind: 'ai-runtime', label: 'Codex', notes: 'Primary coding agent runtime.' },
+  { id: 'cloudflare-ai-gateway', kind: 'ai-runtime', label: 'Cloudflare AI Gateway', notes: 'Unified AI routing, observability, caching, and guardrails.' },
+  { id: 'ollama-cloud', kind: 'ai-runtime', label: 'Ollama Cloud', notes: 'OpenAI-compatible hosted Ollama model endpoint.' },
+  { id: 'openrouter', kind: 'ai-runtime', label: 'OpenRouter', notes: 'Model routing and fallback provider.' },
+  { id: 'onepassword', kind: 'secrets', label: '1Password', notes: 'Default source of truth for secrets and env handoff.' },
+  { id: 'composio', kind: 'integrations', label: 'Composio.dev', notes: 'Integration/tool execution layer for external SaaS APIs.' },
+  { id: 'supermemory', kind: 'memory', label: 'Supermemory.ai', notes: 'AI memory provider for project and agent context.' },
+  { id: 'better-auth', kind: 'authentication', label: 'Better Auth', notes: 'TypeScript auth framework; Better-T-Stack native auth option.' },
+  { id: 'cloudflare-access', kind: 'authentication', label: 'Cloudflare Access', notes: 'Zero Trust auth gate for private apps and admin surfaces.' },
+  { id: 'supabase-auth', kind: 'authentication', label: 'Supabase Auth', notes: 'Managed auth for Supabase-backed projects.' },
+];
+
+const SOURCE_URLS = [
+  'https://www.better-t-stack.dev/docs',
+  'https://developers.cloudflare.com/changelog/product-group/ai/',
+  'https://developers.cloudflare.com/workers/platform/changelog/',
+  'https://developers.cloudflare.com/changelog/product/access/',
+  'https://vercel.com/changelog',
+  'https://coolify.io/changelog/',
+  'https://github.com/coollabsio/coolify/releases',
+  'https://supabase.com/changelog',
+  'https://ship.convex.dev/changelog',
+  'https://www.postgresql.org/docs/release/',
+  'https://stripe.com/changelog',
+  'https://linear.app/changelog',
+  'https://github.blog/changelog/',
+  'https://developers.google.com/workspace/docs/release-notes',
+  'https://better-auth.com/changelog',
+  'https://help.openai.com/en/articles/11428266-codex-changelog/',
+  'https://releases.1password.com/developers/',
+  'https://docs.composio.dev/docs/changelog/2026/02/01',
+  'https://supermemory.ai/docs/changelog/developer-platform',
+  'https://openrouter.ai/docs/changelog',
+];
+
+export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
+  const { db } = ctx;
+
+  app.get('/api/planning/tools', (_req, res) => {
+    res.json({ tools: APPROVED_TOOLS });
+  });
+
+  app.get('/api/plans', (_req, res) => {
+    try {
+      res.json({ plans: listPlans(db) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans', (req, res) => {
+    try {
+      const body = normalizeCreateBody(req.body || {});
+      const now = Date.now();
+      const plan = buildProjectPlan({
+        id: `plan-${randomUUID()}`,
+        name: body.name,
+        intent: body.intent,
+        selectedTools: body.selectedTools ?? [],
+        stack: body.stack ?? {},
+        repo: body.repo ?? {},
+        delivery: body.delivery ?? [],
+        createdAt: now,
+        updatedAt: now,
+      });
+      const inserted = insertPlan(db, plan);
+      res.status(201).json({ plan: inserted });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id);
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id/ideation', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id);
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({ sessions: listPlanIdeationSessions(db, req.params.id) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/ideation', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeIdeationBody(req.body || {});
+      const session = buildIdeationSession(plan, body.prompt);
+      const inserted = insertPlanIdeationSession(db, session);
+      res.status(201).json({ session: inserted });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.patch('/api/plans/:id', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const patch = normalizeUpdateBody(req.body || {});
+      const stack = patch.stack ? { ...existing.stack, ...patch.stack } : existing.stack;
+      const selectedTools = patch.selectedTools ?? (patch.stack ? [] : existing.selectedTools);
+      const rebuilt = buildProjectPlan({
+        ...existing,
+        ...patch,
+        intent: patch.intent ? { ...existing.intent, ...patch.intent } : existing.intent,
+        repo: patch.repo ? { ...existing.repo, ...patch.repo } : existing.repo,
+        stack,
+        selectedTools,
+        updatedAt: Date.now(),
+      });
+      const updated = updatePlan(db, req.params.id, rebuilt);
+      res.json({ plan: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.delete('/api/plans/:id', (req, res) => {
+    try {
+      const deleted = deletePlan(db, req.params.id);
+      if (!deleted) return res.status(404).json({ error: 'plan not found' });
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+}
+
+function normalizeIdeationBody(body: Record<string, unknown>): CreateProjectIdeationRequest {
+  return {
+    prompt: cleanRequiredString(body.prompt, 'prompt'),
+  };
+}
+
+function normalizeCreateBody(body: Record<string, unknown>): CreateProjectPlanRequest {
+  const name = cleanRequiredString(body.name, 'name');
+  const intent = normalizeIntent(body.intent, false);
+  return {
+    name,
+    intent,
+    selectedTools: normalizeToolConnections(body.selectedTools),
+    stack: normalizeStack(body.stack),
+    repo: normalizeRepo(body.repo),
+    delivery: normalizeDelivery(body.delivery),
+  };
+}
+
+function normalizeUpdateBody(body: Record<string, unknown>): UpdateProjectPlanRequest {
+  return {
+    ...(body.name === undefined ? {} : { name: cleanRequiredString(body.name, 'name') }),
+    ...(body.intent === undefined ? {} : { intent: normalizeIntent(body.intent, true) }),
+    ...(body.selectedTools === undefined ? {} : { selectedTools: normalizeToolConnections(body.selectedTools) }),
+    ...(body.stack === undefined ? {} : { stack: normalizeStack(body.stack) }),
+    ...(body.repo === undefined ? {} : { repo: normalizeRepo(body.repo) }),
+    ...(body.delivery === undefined ? {} : { delivery: normalizeDelivery(body.delivery) }),
+  };
+}
+
+function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
+  const stack = withStackDefaults(input.stack ?? {});
+  const selectedTools = input.selectedTools?.length ? input.selectedTools : defaultToolConnections(stack);
+  const repoPatch = input.repo ?? {};
+  const { provider: _provider, status: repoStatus, ...repoRest } = repoPatch;
+  return {
+    id: input.id,
+    name: input.name,
+    intent: input.intent,
+    selectedTools,
+    stack,
+    scaffold: buildScaffoldPlan(input.name, stack, selectedTools),
+    repo: {
+      ...repoRest,
+      provider: 'github',
+      status: repoStatus ?? 'planned',
+    },
+    delivery: input.delivery?.length ? input.delivery : defaultDelivery(stack),
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+  };
+}
+
+function buildScaffoldPlan(
+  name: string,
+  stack: ProjectStackDecision,
+  selectedTools: ProjectToolConnection[],
+): ScaffoldPlan {
+  const slug = slugify(name || 'new-project');
+  const pm = stack.packageManager ?? 'pnpm';
+  const runner = pm === 'bun' ? 'bun create' : pm === 'pnpm' ? 'pnpm create' : pm === 'yarn' ? 'yarn create' : 'npm create';
+  const args = [
+    `${runner} better-t-stack@latest ${slug}`,
+    `--frontend ${stack.frontend ?? 'next'}`,
+    `--backend ${stack.backend ?? 'hono'}`,
+    `--runtime ${stack.runtime ?? 'workers'}`,
+    `--database ${dbFlag(stack)}`,
+    `--orm ${stack.orm ?? 'drizzle'}`,
+    `--api ${stack.api ?? 'trpc'}`,
+    `--auth ${stack.auth === 'better-auth' ? 'better-auth' : 'none'}`,
+  ];
+  const addons = stack.addons?.length ? stack.addons : defaultAddons(stack);
+  if (addons.length > 0) args.push(`--addons ${addons.join(',')}`);
+  const postScaffoldTasks = [
+    'Initialize Git and create the GitHub repository with gh after scaffold validation.',
+    'Store generated secrets and provider API keys in 1Password before writing local env files.',
+    'Add Stripe manually because Better-T-Stack currently advertises Polar, not Stripe, as its native payments flag.',
+    'Wire Cloudflare AI Gateway, Ollama Cloud, and OpenRouter as explicit model-provider config rather than hardcoded model calls.',
+    'Wire Composio.dev as the integration/tool execution layer and keep toolkit slugs in config.',
+    'Wire Supermemory.ai as project memory only after API key availability is verified.',
+    'Generate Linear/GitHub Issues/Google Docs planning artifacts from the accepted plan.',
+  ];
+  if (selectedTools.some((tool) => tool.toolId === 'coolify')) {
+    postScaffoldTasks.push('For Coolify deploys, target the current v4 API: service creation uses POST /api/v1/services and MCP toggle calls use POST.');
+  }
+  if (selectedTools.some((tool) => tool.toolId === 'cloudflare-ai-gateway')) {
+    postScaffoldTasks.push('Use the current Cloudflare AI Gateway REST API and route through a specific gateway with cf-aig-gateway-id when needed.');
+  }
+  return {
+    engine: 'better-t-stack',
+    command: args.join(' \\\n  '),
+    postScaffoldTasks,
+    docsSources: SOURCE_URLS,
+  };
+}
+
+function buildIdeationSession(plan: ProjectPlan, prompt: string): ProjectIdeationSession {
+  const options = buildIdeaOptions(plan, prompt);
+  const summary = [
+    `Explored ${options.length} directions for ${plan.name}.`,
+    'Each direction keeps Better-T-Stack as the scaffold baseline and calls out the tools that need connection or follow-up wiring.',
+  ].join(' ');
+  return {
+    id: `idea-${randomUUID()}`,
+    planId: plan.id,
+    prompt,
+    summary,
+    options,
+    createdAt: Date.now(),
+  };
+}
+
+function buildIdeaOptions(plan: ProjectPlan, prompt: string): ProjectIdeaOption[] {
+  const baseStack = withStackDefaults(plan.stack);
+  const promptText = prompt.toLowerCase();
+  const wantsSelfHosted = promptText.includes('self-host') || promptText.includes('coolify') || promptText.includes('hostinger');
+  const wantsRealtime = promptText.includes('realtime') || promptText.includes('reactive') || promptText.includes('collabor');
+  const wantsEdge = promptText.includes('edge') || promptText.includes('cloudflare') || !wantsSelfHosted;
+  const options: ProjectIdeaOption[] = [];
+
+  if (wantsEdge) {
+    options.push({
+      title: 'Edge-first SaaS control plane',
+      rationale: 'Optimizes for fast previews, Cloudflare runtime fit, managed Postgres, and a straightforward Better-T-Stack scaffold.',
+      stack: {
+        ...baseStack,
+        frontend: 'next',
+        backend: 'hono',
+        runtime: 'workers',
+        database: baseStack.database === 'convex' ? 'supabase' : baseStack.database ?? 'supabase',
+        orm: 'drizzle',
+        api: 'trpc',
+        auth: baseStack.auth === 'none' ? 'better-auth' : baseStack.auth ?? 'better-auth',
+        hosting: uniqueHosting([...(baseStack.hosting ?? []), 'cloudflare']),
+      },
+      toolIds: ['github', 'cloudflare-hosting', 'supabase-database', 'stripe', 'onepassword', 'cloudflare-ai-gateway', 'openrouter'],
+      nextSteps: [
+        'Accept the stack and review the generated Better-T-Stack command.',
+        'Create the GitHub repo after gh auth is available.',
+        'Wire 1Password-backed env files before deploying to Cloudflare.',
+      ],
+    });
+  }
+
+  if (wantsSelfHosted || options.length < 2) {
+    options.push({
+      title: 'Self-hosted operations workspace',
+      rationale: 'Prioritizes Coolify/Hostinger ownership, self-hosted Postgres, and Cloudflare Access for private surfaces.',
+      stack: {
+        ...baseStack,
+        frontend: 'next',
+        backend: 'hono',
+        runtime: 'node',
+        database: 'postgres-coolify',
+        orm: 'drizzle',
+        api: 'trpc',
+        auth: 'cloudflare-access',
+        hosting: uniqueHosting(['coolify', 'hostinger']),
+      },
+      toolIds: ['github', 'coolify', 'hostinger', 'postgres-coolify', 'cloudflare-access', 'onepassword', 'composio'],
+      nextSteps: [
+        'Provision the Coolify app and Postgres service after scaffold validation.',
+        'Put Cloudflare Access in front of admin routes.',
+        'Track Hostinger DNS and VPS handoff separately from app deploy status.',
+      ],
+    });
+  }
+
+  if (wantsRealtime || options.length < 3) {
+    options.push({
+      title: 'Reactive collaboration cockpit',
+      rationale: 'Uses Convex when the core workflow needs realtime project state, collaborative planning, or live activity streams.',
+      stack: {
+        ...baseStack,
+        frontend: 'tanstack-start',
+        backend: 'convex',
+        runtime: 'node',
+        database: 'convex',
+        orm: 'none',
+        api: 'none',
+        auth: 'better-auth',
+        hosting: uniqueHosting([...(baseStack.hosting ?? []), 'vercel']),
+      },
+      toolIds: ['github', 'convex', 'vercel', 'better-auth', 'linear', 'github-issues', 'google-docs', 'supermemory'],
+      nextSteps: [
+        'Validate Better-T-Stack flags for the Convex/TanStack direction before scaffolding.',
+        'Generate Linear and GitHub issue drafts from the accepted plan.',
+        'Attach Supermemory only after the API key source is confirmed in 1Password.',
+      ],
+    });
+  }
+
+  return options.slice(0, 3);
+}
+
+function uniqueHosting(values: Array<NonNullable<ProjectStackDecision['hosting']>[number]>): NonNullable<ProjectStackDecision['hosting']> {
+  return Array.from(new Set(values));
+}
+
+function withStackDefaults(stack: ProjectStackDecision): ProjectStackDecision {
+  const normalized: ProjectStackDecision = {
+    frontend: stack.frontend ?? 'next',
+    backend: stack.backend ?? (stack.database === 'convex' ? 'convex' : 'hono'),
+    runtime: stack.runtime ?? 'workers',
+    database: stack.database ?? 'supabase',
+    orm: stack.orm ?? (stack.database === 'convex' ? 'none' : 'drizzle'),
+    api: stack.api ?? (stack.database === 'convex' ? 'none' : 'trpc'),
+    auth: stack.auth ?? 'better-auth',
+    payments: stack.payments ?? 'stripe',
+    hosting: stack.hosting?.length ? stack.hosting : ['cloudflare'],
+    packageManager: stack.packageManager ?? 'pnpm',
+  };
+  if (stack.addons !== undefined) normalized.addons = stack.addons;
+  return normalized;
+}
+
+function dbFlag(stack: ProjectStackDecision): string {
+  if (stack.database === 'convex') return 'none';
+  if (stack.database === 'postgres-coolify' || stack.database === 'supabase') return 'postgres';
+  if (stack.database === 'cloudflare-d1') return 'sqlite';
+  return 'none';
+}
+
+function defaultAddons(stack: ProjectStackDecision): string[] {
+  const addons = ['turborepo', 'mcp', 'skills', 'ultracite'];
+  if (stack.frontend === 'next') addons.push('fumadocs');
+  return addons;
+}
+
+function defaultToolConnections(stack: ProjectStackDecision): ProjectToolConnection[] {
+  const ids = new Set(['github', 'stripe', 'onepassword', 'codex', 'composio', 'supermemory']);
+  for (const host of stack.hosting ?? []) ids.add(host === 'cloudflare' ? 'cloudflare-hosting' : host);
+  if (stack.database === 'supabase') ids.add('supabase-database');
+  if (stack.database === 'convex') ids.add('convex');
+  if (stack.database === 'postgres-coolify') ids.add('postgres-coolify');
+  if (stack.database === 'cloudflare-d1') ids.add('cloudflare-data');
+  if (stack.auth === 'better-auth') ids.add('better-auth');
+  if (stack.auth === 'cloudflare-access') ids.add('cloudflare-access');
+  if (stack.auth === 'supabase') ids.add('supabase-auth');
+  ids.add('cloudflare-ai-gateway');
+  ids.add('openrouter');
+  ids.add('ollama-cloud');
+  ids.add('linear');
+  ids.add('github-issues');
+  ids.add('google-docs');
+  return Array.from(ids).map((toolId) => ({
+    toolId: toolId as ProjectToolConnection['toolId'],
+    status: 'wanted',
+  }));
+}
+
+function defaultDelivery(stack: ProjectStackDecision): DeliveryPlan[] {
+  return (stack.hosting ?? ['cloudflare']).map((target) => ({
+    target,
+    status: 'planned',
+  }));
+}
+
+function normalizeIntent(value: unknown, partial: false): ProjectIntentBrief;
+function normalizeIntent(value: unknown, partial: true): Partial<ProjectIntentBrief>;
+function normalizeIntent(value: unknown, partial: boolean): ProjectIntentBrief | Partial<ProjectIntentBrief> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (partial) return {};
+    throw new Error('intent must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const purpose = partial && input.purpose === undefined
+    ? undefined
+    : cleanRequiredString(input.purpose, 'intent.purpose');
+  const normalized: Partial<ProjectIntentBrief> = {
+    ...(typeof input.audience === 'string' ? { audience: input.audience.trim() } : {}),
+    ...(typeof input.problem === 'string' ? { problem: input.problem.trim() } : {}),
+    ...(Array.isArray(input.successCriteria) ? { successCriteria: cleanStringArray(input.successCriteria) } : {}),
+    ...(Array.isArray(input.constraints) ? { constraints: cleanStringArray(input.constraints) } : {}),
+  };
+  if (purpose !== undefined) normalized.purpose = purpose;
+  if (!partial && !normalized.purpose) throw new Error('intent.purpose is required');
+  return normalized as ProjectIntentBrief | Partial<ProjectIntentBrief>;
+}
+
+function normalizeStack(value: unknown): ProjectStackDecision {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('stack must be an object');
+  }
+  return value as ProjectStackDecision;
+}
+
+function normalizeToolConnections(value: unknown): ProjectToolConnection[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('selectedTools must be an array');
+  return value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('selectedTools entries must be objects');
+    }
+    const row = item as Record<string, unknown>;
+    return {
+      toolId: cleanRequiredString(row.toolId, 'selectedTools.toolId') as ProjectToolConnection['toolId'],
+      status: cleanRequiredString(row.status ?? 'wanted', 'selectedTools.status') as ProjectToolConnection['status'],
+      ...(typeof row.notes === 'string' ? { notes: row.notes.trim() } : {}),
+    };
+  });
+}
+
+function normalizeRepo(value: unknown): Partial<RepoPlan> {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('repo must be an object');
+  }
+  return value as Partial<RepoPlan>;
+}
+
+function normalizeDelivery(value: unknown): DeliveryPlan[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error('delivery must be an array');
+  return value as DeliveryPlan[];
+}
+
+function cleanRequiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} is required`);
+  return value.trim();
+}
+
+function cleanStringArray(values: unknown[]): string[] {
+  return values.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean);
+}
+
+function slugify(value: string): string {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return slug || 'new-project';
+}
