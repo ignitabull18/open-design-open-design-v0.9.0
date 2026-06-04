@@ -86,6 +86,15 @@ describe('planning routes', () => {
           audience: 'internal operators and vendors',
           successCriteria: ['scaffolded repo', 'Cloudflare preview', 'Stripe test checkout'],
         },
+        sectionAnswers: {
+          planning: {
+            sectionId: 'planning',
+            status: 'answered',
+            answers: ['Ship project planning before scaffold execution'],
+            notes: 'Created from test fixture',
+            updatedAt: 1,
+          },
+        },
         stack: {
           frontend: 'next',
           backend: 'hono',
@@ -153,6 +162,17 @@ describe('planning routes', () => {
         owns: expect.arrayContaining(['connected accounts', 'webhook contracts']),
       }),
     ]));
+    expect(response.body.plan.sectionAnswers).toMatchObject({
+      planning: {
+        sectionId: 'planning',
+        status: 'answered',
+        answers: ['Ship project planning before scaffold execution'],
+        notes: 'Created from test fixture',
+      },
+    });
+    expect(response.body.plan.scaffold.postScaffoldTasks).toEqual(expect.arrayContaining([
+      expect.stringContaining('Apply planning section decisions before execution'),
+    ]));
     expect(response.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'wanted' }),
       expect.objectContaining({ toolId: 'vercel', status: 'wanted' }),
@@ -206,5 +226,31 @@ describe('planning routes', () => {
       mode: 'realtime',
       primaryStore: 'convex',
     });
+
+    const answered = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        sectionAnswers: {
+          database: {
+            sectionId: 'database',
+            status: 'answered',
+            answers: ['Use Convex for realtime project state and Trigger.dev for background work.'],
+            updatedAt: 2,
+          },
+        },
+      }),
+    });
+
+    expect(answered.status).toBe(200);
+    expect(answered.body.plan.sectionAnswers.database).toMatchObject({
+      status: 'answered',
+      answers: ['Use Convex for realtime project state and Trigger.dev for background work.'],
+    });
+    expect(answered.body.plan.agentLanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'database',
+        brief: expect.stringContaining('Current database answers'),
+      }),
+    ]));
   });
 });

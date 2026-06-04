@@ -114,6 +114,16 @@ export interface ProjectWorkspaceSection {
   toolIds: PlanningToolId[];
 }
 
+export interface ProjectSectionAnswer {
+  sectionId: ProjectWorkspaceSection['id'];
+  status: 'not_started' | 'drafting' | 'answered' | 'blocked';
+  answers: string[];
+  notes?: string;
+  updatedAt: number;
+}
+
+export type ProjectSectionAnswers = Partial<Record<ProjectWorkspaceSection['id'], ProjectSectionAnswer>>;
+
 export interface ScaffoldPlan {
   engine: 'better-t-stack' | 'custom';
   command: string;
@@ -146,6 +156,7 @@ export interface ProjectPlan {
   agentLanes: PlanningAgentLane[];
   ideationQuestions: IdeationQuestion[];
   workspaceSections: ProjectWorkspaceSection[];
+  sectionAnswers: ProjectSectionAnswers;
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];
@@ -175,6 +186,7 @@ export interface CreateProjectPlanRequest {
   intent: ProjectIntentBrief;
   selectedTools?: ProjectToolConnection[];
   stack?: ProjectStackDecision;
+  sectionAnswers?: ProjectSectionAnswers;
   repo?: Partial<RepoPlan>;
   delivery?: DeliveryPlan[];
 }
@@ -184,6 +196,7 @@ export interface UpdateProjectPlanRequest {
   intent?: Partial<ProjectIntentBrief>;
   selectedTools?: ProjectToolConnection[];
   stack?: ProjectStackDecision;
+  sectionAnswers?: ProjectSectionAnswers;
   repo?: Partial<RepoPlan>;
   delivery?: DeliveryPlan[];
 }

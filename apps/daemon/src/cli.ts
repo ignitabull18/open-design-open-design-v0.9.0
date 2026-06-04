@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { runDaemonCliStartup } from './daemon-startup.js';
+import { readFileSync } from 'node:fs';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
@@ -183,7 +184,8 @@ const PROJECT_STRING_FLAGS = new Set([
 const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow']);
 const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
-  'repo-json', 'delivery-json', 'prompt', 'prompt-file',
+  'repo-json', 'delivery-json', 'section', 'section-answers-json',
+  'answers-json', 'prompt', 'prompt-file',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4606,10 +4608,8 @@ async function planDaemonUrl(flags) {
 
 function safeReadJsonFile(p) {
   try {
-    const fs = (require ? require('node:fs') : null);
-    if (!fs) return null;
-    if (p === '-') return JSON.parse(fs.readFileSync(0, 'utf8'));
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (p === '-') return JSON.parse(readFileSync(0, 'utf8'));
+    return JSON.parse(readFileSync(p, 'utf8'));
   } catch {
     return null;
   }
@@ -4628,6 +4628,9 @@ async function runPlan(args) {
                  [--stack-json <path|->] [--tools-json <path|->]
                  [--repo-json <path|->] [--delivery-json <path|->]
   od plan scaffold <id>                          Print the scaffold command.
+  od plan sections <id> [--json]                 List section boundaries and answers.
+  od plan section <id> --section <name> --answers-json <path|->
+                                                 Update one section answer.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
   od plan brainstorm <id> --prompt-file <path|->
@@ -4740,6 +4743,54 @@ Common options:
       }
       return;
     }
+    case 'sections': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan sections <id> [--json]');
+        process.exit(2);
+      }
+      const data = await fetchPlan(base, id);
+      const sections = data.plan?.workspaceSections ?? [];
+      const sectionAnswers = data.plan?.sectionAnswers ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify({ sections, sectionAnswers }, null, 2) + '\n');
+      for (const section of sections) {
+        const answer = sectionAnswers[section.id];
+        console.log(`${section.id}\t${section.label}\t${answer?.status ?? 'not_started'}\t${section.purpose}`);
+        if (answer?.answers?.length) {
+          for (const line of answer.answers) console.log(`  - ${line}`);
+        }
+      }
+      return;
+    }
+    case 'section': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const sectionId = typeof flags.section === 'string' ? flags.section.trim() : '';
+      if (!id || !sectionId || !flags['answers-json']) {
+        console.error('Usage: od plan section <id> --section <planning|design|database|integrations|ai|workflows|delivery> --answers-json <path|->');
+        process.exit(2);
+      }
+      const answerBody = requiredJson(flags['answers-json'], '--answers-json');
+      const sectionAnswer = {
+        sectionId,
+        status: answerBody.status ?? (Array.isArray(answerBody.answers) && answerBody.answers.length > 0 ? 'answered' : 'drafting'),
+        answers: Array.isArray(answerBody.answers) ? answerBody.answers : [],
+        ...(typeof answerBody.notes === 'string' ? { notes: answerBody.notes } : {}),
+        updatedAt: Date.now(),
+      };
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sectionAnswers: { [sectionId]: sectionAnswer } }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`PATCH /api/plans/${id} failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] updated ${sectionId} section for ${id}`);
+      return;
+    }
     case 'ideas': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
@@ -4805,10 +4856,9 @@ Common options:
 
 function readTextFlag(path, flag) {
   try {
-    const fs = (require ? require('node:fs') : null);
-    if (!fs || !path) throw new Error('missing path');
-    if (path === '-') return fs.readFileSync(0, 'utf8');
-    return fs.readFileSync(path, 'utf8');
+    if (!path) throw new Error('missing path');
+    if (path === '-') return readFileSync(0, 'utf8');
+    return readFileSync(path, 'utf8');
   } catch {
     console.error(`${flag} must point to a readable text file, or use - for stdin`);
     process.exit(2);
@@ -4821,6 +4871,7 @@ function readPlanBodyFromFlags(flags, partial) {
   if (flags['intent-json']) body.intent = requiredJson(flags['intent-json'], '--intent-json');
   if (flags['stack-json']) body.stack = requiredJson(flags['stack-json'], '--stack-json');
   if (flags['tools-json']) body.selectedTools = requiredJson(flags['tools-json'], '--tools-json');
+  if (flags['section-answers-json']) body.sectionAnswers = requiredJson(flags['section-answers-json'], '--section-answers-json');
   if (flags['repo-json']) body.repo = requiredJson(flags['repo-json'], '--repo-json');
   if (flags['delivery-json']) body.delivery = requiredJson(flags['delivery-json'], '--delivery-json');
   if (!partial && !body.name) body.name = 'Untitled plan';

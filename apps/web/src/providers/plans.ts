@@ -3,6 +3,7 @@ import type {
   CreateProjectIdeationRequest,
   ProjectIdeationSessionResponse,
   ProjectIdeationSessionsResponse,
+  ProjectSectionAnswers,
   PlanningToolOptionsResponse,
   ProjectPlanResponse,
   ProjectPlansResponse,
@@ -50,6 +51,16 @@ export function updateProjectPlanStack(
   return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ stack }),
+  });
+}
+
+export function updateProjectPlanSectionAnswers(
+  id: string,
+  sectionAnswers: ProjectSectionAnswers,
+): Promise<ProjectPlanResponse> {
+  return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sectionAnswers }),
   });
 }
 

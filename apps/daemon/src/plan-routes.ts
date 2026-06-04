@@ -11,7 +11,9 @@ import type {
   ProjectIdeaOption,
   ProjectIdeationSession,
   ProjectIntentBrief,
+  ProjectSectionAnswer,
   ProjectPlan,
+  ProjectSectionAnswers,
   ProjectStackDecision,
   ProjectToolConnection,
   ProjectWorkspaceSection,
@@ -38,6 +40,7 @@ interface ProjectPlanBuildInput {
   intent: ProjectIntentBrief;
   selectedTools?: ProjectToolConnection[];
   stack?: ProjectStackDecision;
+  sectionAnswers?: ProjectSectionAnswers;
   repo?: Partial<RepoPlan>;
   delivery?: DeliveryPlan[];
   createdAt: number;
@@ -120,6 +123,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         intent: body.intent,
         selectedTools: body.selectedTools ?? [],
         stack: body.stack ?? {},
+        sectionAnswers: body.sectionAnswers ?? {},
         repo: body.repo ?? {},
         delivery: body.delivery ?? [],
         createdAt: now,
@@ -179,6 +183,9 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         repo: patch.repo ? { ...existing.repo, ...patch.repo } : existing.repo,
         stack,
         selectedTools,
+        sectionAnswers: patch.sectionAnswers
+          ? mergeSectionAnswers(existing.sectionAnswers ?? {}, patch.sectionAnswers)
+          : existing.sectionAnswers,
         updatedAt: Date.now(),
       });
       const updated = updatePlan(db, req.params.id, rebuilt);
@@ -213,6 +220,7 @@ function normalizeCreateBody(body: Record<string, unknown>): CreateProjectPlanRe
     intent,
     selectedTools: normalizeToolConnections(body.selectedTools),
     stack: normalizeStack(body.stack),
+    sectionAnswers: normalizeSectionAnswers(body.sectionAnswers),
     repo: normalizeRepo(body.repo),
     delivery: normalizeDelivery(body.delivery),
   };
@@ -224,6 +232,7 @@ function normalizeUpdateBody(body: Record<string, unknown>): UpdateProjectPlanRe
     ...(body.intent === undefined ? {} : { intent: normalizeIntent(body.intent, true) }),
     ...(body.selectedTools === undefined ? {} : { selectedTools: normalizeToolConnections(body.selectedTools) }),
     ...(body.stack === undefined ? {} : { stack: normalizeStack(body.stack) }),
+    ...(body.sectionAnswers === undefined ? {} : { sectionAnswers: normalizeSectionAnswers(body.sectionAnswers) }),
     ...(body.repo === undefined ? {} : { repo: normalizeRepo(body.repo) }),
     ...(body.delivery === undefined ? {} : { delivery: normalizeDelivery(body.delivery) }),
   };
@@ -232,6 +241,7 @@ function normalizeUpdateBody(body: Record<string, unknown>): UpdateProjectPlanRe
 function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
   const stack = withStackDefaults(input.stack ?? {});
   const selectedTools = input.selectedTools?.length ? input.selectedTools : defaultToolConnections(stack);
+  const sectionAnswers = normalizeSectionAnswers(input.sectionAnswers ?? {});
   const repoPatch = input.repo ?? {};
   const { provider: _provider, status: repoStatus, ...repoRest } = repoPatch;
   return {
@@ -241,10 +251,11 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     selectedTools,
     stack,
     databaseDesign: buildDatabaseDesign(stack),
-    agentLanes: buildAgentLanes(stack, selectedTools),
+    agentLanes: buildAgentLanes(stack, selectedTools, sectionAnswers),
     ideationQuestions: buildIdeationQuestions(stack),
     workspaceSections: buildWorkspaceSections(stack, selectedTools),
-    scaffold: buildScaffoldPlan(input.name, stack, selectedTools),
+    sectionAnswers,
+    scaffold: buildScaffoldPlan(input.name, stack, selectedTools, sectionAnswers),
     repo: {
       ...repoRest,
       provider: 'github',
@@ -260,6 +271,7 @@ function buildScaffoldPlan(
   name: string,
   stack: ProjectStackDecision,
   selectedTools: ProjectToolConnection[],
+  sectionAnswers: ProjectSectionAnswers,
 ): ScaffoldPlan {
   const slug = slugify(name || 'new-project');
   const pm = stack.packageManager ?? 'pnpm';
@@ -291,6 +303,10 @@ function buildScaffoldPlan(
   }
   if (selectedTools.some((tool) => tool.toolId === 'cloudflare-ai-gateway')) {
     postScaffoldTasks.push('Use the current Cloudflare AI Gateway REST API and route through a specific gateway with cf-aig-gateway-id when needed.');
+  }
+  for (const answer of Object.values(sectionAnswers)) {
+    if (!answer || answer.answers.length === 0) continue;
+    postScaffoldTasks.push(`Apply ${answer.sectionId} section decisions before execution: ${answer.answers.slice(0, 2).join('; ')}`);
   }
   return {
     engine: 'better-t-stack',
@@ -455,7 +471,11 @@ function buildDatabaseDesign(stack: ProjectStackDecision): DatabaseDesignPlan {
   };
 }
 
-function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectToolConnection[]): PlanningAgentLane[] {
+function buildAgentLanes(
+  stack: ProjectStackDecision,
+  selectedTools: ProjectToolConnection[],
+  sectionAnswers: ProjectSectionAnswers,
+): PlanningAgentLane[] {
   const toolIds = new Set(selectedTools.map((tool) => tool.toolId));
   const databaseTools = selectedTools
     .map((tool) => tool.toolId)
@@ -463,6 +483,11 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
   const deliveryTools = selectedTools
     .map((tool) => tool.toolId)
     .filter((toolId) => ['cloudflare-hosting', 'vercel', 'coolify', 'hostinger'].includes(toolId));
+  const answerSummary = (sectionId: keyof ProjectSectionAnswers) => {
+    const answer = sectionAnswers[sectionId];
+    if (!answer || answer.answers.length === 0) return '';
+    return ` Current ${sectionId} answers: ${answer.answers.slice(0, 2).join('; ')}.`;
+  };
   return [
     {
       id: 'product',
@@ -471,7 +496,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: 'ready',
       dependsOn: [],
       toolIds: ['linear', 'github-issues', 'google-docs'],
-      brief: 'Turn the purpose, audience, constraints, and success criteria into a concrete feature map and acceptance checklist.',
+      brief: `Turn the purpose, audience, constraints, and success criteria into a concrete feature map and acceptance checklist.${answerSummary('planning')}`,
       outputs: ['feature map', 'success criteria', 'MVP boundary'],
     },
     {
@@ -481,7 +506,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: 'ready',
       dependsOn: ['product'],
       toolIds: ['github', 'codex', 'cloudflare-ai-gateway', 'openrouter'],
-      brief: 'Choose the frontend, backend, runtime, auth, and scaffold flags from the approved stack catalog.',
+      brief: `Choose the frontend, backend, runtime, auth, and scaffold flags from the approved stack catalog.${answerSummary('ai')}`,
       outputs: ['stack decision', 'Better-T-Stack command', 'provider fit notes'],
     },
     {
@@ -491,7 +516,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: databaseTools.length > 0 ? 'ready' : 'blocked',
       dependsOn: ['product'],
       toolIds: databaseTools,
-      brief: `Design the data model for ${stack.database ?? 'the selected database'} including tenancy, access patterns, migrations, and realtime boundaries.`,
+      brief: `Design the data model for ${stack.database ?? 'the selected database'} including tenancy, access patterns, migrations, and realtime boundaries.${answerSummary('database')}`,
       outputs: ['entity map', 'relationship map', 'migration plan', 'RLS/access notes'],
     },
     {
@@ -501,7 +526,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: 'ready',
       dependsOn: ['product'],
       toolIds: toolIds.has('trigger-dev') ? ['trigger-dev'] : ['trigger-dev', 'cloudflare-hosting'],
-      brief: 'Separate short request/response actions from long-running workflows, retries, schedules, webhooks, and provider sync jobs.',
+      brief: `Separate short request/response actions from long-running workflows, retries, schedules, webhooks, and provider sync jobs.${answerSummary('workflows')}`,
       outputs: ['workflow inventory', 'Trigger.dev task map', 'retry and schedule policy'],
     },
     {
@@ -511,7 +536,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: 'ready',
       dependsOn: ['product'],
       toolIds: ['composio', 'onepassword', 'supermemory'],
-      brief: 'Map external tools, connected accounts, memory requirements, and secret sources before scaffold execution.',
+      brief: `Map external tools, connected accounts, memory requirements, and secret sources before scaffold execution.${answerSummary('integrations')}`,
       outputs: ['integration matrix', 'secret checklist', 'memory policy'],
     },
     {
@@ -521,7 +546,7 @@ function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectTool
       status: deliveryTools.length > 0 ? 'ready' : 'blocked',
       dependsOn: ['architecture', 'database', 'workflows', 'integrations'],
       toolIds: deliveryTools,
-      brief: 'Create the repo, pick deploy targets, and verify preview/live URLs after the scaffold passes local checks.',
+      brief: `Create the repo, pick deploy targets, and verify preview/live URLs after the scaffold passes local checks.${answerSummary('delivery')}`,
       outputs: ['repo plan', 'deployment plan', 'verification checklist'],
     },
   ];
@@ -797,6 +822,41 @@ function normalizeToolConnections(value: unknown): ProjectToolConnection[] {
       status: cleanRequiredString(row.status ?? 'wanted', 'selectedTools.status') as ProjectToolConnection['status'],
       ...(typeof row.notes === 'string' ? { notes: row.notes.trim() } : {}),
     };
+  });
+}
+
+function normalizeSectionAnswers(value: unknown): ProjectSectionAnswers {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('sectionAnswers must be an object');
+  }
+  const input = value as Record<string, unknown>;
+  const allowed = new Set(['planning', 'design', 'database', 'integrations', 'ai', 'workflows', 'delivery']);
+  const output: ProjectSectionAnswers = {};
+  for (const [sectionId, raw] of Object.entries(input)) {
+    if (!allowed.has(sectionId) || !raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    const answers = Array.isArray(row.answers) ? cleanStringArray(row.answers) : [];
+    const status = typeof row.status === 'string' && ['not_started', 'drafting', 'answered', 'blocked'].includes(row.status)
+      ? row.status as ProjectSectionAnswer['status']
+      : answers.length > 0
+        ? 'answered'
+        : 'drafting';
+    output[sectionId as keyof ProjectSectionAnswers] = {
+      sectionId: sectionId as any,
+      status,
+      answers,
+      ...(typeof row.notes === 'string' && row.notes.trim() ? { notes: row.notes.trim() } : {}),
+      updatedAt: typeof row.updatedAt === 'number' ? row.updatedAt : Date.now(),
+    };
+  }
+  return output;
+}
+
+function mergeSectionAnswers(existing: ProjectSectionAnswers, patch: ProjectSectionAnswers): ProjectSectionAnswers {
+  return normalizeSectionAnswers({
+    ...existing,
+    ...patch,
   });
 }
 

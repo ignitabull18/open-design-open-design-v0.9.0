@@ -454,6 +454,44 @@
   color: var(--text-muted);
 }
 
+.planning-view__section-editor {
+  display: grid;
+  gap: 7px;
+}
+
+.planning-view__section-editor label {
+  display: grid;
+  gap: 4px;
+}
+
+.planning-view__section-editor label span {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.planning-view__section-editor textarea,
+.planning-view__section-editor input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.planning-view__section-editor textarea {
+  min-height: 82px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.planning-view__section-editor input {
+  height: 30px;
+  padding: 0 8px;
+}
+
 .planning-view__task-list ul {
   display: grid;
   gap: 6px;

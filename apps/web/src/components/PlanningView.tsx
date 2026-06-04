@@ -3,6 +3,8 @@ import type {
   PlanningToolOption,
   ProjectIdeationSession,
   ProjectPlan,
+  ProjectSectionAnswers,
+  ProjectWorkspaceSection,
   ProjectStackDecision,
 } from '@open-design/contracts';
 import { Icon } from './Icon';
@@ -12,6 +14,7 @@ import {
   listProjectIdeationSessions,
   listPlanningTools,
   listProjectPlans,
+  updateProjectPlanSectionAnswers,
 } from '../providers/plans';
 
 const HOSTING_OPTIONS: NonNullable<ProjectStackDecision['hosting']> = [
@@ -44,6 +47,7 @@ export function PlanningView() {
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
+  const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
   const [audience, setAudience] = useState('operators and product builders');
@@ -147,6 +151,33 @@ export function PlanningView() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBrainstorming(false);
+    }
+  }
+
+  async function handleSaveSectionAnswer(
+    sectionId: ProjectWorkspaceSection['id'],
+    answerText: string,
+    notes: string,
+  ) {
+    if (!selectedPlan) return;
+    setSectionSaving(sectionId);
+    setError(null);
+    try {
+      const sectionAnswers: ProjectSectionAnswers = {
+        [sectionId]: {
+          sectionId,
+          status: answerText.trim() ? 'answered' : 'drafting',
+          answers: answerText.split('\n').map((line) => line.trim()).filter(Boolean),
+          ...(notes.trim() ? { notes: notes.trim() } : {}),
+          updatedAt: Date.now(),
+        },
+      };
+      const result = await updateProjectPlanSectionAnswers(selectedPlan.id, sectionAnswers);
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSectionSaving(null);
     }
   }
 
@@ -305,8 +336,10 @@ export function PlanningView() {
               ideationPrompt={ideationPrompt}
               ideationSessions={selectedIdeation}
               brainstorming={brainstorming}
+              sectionSaving={sectionSaving}
               onIdeationPromptChange={setIdeationPrompt}
               onBrainstorm={handleBrainstorm}
+              onSaveSectionAnswer={handleSaveSectionAnswer}
             />
           ) : null}
         </aside>
@@ -343,15 +376,19 @@ function PlanDetail({
   ideationPrompt,
   ideationSessions,
   brainstorming,
+  sectionSaving,
   onIdeationPromptChange,
   onBrainstorm,
+  onSaveSectionAnswer,
 }: {
   plan: ProjectPlan;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
   brainstorming: boolean;
+  sectionSaving: string | null;
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
+  onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
 }) {
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
@@ -391,26 +428,13 @@ function PlanDetail({
         <h3>Workspace sections</h3>
         <div className="planning-view__section-grid">
           {plan.workspaceSections.map((section) => (
-            <article key={section.id} className={`planning-view__section-card planning-view__section-card--${section.id}`}>
-              <div>
-                <strong>{section.label}</strong>
-                <span>{section.purpose}</span>
-              </div>
-              <dl>
-                <div>
-                  <dt>Owns</dt>
-                  <dd>{section.owns.slice(0, 4).join(', ')}</dd>
-                </div>
-                <div>
-                  <dt>Not this section</dt>
-                  <dd>{section.doesNotOwn.slice(0, 3).join(', ')}</dd>
-                </div>
-                <div>
-                  <dt>Outputs</dt>
-                  <dd>{section.outputs.slice(0, 3).join(', ')}</dd>
-                </div>
-              </dl>
-            </article>
+            <SectionCard
+              key={section.id}
+              section={section}
+              answer={plan.sectionAnswers[section.id]}
+              saving={sectionSaving === section.id}
+              onSave={onSaveSectionAnswer}
+            />
           ))}
         </div>
       </div>
@@ -469,5 +493,73 @@ function PlanDetail({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function SectionCard({
+  section,
+  answer,
+  saving,
+  onSave,
+}: {
+  section: ProjectWorkspaceSection;
+  answer: ProjectPlan['sectionAnswers'][ProjectWorkspaceSection['id']];
+  saving: boolean;
+  onSave: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
+}) {
+  const [answerText, setAnswerText] = useState(answer?.answers.join('\n') ?? '');
+  const [notes, setNotes] = useState(answer?.notes ?? '');
+
+  useEffect(() => {
+    setAnswerText(answer?.answers.join('\n') ?? '');
+    setNotes(answer?.notes ?? '');
+  }, [answer]);
+
+  return (
+    <article className={`planning-view__section-card planning-view__section-card--${section.id}`}>
+      <div>
+        <strong>{section.label}</strong>
+        <span>{section.purpose}</span>
+      </div>
+      <dl>
+        <div>
+          <dt>Owns</dt>
+          <dd>{section.owns.slice(0, 4).join(', ')}</dd>
+        </div>
+        <div>
+          <dt>Not this section</dt>
+          <dd>{section.doesNotOwn.slice(0, 3).join(', ')}</dd>
+        </div>
+        <div>
+          <dt>Outputs</dt>
+          <dd>{section.outputs.slice(0, 3).join(', ')}</dd>
+        </div>
+      </dl>
+      <div className="planning-view__section-editor">
+        <label>
+          <span>Answers</span>
+          <textarea
+            rows={4}
+            value={answerText}
+            onChange={(event) => setAnswerText(event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Notes</span>
+          <input
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="planning-view__secondary"
+          disabled={saving}
+          onClick={() => onSave(section.id, answerText, notes)}
+        >
+          {saving ? 'Saving...' : 'Save section'}
+        </button>
+      </div>
+    </article>
   );
 }
