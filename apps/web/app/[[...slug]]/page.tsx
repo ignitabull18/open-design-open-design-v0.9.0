@@ -5,12 +5,22 @@ import { ClientApp } from './client-app';
 // catch-all and let the existing client router (src/router.ts, which reads
 // window.location at runtime) decide what to render.
 //
-// For `output: 'export'` we return a single empty `slug` so Next.js emits
-// one shell HTML at out/index.html; the daemon's SPA fallback (see
-// apps/daemon/src/server.ts) serves it for any unknown non-API path so deep
-// links still hydrate to the right view.
+// For `output: 'export'` we emit the common top-level shell routes. The daemon
+// still serves index.html for unknown non-API paths, while static hosts such as
+// Cloudflare Pages can serve direct links without daemon fallback support.
 export function generateStaticParams() {
-  return [{ slug: [] }];
+  return [
+    { slug: [] },
+    { slug: ['onboarding'] },
+    { slug: ['projects'] },
+    { slug: ['planning'] },
+    { slug: ['automations'] },
+    { slug: ['tasks'] },
+    { slug: ['plugins'] },
+    { slug: ['design-systems'] },
+    { slug: ['integrations'] },
+    { slug: ['marketplace'] },
+  ];
 }
 
 export default function Page() {

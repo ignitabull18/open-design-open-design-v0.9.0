@@ -21,7 +21,18 @@ describe('SPA shell export route', () => {
     expect(nextConfig.output).toBe('export');
     expect(nextConfig.distDir).toBeUndefined();
     expect('dynamicParams' in spaShellRoute).toBe(false);
-    expect(spaShellRoute.generateStaticParams()).toEqual([{ slug: [] }]);
+    expect(spaShellRoute.generateStaticParams()).toEqual([
+      { slug: [] },
+      { slug: ['onboarding'] },
+      { slug: ['projects'] },
+      { slug: ['planning'] },
+      { slug: ['automations'] },
+      { slug: ['tasks'] },
+      { slug: ['plugins'] },
+      { slug: ['design-systems'] },
+      { slug: ['integrations'] },
+      { slug: ['marketplace'] },
+    ]);
   });
 
   it('keeps an explicit dist dir override even when static export is selected', async () => {
