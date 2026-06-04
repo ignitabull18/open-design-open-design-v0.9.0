@@ -294,7 +294,7 @@ export function PlanningView() {
                 onClick={() => setSelectedId(plan.id)}
               >
                 <strong>{plan.name}</strong>
-          <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}</span>
+                <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}</span>
               </button>
             ))}
           </div>
@@ -386,6 +386,33 @@ function PlanDetail({
             ))}
           </ul>
         </section>
+      </div>
+      <div className="planning-view__sections">
+        <h3>Workspace sections</h3>
+        <div className="planning-view__section-grid">
+          {plan.workspaceSections.map((section) => (
+            <article key={section.id} className={`planning-view__section-card planning-view__section-card--${section.id}`}>
+              <div>
+                <strong>{section.label}</strong>
+                <span>{section.purpose}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Owns</dt>
+                  <dd>{section.owns.slice(0, 4).join(', ')}</dd>
+                </div>
+                <div>
+                  <dt>Not this section</dt>
+                  <dd>{section.doesNotOwn.slice(0, 3).join(', ')}</dd>
+                </div>
+                <div>
+                  <dt>Outputs</dt>
+                  <dd>{section.outputs.slice(0, 3).join(', ')}</dd>
+                </div>
+              </dl>
+            </article>
+          ))}
+        </div>
       </div>
       <div className="planning-view__lanes">
         <h3>Agent lanes</h3>

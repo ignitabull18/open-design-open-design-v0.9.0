@@ -128,6 +128,31 @@ describe('planning routes', () => {
       expect.objectContaining({ id: 'data-source-of-truth', laneId: 'database' }),
       expect.objectContaining({ id: 'workflow-duration', laneId: 'workflows' }),
     ]));
+    expect(response.body.plan.workspaceSections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'planning',
+        owns: expect.arrayContaining(['purpose', 'sequencing']),
+        doesNotOwn: expect.arrayContaining(['schema implementation']),
+      }),
+      expect.objectContaining({
+        id: 'design',
+        owns: expect.arrayContaining(['user flows', 'screen inventory']),
+        doesNotOwn: expect.arrayContaining(['database source of truth']),
+      }),
+      expect.objectContaining({
+        id: 'database',
+        owns: expect.arrayContaining(['entities', 'relationships']),
+        doesNotOwn: expect.arrayContaining(['UI layout']),
+      }),
+      expect.objectContaining({
+        id: 'ai',
+        owns: expect.arrayContaining(['model routing', 'memory policy']),
+      }),
+      expect.objectContaining({
+        id: 'integrations',
+        owns: expect.arrayContaining(['connected accounts', 'webhook contracts']),
+      }),
+    ]));
     expect(response.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'wanted' }),
       expect.objectContaining({ toolId: 'vercel', status: 'wanted' }),

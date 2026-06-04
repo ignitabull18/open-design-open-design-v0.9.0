@@ -102,6 +102,18 @@ export interface IdeationQuestion {
   options?: string[];
 }
 
+export interface ProjectWorkspaceSection {
+  id: 'planning' | 'design' | 'database' | 'integrations' | 'ai' | 'workflows' | 'delivery';
+  label: string;
+  purpose: string;
+  owns: string[];
+  doesNotOwn: string[];
+  primaryQuestions: string[];
+  outputs: string[];
+  relatedLaneIds: PlanningAgentLane['id'][];
+  toolIds: PlanningToolId[];
+}
+
 export interface ScaffoldPlan {
   engine: 'better-t-stack' | 'custom';
   command: string;
@@ -133,6 +145,7 @@ export interface ProjectPlan {
   databaseDesign: DatabaseDesignPlan;
   agentLanes: PlanningAgentLane[];
   ideationQuestions: IdeationQuestion[];
+  workspaceSections: ProjectWorkspaceSection[];
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];

@@ -222,6 +222,7 @@ function migrate(db: SqliteDb): void {
       database_design_json TEXT NOT NULL DEFAULT '{}',
       agent_lanes_json TEXT NOT NULL DEFAULT '[]',
       ideation_questions_json TEXT NOT NULL DEFAULT '[]',
+      workspace_sections_json TEXT NOT NULL DEFAULT '[]',
       scaffold_json TEXT NOT NULL,
       repo_json TEXT NOT NULL,
       delivery_json TEXT NOT NULL,
@@ -319,6 +320,9 @@ function migrate(db: SqliteDb): void {
   }
   if (!planCols.some((c: DbRow) => c.name === 'ideation_questions_json')) {
     db.exec(`ALTER TABLE plans ADD COLUMN ideation_questions_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'workspace_sections_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN workspace_sections_json TEXT NOT NULL DEFAULT '[]'`);
   }
   // schedule_json holds the full RoutineSchedule object (kind discriminator
   // plus kind-specific fields like time/timezone/weekday). The legacy
@@ -1498,6 +1502,7 @@ const PLAN_COLS = `id, name,
   database_design_json AS databaseDesignJson,
   agent_lanes_json AS agentLanesJson,
   ideation_questions_json AS ideationQuestionsJson,
+  workspace_sections_json AS workspaceSectionsJson,
   scaffold_json AS scaffoldJson,
   repo_json AS repoJson,
   delivery_json AS deliveryJson,
@@ -1523,8 +1528,9 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     `INSERT INTO plans
        (id, name, intent_json, selected_tools_json, stack_json,
         database_design_json, agent_lanes_json, ideation_questions_json,
+        workspace_sections_json,
         scaffold_json, repo_json, delivery_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     plan.id,
     plan.name,
@@ -1534,6 +1540,7 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     JSON.stringify(plan.databaseDesign ?? {}),
     JSON.stringify(plan.agentLanes ?? []),
     JSON.stringify(plan.ideationQuestions ?? []),
+    JSON.stringify(plan.workspaceSections ?? []),
     JSON.stringify(plan.scaffold ?? {}),
     JSON.stringify(plan.repo ?? {}),
     JSON.stringify(plan.delivery ?? []),
@@ -1562,6 +1569,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
             database_design_json = ?,
             agent_lanes_json = ?,
             ideation_questions_json = ?,
+            workspace_sections_json = ?,
             scaffold_json = ?,
             repo_json = ?,
             delivery_json = ?,
@@ -1575,6 +1583,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
     JSON.stringify(merged.databaseDesign ?? {}),
     JSON.stringify(merged.agentLanes ?? []),
     JSON.stringify(merged.ideationQuestions ?? []),
+    JSON.stringify(merged.workspaceSections ?? []),
     JSON.stringify(merged.scaffold ?? {}),
     JSON.stringify(merged.repo ?? {}),
     JSON.stringify(merged.delivery ?? []),
@@ -1599,6 +1608,7 @@ function normalizePlan(row: DbRow) {
     databaseDesign: parseJsonObject(row.databaseDesignJson, {}),
     agentLanes: parseJsonObject(row.agentLanesJson, []),
     ideationQuestions: parseJsonObject(row.ideationQuestionsJson, []),
+    workspaceSections: parseJsonObject(row.workspaceSectionsJson, []),
     scaffold: parseJsonObject(row.scaffoldJson, {}),
     repo: parseJsonObject(row.repoJson, {}),
     delivery: parseJsonObject(row.deliveryJson, []),

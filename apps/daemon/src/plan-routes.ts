@@ -14,6 +14,7 @@ import type {
   ProjectPlan,
   ProjectStackDecision,
   ProjectToolConnection,
+  ProjectWorkspaceSection,
   RepoPlan,
   ScaffoldPlan,
   UpdateProjectPlanRequest,
@@ -242,6 +243,7 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     databaseDesign: buildDatabaseDesign(stack),
     agentLanes: buildAgentLanes(stack, selectedTools),
     ideationQuestions: buildIdeationQuestions(stack),
+    workspaceSections: buildWorkspaceSections(stack, selectedTools),
     scaffold: buildScaffoldPlan(input.name, stack, selectedTools),
     repo: {
       ...repoRest,
@@ -570,6 +572,121 @@ function buildIdeationQuestions(stack: ProjectStackDecision): IdeationQuestion[]
       question: 'Which secrets are user-provided, project-provided, or environment-provided through 1Password?',
       whyItMatters: 'Secret ownership decides what can be committed, what belongs in env files, and what must be configured before deploy.',
       answerType: 'checklist',
+    },
+  ];
+}
+
+function buildWorkspaceSections(
+  _stack: ProjectStackDecision,
+  selectedTools: ProjectToolConnection[],
+): ProjectWorkspaceSection[] {
+  const selected = new Set(selectedTools.map((tool) => tool.toolId));
+  const hasAny = (ids: ProjectWorkspaceSection['toolIds']) => ids.filter((id) => selected.has(id));
+  return [
+    {
+      id: 'planning',
+      label: 'Planning',
+      purpose: 'Define what should be built, why it matters, what is in scope, and the order of work.',
+      owns: ['purpose', 'audience', 'success criteria', 'MVP scope', 'sequencing', 'open decisions'],
+      doesNotOwn: ['visual system details', 'schema implementation', 'provider credentials', 'deployment execution'],
+      primaryQuestions: [
+        'What problem is this project solving?',
+        'Which workflows must work first?',
+        'Which decisions block scaffold or deployment?',
+      ],
+      outputs: ['project brief', 'decision log', 'feature map', 'execution order'],
+      relatedLaneIds: ['product', 'architecture'],
+      toolIds: hasAny(['linear', 'github-issues', 'google-docs']),
+    },
+    {
+      id: 'design',
+      label: 'Design',
+      purpose: 'Shape the user experience, information architecture, interface states, and product interaction model.',
+      owns: ['user flows', 'screen inventory', 'navigation', 'interaction states', 'visual direction', 'accessibility expectations'],
+      doesNotOwn: ['database source of truth', 'secret storage', 'provider auth scopes', 'deployment topology'],
+      primaryQuestions: [
+        'What does the user need to understand on the first screen?',
+        'Which actions need review, confirmation, or undo?',
+        'Which screens or states are required for the MVP?',
+      ],
+      outputs: ['flow map', 'screen list', 'state checklist', 'design acceptance criteria'],
+      relatedLaneIds: ['product'],
+      toolIds: hasAny(['google-docs', 'github-issues']),
+    },
+    {
+      id: 'database',
+      label: 'Database',
+      purpose: 'Decide data ownership, schema shape, access patterns, realtime boundaries, migrations, and retention.',
+      owns: ['entities', 'relationships', 'source of truth', 'query patterns', 'migrations', 'RLS/access policy', 'retention'],
+      doesNotOwn: ['UI layout', 'business value proposition', 'provider account login flows', 'model selection'],
+      primaryQuestions: [
+        'What is the source of truth for product state?',
+        'Which records need realtime sync?',
+        'Where do workflow logs and provider payloads live?',
+      ],
+      outputs: ['entity map', 'relationship map', 'migration plan', 'access policy notes'],
+      relatedLaneIds: ['database'],
+      toolIds: hasAny(['supabase-database', 'cloudflare-data', 'convex', 'postgres-coolify']),
+    },
+    {
+      id: 'integrations',
+      label: 'Integrations',
+      purpose: 'Map external tools, connected accounts, permissions, webhooks, and secret handoff.',
+      owns: ['connected accounts', 'OAuth/auth configs', 'webhook contracts', 'tool routing', 'secret source mapping'],
+      doesNotOwn: ['core schema ownership', 'screen-level visual choices', 'model-provider ranking', 'hosting target choice'],
+      primaryQuestions: [
+        'Which accounts should the app act through?',
+        'Which tools are workspace-level versus per-user?',
+        'Which webhooks or callbacks need verification?',
+      ],
+      outputs: ['integration matrix', 'permission checklist', 'webhook map', 'secret inventory'],
+      relatedLaneIds: ['integrations'],
+      toolIds: hasAny(['composio', 'onepassword', 'supermemory']),
+    },
+    {
+      id: 'ai',
+      label: 'AI',
+      purpose: 'Choose model providers, routing, memory, agent runtime assumptions, and AI safety boundaries.',
+      owns: ['model routing', 'agent runtime', 'memory policy', 'prompt context', 'fallbacks', 'AI observability'],
+      doesNotOwn: ['payment plan design', 'database migration order', 'OAuth provider setup', 'static screen layout'],
+      primaryQuestions: [
+        'Which work should be handled by Codex versus app agents?',
+        'Which provider should route each model class?',
+        'What should be remembered, forgotten, or isolated per project?',
+      ],
+      outputs: ['provider routing plan', 'memory policy', 'agent runtime notes', 'evaluation checklist'],
+      relatedLaneIds: ['architecture', 'integrations'],
+      toolIds: hasAny(['codex', 'cloudflare-ai-gateway', 'ollama-cloud', 'openrouter', 'supermemory']),
+    },
+    {
+      id: 'workflows',
+      label: 'Workflows',
+      purpose: 'Separate immediate app actions from long-running jobs, scheduled runs, retries, and approvals.',
+      owns: ['background jobs', 'schedules', 'retries', 'queues', 'approval waits', 'workflow observability'],
+      doesNotOwn: ['visual design', 'tenant data model except workflow tables', 'source-control policy', 'billing product strategy'],
+      primaryQuestions: [
+        'Which tasks can outlive a request?',
+        'Which steps need retry, delay, or manual approval?',
+        'Which workflow events need audit trails?',
+      ],
+      outputs: ['workflow inventory', 'Trigger.dev task map', 'queue/retry policy', 'audit event list'],
+      relatedLaneIds: ['workflows'],
+      toolIds: hasAny(['trigger-dev', 'cloudflare-hosting']),
+    },
+    {
+      id: 'delivery',
+      label: 'Delivery',
+      purpose: 'Own repository creation, scaffold execution, deploy targets, environments, and verification evidence.',
+      owns: ['GitHub repo', 'scaffold command', 'environment setup', 'deploy targets', 'preview URLs', 'verification checklist'],
+      doesNotOwn: ['feature prioritization', 'visual design decisions', 'database entity naming except migration artifacts', 'model policy'],
+      primaryQuestions: [
+        'Where should the repo live?',
+        'Which target gets the first deploy?',
+        'What proof is required before the project is considered shipped?',
+      ],
+      outputs: ['repo URL', 'scaffold log', 'deployment plan', 'live proof'],
+      relatedLaneIds: ['delivery'],
+      toolIds: hasAny(['github', 'cloudflare-hosting', 'vercel', 'coolify', 'hostinger']),
     },
   ];
 }
