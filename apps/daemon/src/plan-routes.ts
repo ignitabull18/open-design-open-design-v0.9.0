@@ -2,15 +2,19 @@ import type { Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type {
   CreateProjectIdeationRequest,
+  ExecuteProjectPlanActionRequest,
   CreateProjectPlanRequest,
   DatabaseDesignPlan,
   DeliveryPlan,
   IdeationQuestion,
   PlanningAgentLane,
+  PlanningExecutionAction,
+  PlanningRuntimePlan,
   PlanningToolOption,
   ProjectIdeaOption,
   ProjectIdeationSession,
   ProjectIntentBrief,
+  ProviderCapabilitySnapshot,
   ProjectSectionAnswer,
   ProjectPlan,
   ProjectSectionAnswers,
@@ -98,11 +102,131 @@ const SOURCE_URLS = [
   'https://trigger.dev/changelog/',
 ];
 
+const CHECKED_AT = '2026-06-04';
+
+const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
+  {
+    toolId: 'cloudflare-hosting',
+    label: 'Cloudflare Workers, Pages, Agents, Workflows, and AI Gateway',
+    sourceUrl: 'https://developers.cloudflare.com/changelog/product-group/ai/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'AI Gateway REST API supports unified model calls through /ai/run and OpenAI/Anthropic-compatible endpoints.',
+      'Agents SDK now emphasizes skills, messengers, scheduled tasks, Workflows, and durable chat recovery.',
+      'Workers and Pages billing sidebars can show current usage and budget alerts for several developer products.',
+    ],
+    planningImplications: [
+      'Keep Cloudflare AI routing explicit with account id, gateway id, and provider model ids.',
+      'Plan durable agent steps separately from normal request handlers when work needs recovery or scheduling.',
+      'Track spend and budget-alert setup as a delivery task when Cloudflare is selected.',
+    ],
+    riskNotes: [
+      'The current Open Design daemon is Express/SQLite; a Cloudflare-only production runtime still needs either a Workers refactor or a separate Node daemon.',
+    ],
+  },
+  {
+    toolId: 'supabase-database',
+    label: 'Supabase Database and Auth',
+    sourceUrl: 'https://supabase.com/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Supabase Auth passkeys are in beta.',
+      'Self-hosted Supabase is moving its default Postgres image from 15 to 17 in June 2026.',
+      'Recent developer updates include dashboard, branching, SDK, database, auth, PostgREST, and breaking-change notes.',
+    ],
+    planningImplications: [
+      'Choose Supabase Auth versus Better Auth before scaffold execution.',
+      'For self-hosted Supabase or Coolify Postgres, pin database versions and plan PG 17 compatibility.',
+      'Put RLS testing and access-policy review inside the database lane before deployment.',
+    ],
+    riskNotes: [
+      'Do not store workflow payloads or provider webhooks in core product tables without retention limits.',
+    ],
+  },
+  {
+    toolId: 'composio',
+    label: 'Composio.dev Integrations',
+    sourceUrl: 'https://docs.composio.dev/docs/changelog/2026/02/01',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Sessions can be updated without recreating them.',
+      'Connected account inputs can accept arrays per toolkit.',
+      'MCP API key enforcement is enabled for new organizations and enforced for existing MCP URL requests.',
+    ],
+    planningImplications: [
+      'Store toolkit slugs, session assumptions, and connected-account mapping in the integrations section.',
+      'Prefer webhook triggers or custom auth when near-real-time polling is required.',
+      'Add x-api-key handling to MCP URLs before exposing Composio-backed tools.',
+    ],
+    riskNotes: [
+      'Composio-managed OAuth polling intervals and link-session behavior can affect workflow freshness.',
+    ],
+  },
+  {
+    toolId: 'trigger-dev',
+    label: 'Trigger.dev Workflows',
+    sourceUrl: 'https://trigger.dev/changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'v4 introduces Run Engine 2 with warm starts, waitpoints, prioritized runs, queue management, lifecycle hooks, and OTEL exports.',
+      'Recent releases add run replay detection, API key rotation grace, task-level TTL defaults, MCP tools, and Supabase/Vercel integration support.',
+      'Input streams support bidirectional task communication.',
+    ],
+    planningImplications: [
+      'Use Trigger.dev for long-running jobs, retries, schedules, approvals, and provider sync tasks.',
+      'Model human approvals as waitpoints rather than ad hoc polling loops.',
+      'Keep task observability and queue limits in the workflows lane.',
+    ],
+    riskNotes: [
+      'Trigger.dev runtime support differs from this repo Node 24 target; generated projects need explicit runtime validation.',
+    ],
+  },
+  {
+    toolId: 'stripe',
+    label: 'Stripe Payments and Billing',
+    sourceUrl: 'https://docs.stripe.com/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'The 2026 Clover API line includes Billing, Checkout, Payment Records, Terminal, and Connect changes.',
+      'Checkout and subscription API shapes can change across dated API versions.',
+    ],
+    planningImplications: [
+      'Keep Stripe as a post-scaffold integration because Better-T-Stack does not map it as the native payments flag in this plan.',
+      'Persist Stripe customer, subscription, price, and invoice ids in the database design instead of using emails as keys.',
+      'Pin API version expectations and webhook event handling before accepting billing as complete.',
+    ],
+    riskNotes: [
+      'Billing correctness depends on downstream reconciliation, failed-payment handling, and webhook idempotency.',
+    ],
+  },
+  {
+    toolId: 'github',
+    label: 'GitHub Source Control',
+    sourceUrl: 'https://github.blog/changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'GitHub remains the canonical repo creation and issue target for this planner.',
+      'GitHub Issues can act as the project-management fallback when Linear is deferred.',
+    ],
+    planningImplications: [
+      'Gate repo creation behind an explicit confirmation and gh auth status.',
+      'Generate issue drafts from accepted section outputs before opening implementation work.',
+    ],
+    riskNotes: [
+      'Repo creation should never invent an owner; use gh-authenticated owner or a user-provided org.',
+    ],
+  },
+];
+
 export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const { db } = ctx;
 
   app.get('/api/planning/tools', (_req, res) => {
     res.json({ tools: APPROVED_TOOLS });
+  });
+
+  app.get('/api/planning/capabilities', (_req, res) => {
+    res.json({ capabilities: PROVIDER_CAPABILITIES });
   });
 
   app.get('/api/plans', (_req, res) => {
@@ -169,6 +293,40 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/actions', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeActionBody(req.body || {});
+      const action = existing.executionActions.find((item) => item.id === body.actionId);
+      if (!action) return res.status(404).json({ error: 'plan action not found' });
+      if (action.requiresConfirmation && !body.confirmed) {
+        return res.status(409).json({
+          error: 'confirmation required',
+          action,
+          confirmation: 'Repeat with confirmed: true after reviewing the command, preconditions, and effects.',
+        });
+      }
+      const nextActions = existing.executionActions.map((item) =>
+        item.id === body.actionId
+          ? { ...item, status: 'accepted' as const }
+          : item,
+      );
+      const nextRepo = body.actionId === 'repo-create'
+        ? { ...existing.repo, status: 'planned' as const }
+        : existing.repo;
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        executionActions: nextActions,
+        repo: nextRepo,
+        updatedAt: Date.now(),
+      });
+      res.json({ plan: updated, action: nextActions.find((item) => item.id === body.actionId) });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.patch('/api/plans/:id', (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -209,6 +367,17 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
 function normalizeIdeationBody(body: Record<string, unknown>): CreateProjectIdeationRequest {
   return {
     prompt: cleanRequiredString(body.prompt, 'prompt'),
+  };
+}
+
+function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
+  const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, or provider-research');
+  }
+  return {
+    actionId,
+    confirmed: body.confirmed === true,
   };
 }
 
@@ -255,6 +424,9 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     ideationQuestions: buildIdeationQuestions(stack),
     workspaceSections: buildWorkspaceSections(stack, selectedTools),
     sectionAnswers,
+    providerCapabilities: buildProviderCapabilities(selectedTools),
+    runtimePlan: buildRuntimePlan(stack, selectedTools),
+    executionActions: buildExecutionActions(input.name, stack, selectedTools, sectionAnswers, repoPatch),
     scaffold: buildScaffoldPlan(input.name, stack, selectedTools, sectionAnswers),
     repo: {
       ...repoRest,
@@ -314,6 +486,125 @@ function buildScaffoldPlan(
     postScaffoldTasks,
     docsSources: SOURCE_URLS,
   };
+}
+
+function buildProviderCapabilities(selectedTools: ProjectToolConnection[]): ProviderCapabilitySnapshot[] {
+  const selected = new Set(selectedTools.map((tool) => tool.toolId));
+  return PROVIDER_CAPABILITIES.filter((snapshot) =>
+    selected.has(snapshot.toolId)
+      || (snapshot.toolId === 'cloudflare-hosting' && (selected.has('cloudflare-ai-gateway') || selected.has('cloudflare-data') || selected.has('cloudflare-access')))
+      || (snapshot.toolId === 'github' && selected.has('github-issues'))
+      || (snapshot.toolId === 'supabase-database' && selected.has('supabase-auth')),
+  );
+}
+
+function buildRuntimePlan(
+  stack: ProjectStackDecision,
+  selectedTools: ProjectToolConnection[],
+): PlanningRuntimePlan {
+  const selected = new Set(selectedTools.map((tool) => tool.toolId));
+  if (selected.has('coolify') || selected.has('hostinger') || stack.runtime === 'node') {
+    return {
+      recommended: 'coolify-daemon',
+      summary: 'Run the current Open Design web and daemon pair as a Node service behind Coolify, with Cloudflare DNS/Access in front when needed.',
+      requiredEnv: ['OD_DATA_DIR', 'OD_WEB_PORT', 'OD_PORT', 'PUBLIC_ORIGIN', 'NEXT_PUBLIC_OD_API_BASE_URL'],
+      deploySteps: [
+        'Build the web package and daemon package with the pinned Node 24 and pnpm workspace.',
+        'Run the daemon with persistent OD_DATA_DIR mounted to the Coolify volume.',
+        'Expose the web service publicly and route /api/* to the daemon service.',
+        'Protect private planning environments with Cloudflare Access before inviting collaborators.',
+      ],
+      verification: [
+        'Create a plan through the deployed Planning page.',
+        'Save a section answer, reload, and confirm it persists.',
+        'Run od plan list against the deployed daemon URL.',
+        'Record the live URL and API health proof in the delivery section.',
+      ],
+      caveats: [
+        'Cloudflare Pages static hosting by itself cannot persist /api/plans because the daemon is Express/SQLite.',
+        'Workers-only deployment requires a separate compatibility refactor for storage and API routes.',
+      ],
+    };
+  }
+  return {
+    recommended: 'node-daemon',
+    summary: 'Keep the current daemon-backed planner as a Node runtime and use Cloudflare Pages only as a static preview unless an API base URL points at a live daemon.',
+    requiredEnv: ['NEXT_PUBLIC_OD_API_BASE_URL', 'OD_DATA_DIR'],
+    deploySteps: [
+      'Deploy the static web bundle with NEXT_PUBLIC_OD_API_BASE_URL set to the public daemon origin.',
+      'Run the daemon as a persistent Node process with a durable SQLite data directory.',
+      'Ensure CORS/proxy policy allows the deployed web origin to reach /api/plans.',
+    ],
+    verification: [
+      'Fetch /api/health from the daemon origin.',
+      'Create and reload a plan from the public Planning page.',
+      'Verify od plan sections works against the same daemon URL.',
+    ],
+    caveats: [
+      'The static Pages URL is only a UI shell until a daemon origin is configured.',
+    ],
+  };
+}
+
+function buildExecutionActions(
+  name: string,
+  stack: ProjectStackDecision,
+  selectedTools: ProjectToolConnection[],
+  sectionAnswers: ProjectSectionAnswers,
+  repo: Partial<RepoPlan>,
+): PlanningExecutionAction[] {
+  const slug = slugify(repo.name ?? name ?? 'new-project');
+  const owner = repo.owner ? String(repo.owner).trim() : '<github-owner-or-org>';
+  const visibility = repo.visibility ?? 'private';
+  const runtimePlan = buildRuntimePlan(stack, selectedTools);
+  return [
+    {
+      id: 'provider-research',
+      label: 'Review provider capability snapshots',
+      status: 'ready',
+      requiresConfirmation: false,
+      preconditions: ['Provider capability snapshots are visible in the plan.'],
+      effects: ['Confirms the selected tools were planned against dated provider notes.'],
+      relatedSectionIds: ['planning', 'integrations', 'ai', 'workflows'],
+    },
+    {
+      id: 'repo-create',
+      label: 'Create GitHub repository',
+      status: 'ready',
+      requiresConfirmation: true,
+      command: `gh repo create ${owner}/${slug} --${visibility} --source . --remote origin --push`,
+      preconditions: [
+        'gh is installed and authenticated for the intended owner.',
+        'The scaffold has passed local validation.',
+        'The repository owner is explicit; placeholders are not accepted.',
+      ],
+      effects: ['Creates the GitHub repository, adds the origin remote, and pushes the scaffold.'],
+      relatedSectionIds: ['delivery'],
+    },
+    {
+      id: 'scaffold',
+      label: 'Run Better-T-Stack scaffold',
+      status: 'ready',
+      requiresConfirmation: true,
+      command: buildScaffoldPlan(name, stack, selectedTools, sectionAnswers).command,
+      preconditions: [
+        'Target directory is empty or disposable.',
+        'Section answers that affect stack, database, auth, and workflows are accepted.',
+        'Secrets are identified but not written into the command.',
+      ],
+      effects: ['Creates the initial app skeleton from the approved Better-T-Stack command.'],
+      relatedSectionIds: ['planning', 'database', 'ai', 'workflows', 'delivery'],
+    },
+    {
+      id: 'deploy-runtime',
+      label: 'Deploy daemon-backed runtime',
+      status: runtimePlan.recommended === 'cloudflare-pages-static' ? 'blocked' : 'ready',
+      requiresConfirmation: true,
+      preconditions: runtimePlan.deploySteps,
+      effects: runtimePlan.verification,
+      relatedSectionIds: ['delivery', 'integrations'],
+    },
+  ];
 }
 
 function buildIdeationSession(plan: ProjectPlan, prompt: string): ProjectIdeationSession {
@@ -492,62 +783,104 @@ function buildAgentLanes(
     {
       id: 'product',
       label: 'Product brief agent',
+      sectionId: 'planning',
       mode: 'sequential',
       status: 'ready',
       dependsOn: [],
       toolIds: ['linear', 'github-issues', 'google-docs'],
       brief: `Turn the purpose, audience, constraints, and success criteria into a concrete feature map and acceptance checklist.${answerSummary('planning')}`,
       outputs: ['feature map', 'success criteria', 'MVP boundary'],
+      runbook: [
+        'Read planning section answers and open decisions.',
+        'Produce MVP workflow order and acceptance criteria.',
+        'Create Linear, GitHub Issues, or Google Docs drafts when those tools are connected.',
+      ],
+      parallelWith: [],
     },
     {
       id: 'architecture',
       label: 'Stack architecture agent',
+      sectionId: 'ai',
       mode: 'sequential',
       status: 'ready',
       dependsOn: ['product'],
       toolIds: ['github', 'codex', 'cloudflare-ai-gateway', 'openrouter'],
       brief: `Choose the frontend, backend, runtime, auth, and scaffold flags from the approved stack catalog.${answerSummary('ai')}`,
       outputs: ['stack decision', 'Better-T-Stack command', 'provider fit notes'],
+      runbook: [
+        'Compare accepted requirements against Better-T-Stack-supported flags.',
+        'Keep unsupported provider work as post-scaffold tasks.',
+        'Update the scaffold command and runtime plan from the stored stack.',
+      ],
+      parallelWith: [],
     },
     {
       id: 'database',
       label: 'Database design agent',
+      sectionId: 'database',
       mode: 'parallel',
       status: databaseTools.length > 0 ? 'ready' : 'blocked',
       dependsOn: ['product'],
       toolIds: databaseTools,
       brief: `Design the data model for ${stack.database ?? 'the selected database'} including tenancy, access patterns, migrations, and realtime boundaries.${answerSummary('database')}`,
       outputs: ['entity map', 'relationship map', 'migration plan', 'RLS/access notes'],
+      runbook: [
+        'Convert section answers into entities, relationships, and access patterns.',
+        'Separate core product records from workflow/provider payloads.',
+        'Write migration and RLS review tasks before scaffold acceptance.',
+      ],
+      parallelWith: ['workflows', 'integrations'],
     },
     {
       id: 'workflows',
       label: 'Workflow automation agent',
+      sectionId: 'workflows',
       mode: 'parallel',
       status: 'ready',
       dependsOn: ['product'],
       toolIds: toolIds.has('trigger-dev') ? ['trigger-dev'] : ['trigger-dev', 'cloudflare-hosting'],
       brief: `Separate short request/response actions from long-running workflows, retries, schedules, webhooks, and provider sync jobs.${answerSummary('workflows')}`,
       outputs: ['workflow inventory', 'Trigger.dev task map', 'retry and schedule policy'],
+      runbook: [
+        'Identify tasks that need retries, waits, schedules, or approvals.',
+        'Map long-running jobs to Trigger.dev or Cloudflare Workflows.',
+        'Record audit events and queue visibility requirements.',
+      ],
+      parallelWith: ['database', 'integrations'],
     },
     {
       id: 'integrations',
       label: 'Integration agent',
+      sectionId: 'integrations',
       mode: 'parallel',
       status: 'ready',
       dependsOn: ['product'],
       toolIds: ['composio', 'onepassword', 'supermemory'],
       brief: `Map external tools, connected accounts, memory requirements, and secret sources before scaffold execution.${answerSummary('integrations')}`,
       outputs: ['integration matrix', 'secret checklist', 'memory policy'],
+      runbook: [
+        'Map each provider to workspace-level or per-user auth.',
+        'Decide which secrets live in 1Password and which are runtime env.',
+        'Confirm Composio sessions, webhook paths, and Supermemory availability.',
+      ],
+      parallelWith: ['database', 'workflows'],
     },
     {
       id: 'delivery',
       label: 'Delivery agent',
+      sectionId: 'delivery',
       mode: 'sequential',
       status: deliveryTools.length > 0 ? 'ready' : 'blocked',
       dependsOn: ['architecture', 'database', 'workflows', 'integrations'],
       toolIds: deliveryTools,
       brief: `Create the repo, pick deploy targets, and verify preview/live URLs after the scaffold passes local checks.${answerSummary('delivery')}`,
       outputs: ['repo plan', 'deployment plan', 'verification checklist'],
+      runbook: [
+        'Confirm scaffold command and repo owner before execution.',
+        'Run local validation before pushing the scaffold.',
+        'Record deployed URLs and reload/persistence proof in delivery notes.',
+      ],
+      parallelWith: [],
     },
   ];
 }

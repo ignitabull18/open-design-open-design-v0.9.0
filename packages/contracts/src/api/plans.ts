@@ -85,12 +85,15 @@ export interface DatabaseDesignPlan {
 export interface PlanningAgentLane {
   id: 'product' | 'architecture' | 'database' | 'workflows' | 'integrations' | 'delivery';
   label: string;
+  sectionId?: ProjectWorkspaceSection['id'];
   mode: 'sequential' | 'parallel';
   status: 'not_started' | 'ready' | 'blocked';
   dependsOn: PlanningAgentLane['id'][];
   toolIds: PlanningToolId[];
   brief: string;
   outputs: string[];
+  runbook: string[];
+  parallelWith: PlanningAgentLane['id'][];
 }
 
 export interface IdeationQuestion {
@@ -131,6 +134,36 @@ export interface ScaffoldPlan {
   docsSources: string[];
 }
 
+export interface ProviderCapabilitySnapshot {
+  toolId: PlanningToolId;
+  label: string;
+  sourceUrl: string;
+  checkedAt: string;
+  capabilities: string[];
+  planningImplications: string[];
+  riskNotes: string[];
+}
+
+export interface PlanningRuntimePlan {
+  recommended: 'coolify-daemon' | 'node-daemon' | 'cloudflare-pages-static' | 'workers-refactor';
+  summary: string;
+  requiredEnv: string[];
+  deploySteps: string[];
+  verification: string[];
+  caveats: string[];
+}
+
+export interface PlanningExecutionAction {
+  id: 'repo-create' | 'scaffold' | 'deploy-runtime' | 'provider-research';
+  label: string;
+  status: 'blocked' | 'ready' | 'accepted' | 'completed';
+  requiresConfirmation: boolean;
+  command?: string;
+  preconditions: string[];
+  effects: string[];
+  relatedSectionIds: ProjectWorkspaceSection['id'][];
+}
+
 export interface RepoPlan {
   provider: 'github';
   owner?: string;
@@ -157,6 +190,9 @@ export interface ProjectPlan {
   ideationQuestions: IdeationQuestion[];
   workspaceSections: ProjectWorkspaceSection[];
   sectionAnswers: ProjectSectionAnswers;
+  providerCapabilities: ProviderCapabilitySnapshot[];
+  runtimePlan: PlanningRuntimePlan;
+  executionActions: PlanningExecutionAction[];
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];
@@ -205,6 +241,11 @@ export interface CreateProjectIdeationRequest {
   prompt: string;
 }
 
+export interface ExecuteProjectPlanActionRequest {
+  actionId: PlanningExecutionAction['id'];
+  confirmed?: boolean;
+}
+
 export interface ProjectPlansResponse {
   plans: ProjectPlan[];
 }
@@ -215,6 +256,10 @@ export interface ProjectPlanResponse {
 
 export interface PlanningToolOptionsResponse {
   tools: PlanningToolOption[];
+}
+
+export interface ProviderCapabilitySnapshotsResponse {
+  capabilities: ProviderCapabilitySnapshot[];
 }
 
 export interface ProjectIdeationSessionsResponse {

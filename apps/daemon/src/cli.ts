@@ -185,9 +185,9 @@ const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow']);
 const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
-  'answers-json', 'prompt', 'prompt-file',
+  'answers-json', 'action', 'prompt', 'prompt-file',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4619,6 +4619,7 @@ async function runPlan(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
   od plan tools [--json]                         List approved planning tools.
+  od plan capabilities [--json]                  List provider capability snapshots.
   od plan list [--json]                          List stored plans.
   od plan info <id> [--json]                     Print one stored plan.
   od plan create --name <title> --intent-json <path|->
@@ -4631,6 +4632,9 @@ async function runPlan(args) {
   od plan sections <id> [--json]                 List section boundaries and answers.
   od plan section <id> --section <name> --answers-json <path|->
                                                  Update one section answer.
+  od plan actions <id> [--json]                  List executable plan actions.
+  od plan action <id> --action <name> --confirmed
+                                                 Accept a gated execution action.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
   od plan brainstorm <id> --prompt-file <path|->
@@ -4653,6 +4657,17 @@ Common options:
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       for (const tool of data?.tools ?? []) {
         console.log(`${tool.id}\t${tool.kind}\t${tool.label}\t${tool.notes}`);
+      }
+      return;
+    }
+    case 'capabilities': {
+      const resp = await fetch(`${base}/api/planning/capabilities`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      for (const snapshot of data?.capabilities ?? []) {
+        console.log(`${snapshot.toolId}\t${snapshot.label}\tchecked ${snapshot.checkedAt}`);
+        for (const item of snapshot.planningImplications ?? []) console.log(`  - ${item}`);
       }
       return;
     }
@@ -4760,6 +4775,42 @@ Common options:
           for (const line of answer.answers) console.log(`  - ${line}`);
         }
       }
+      return;
+    }
+    case 'actions': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan actions <id> [--json]');
+        process.exit(2);
+      }
+      const data = await fetchPlan(base, id);
+      const actions = data.plan?.executionActions ?? [];
+      if (flags.json) return process.stdout.write(JSON.stringify({ actions }, null, 2) + '\n');
+      for (const action of actions) {
+        console.log(`${action.id}\t${action.status}\t${action.requiresConfirmation ? 'confirm' : 'open'}\t${action.label}`);
+        if (action.command) console.log(`  ${action.command.split('\n').join('\n  ')}`);
+      }
+      return;
+    }
+    case 'action': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
+      if (!id || !actionId) {
+        console.error('Usage: od plan action <id> --action <repo-create|scaffold|deploy-runtime|provider-research> [--confirmed] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ actionId, confirmed: flags.confirmed === true }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/actions failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(resp.status === 409 ? 2 : 1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] accepted action ${actionId} for ${id}`);
       return;
     }
     case 'section': {

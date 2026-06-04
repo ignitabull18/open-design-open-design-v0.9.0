@@ -47,32 +47,37 @@ Use current primary-source docs and changelogs when changing scaffold defaults o
 - OpenRouter changelog: `https://openrouter.ai/docs/changelog`
 - Trigger.dev changelog: `https://trigger.dev/changelog/`
 
-Recent planning implications from the current primary sources:
+Recent planning implications from the current primary sources, last refreshed 2026-06-04:
 
-- Trigger.dev should be treated as the long-running workflow lane because v4 adds AI coding assistant skills, Vercel integration, Supabase env var sync, task TTL defaults, MCP tooling, metrics/query dashboards, and bidirectional input streams.
-- Composio planning must store session and connected-account assumptions because current releases emphasize `composio.use()` session reuse, session updates, connected account arrays, webhook subscriptions, V3 payloads, and MCP API-key enforcement.
-- Cloudflare and Supabase capability choices should stay source-backed and refreshable because Workers/AI Gateway/Access/D1/R2/Queues/Workflows and Supabase platform defaults change quickly enough to affect architecture decisions.
+- Cloudflare planning should treat AI Gateway's current REST API, Agents SDK skills/messengers/scheduled tasks/Workflows, and usage budget alerts as architecture and delivery inputs. The current Open Design daemon remains Express/SQLite, so Cloudflare Pages static hosting needs a separate daemon origin or a future Workers-compatible refactor.
+- Supabase planning should account for passkeys beta, RLS/access-policy review, and self-hosted Postgres 15 to 17 migration risk before choosing Supabase Auth or self-hosted Supabase/Postgres.
+- Trigger.dev should be treated as the long-running workflow lane because v4 adds Run Engine 2, waitpoints, prioritized runs, queue management, lifecycle hooks, OTEL exports, task TTL defaults, MCP tooling, Supabase/Vercel integration support, and bidirectional input streams.
+- Composio planning must store session, toolkit, connected-account, webhook, and MCP API-key assumptions because current releases emphasize session updates, connected account arrays, link-session/OAuth changes, typed toolkit responses, polling interval changes, and MCP API-key enforcement.
+- Stripe stays a post-scaffold integration with explicit API-version and webhook-idempotency review because Checkout/Billing shapes change across dated API versions and Better-T-Stack does not provide the Stripe-native payment flag in this plan.
 
 ## Current architecture
 
 The shared contract lives in `packages/contracts/src/api/plans.ts`.
 
-The daemon persists plans in SQLite through the `plans` table. It stores JSON for intent, selected tools, stack, database design, planning agent lanes, pointed ideation questions, workspace sections, section answers, scaffold, repo, and delivery so the plan remains inspectable and can be regenerated when stack fields change.
+The daemon persists plans in SQLite through the `plans` table. It stores JSON for intent, selected tools, stack, database design, planning agent lanes, pointed ideation questions, workspace sections, section answers, provider capability snapshots, runtime plan, execution actions, scaffold, repo, and delivery so the plan remains inspectable and can be regenerated when stack fields change.
 
 The daemon route layer owns:
 
 - `GET /api/planning/tools`
+- `GET /api/planning/capabilities`
 - `GET /api/plans`
 - `POST /api/plans`
 - `GET /api/plans/:id`
 - `GET /api/plans/:id/ideation`
 - `POST /api/plans/:id/ideation`
+- `POST /api/plans/:id/actions`
 - `PATCH /api/plans/:id`
 - `DELETE /api/plans/:id`
 
 The CLI mirrors the same HTTP surface:
 
 - `od plan tools --json`
+- `od plan capabilities --json`
 - `od plan list --json`
 - `od plan info <id> --json`
 - `od plan create --name <name> --intent-json <path|-> [--stack-json <path|->]`
@@ -80,6 +85,8 @@ The CLI mirrors the same HTTP surface:
 - `od plan scaffold <id>`
 - `od plan sections <id>`
 - `od plan section <id> --section <name> --answers-json <path|->`
+- `od plan actions <id>`
+- `od plan action <id> --action <repo-create|scaffold|deploy-runtime|provider-research> --confirmed`
 - `od plan ideas <id>`
 - `od plan brainstorm <id> --prompt <text>`
 - `od plan delete <id>`
@@ -111,6 +118,8 @@ Plans should support both logical sequencing and parallel work:
 - Database design belongs in the plan before scaffold execution. It captures primary store, data mode, core entities, relationships, access patterns, migrations, and risk notes.
 - Ideation should ask pointed questions, not just generate ideas. Questions must cover required user workflows, data source of truth, long-running workflows, Cloudflare feature fit, integration account ownership, and secret ownership.
 - Provider capability awareness must be tied to current source URLs and refreshed when changing defaults or generating execution tasks.
+- Runtime planning is explicit. The default deployable path for the current Open Design product is a daemon-backed Node service, with Coolify recommended when self-hosting or Hostinger/VPS is selected. Cloudflare Pages is treated as static UI only unless `NEXT_PUBLIC_OD_API_BASE_URL` points to a live daemon.
+- Execution actions are generated from the plan but gated. Repo creation, Better-T-Stack scaffold execution, and runtime deployment require explicit confirmation and must expose preconditions, command text where applicable, and expected effects.
 
 ### Workspace section boundaries
 
@@ -154,7 +163,9 @@ Section answers are editable user decisions, separate from generated section def
 - Show workspace sections as a distinct boundary map separate from agent lanes.
 - Let users edit and persist section answers from the UI and `od plan section`.
 - Show planning agent lanes that can run sequentially or in parallel and record each lane's expected outputs.
+- Give each lane a runbook and explicit `parallelWith` metadata so Database, Workflows, and Integrations can proceed simultaneously after the Product lane.
 - Generate a database design draft from the current stack choice.
+- Show provider capability snapshots and the recommended runtime path in the selected plan.
 - Ask which tools the user wants to connect, then mark tools as `wanted`, `connected`, `deferred`, or `blocked`.
 - Generate Linear issue drafts, GitHub issue drafts, and Google Docs PRD outlines from the accepted plan.
 
@@ -162,7 +173,7 @@ Section answers are editable user decisions, separate from generated section def
 
 - Validate `gh` availability and authenticated owner before creating a repo.
 - Run Better-T-Stack scaffold in a clean target directory after user acceptance.
-- Create the GitHub repo, push the scaffold, and write provider setup tasks back into the plan.
+- Create the GitHub repo, push the scaffold, and write provider setup tasks back into the plan only after `repo-create` and `scaffold` actions are explicitly accepted.
 - Keep secrets in 1Password and write local env files only after explicit source-of-truth lookup.
 
 ### Phase 5: deployment execution
@@ -175,9 +186,14 @@ Section answers are editable user decisions, separate from generated section def
 ## Acceptance criteria
 
 - Every planning capability has both UI and CLI access.
+- The Planning web provider can target a deployed daemon through `NEXT_PUBLIC_OD_API_BASE_URL`; without that env var, static Pages remains a UI preview and local/runtime proxy uses relative `/api`.
 - `od plan scaffold <id>` prints the exact command generated by the daemon.
+- `od plan capabilities` exposes dated provider capability snapshots with source URLs.
+- `od plan actions` exposes repo, scaffold, runtime, and provider-research actions; confirmation is required before accepting gated actions.
 - Role-specific tool ids prevent provider ambiguity across hosting, database, and auth.
 - Workspace sections stay distinct from agent lanes and explicitly document what each section owns and does not own.
 - Section answers persist across reloads and influence agent lane briefs plus scaffold follow-up tasks.
+- Agent lanes include runbooks and parallel execution metadata.
+- Runtime plan calls out the daemon-backed deployment path and the Cloudflare Pages static limitation.
 - Plan mutations regenerate scaffold output deterministically.
 - A user can move from purpose to selected tools to scaffold command to GitHub/deploy next steps without losing the stored project context.

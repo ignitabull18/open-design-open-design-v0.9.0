@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type {
   PlanningToolOption,
+  ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
   ProjectSectionAnswers,
@@ -9,8 +10,10 @@ import type {
 } from '@open-design/contracts';
 import { Icon } from './Icon';
 import {
+  acceptProjectPlanAction,
   createProjectIdeationSession,
   createProjectPlan,
+  listProviderCapabilitySnapshots,
   listProjectIdeationSessions,
   listPlanningTools,
   listProjectPlans,
@@ -40,6 +43,7 @@ const INITIAL_STACK: ProjectStackDecision = {
 export function PlanningView() {
   const [plans, setPlans] = useState<ProjectPlan[]>([]);
   const [tools, setTools] = useState<PlanningToolOption[]>([]);
+  const [capabilities, setCapabilities] = useState<ProviderCapabilitySnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +52,7 @@ export function PlanningView() {
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
+  const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
   const [audience, setAudience] = useState('operators and product builders');
@@ -59,13 +64,15 @@ export function PlanningView() {
       setLoading(true);
       setError(null);
       try {
-        const [plansResult, toolsResult] = await Promise.all([
+        const [plansResult, toolsResult, capabilitiesResult] = await Promise.all([
           listProjectPlans(),
           listPlanningTools(),
+          listProviderCapabilitySnapshots(),
         ]);
         if (cancelled) return;
         setPlans(plansResult.plans);
         setTools(toolsResult.tools);
+        setCapabilities(capabilitiesResult.capabilities);
         setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -178,6 +185,23 @@ export function PlanningView() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSectionSaving(null);
+    }
+  }
+
+  async function handleAcceptAction(actionId: ProjectPlan['executionActions'][number]['id']) {
+    if (!selectedPlan) return;
+    setActionSaving(actionId);
+    setError(null);
+    try {
+      const result = await acceptProjectPlanAction(selectedPlan.id, {
+        actionId,
+        confirmed: true,
+      });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionSaving(null);
     }
   }
 
@@ -337,9 +361,12 @@ export function PlanningView() {
               ideationSessions={selectedIdeation}
               brainstorming={brainstorming}
               sectionSaving={sectionSaving}
+              actionSaving={actionSaving}
+              capabilities={capabilities}
               onIdeationPromptChange={setIdeationPrompt}
               onBrainstorm={handleBrainstorm}
               onSaveSectionAnswer={handleSaveSectionAnswer}
+              onAcceptAction={handleAcceptAction}
             />
           ) : null}
         </aside>
@@ -377,19 +404,29 @@ function PlanDetail({
   ideationSessions,
   brainstorming,
   sectionSaving,
+  actionSaving,
+  capabilities,
   onIdeationPromptChange,
   onBrainstorm,
   onSaveSectionAnswer,
+  onAcceptAction,
 }: {
   plan: ProjectPlan;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
   brainstorming: boolean;
   sectionSaving: string | null;
+  actionSaving: string | null;
+  capabilities: ProviderCapabilitySnapshot[];
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
   onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
+  onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
 }) {
+  const visibleCapabilities = plan.providerCapabilities.length > 0
+    ? plan.providerCapabilities
+    : capabilities.slice(0, 4);
+
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
       <div>
@@ -445,8 +482,49 @@ function PlanDetail({
             <div>
               <strong>{lane.label}</strong>
               <span>{lane.brief}</span>
+              {lane.runbook.length > 0 ? (
+                <small>{lane.runbook.slice(0, 2).join(' · ')}</small>
+              ) : null}
             </div>
             <small>{lane.mode} · {lane.status}{lane.dependsOn.length ? ` · after ${lane.dependsOn.join(', ')}` : ''}</small>
+          </article>
+        ))}
+      </div>
+      <div className="planning-view__runtime">
+        <h3>Runtime path</h3>
+        <p>{plan.runtimePlan.summary}</p>
+        <div>
+          <span>{plan.runtimePlan.recommended}</span>
+          <span>{plan.runtimePlan.requiredEnv.slice(0, 4).join(', ')}</span>
+        </div>
+      </div>
+      <div className="planning-view__actions">
+        <h3>Execution actions</h3>
+        {plan.executionActions.map((action) => (
+          <article key={action.id} className="planning-view__action">
+            <div>
+              <strong>{action.label}</strong>
+              <span>{action.status} · {action.requiresConfirmation ? 'confirmation required' : 'open'}</span>
+            </div>
+            {action.command ? <code>{action.command}</code> : null}
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={actionSaving === action.id || action.status === 'accepted' || action.status === 'completed'}
+              onClick={() => onAcceptAction(action.id)}
+            >
+              {actionSaving === action.id ? 'Accepting...' : action.status === 'accepted' ? 'Accepted' : 'Accept action'}
+            </button>
+          </article>
+        ))}
+      </div>
+      <div className="planning-view__capabilities">
+        <h3>Provider snapshots</h3>
+        {visibleCapabilities.map((snapshot) => (
+          <article key={`${snapshot.toolId}-${snapshot.sourceUrl}`} className="planning-view__capability">
+            <strong>{snapshot.label}</strong>
+            <span>Checked {snapshot.checkedAt}</span>
+            <p>{snapshot.planningImplications[0]}</p>
           </article>
         ))}
       </div>

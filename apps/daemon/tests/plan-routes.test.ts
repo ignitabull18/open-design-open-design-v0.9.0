@@ -59,6 +59,7 @@ describe('planning routes', () => {
     const baseUrl = await startPlanServer();
 
     const response = await jsonFetch(`${baseUrl}/api/planning/tools`);
+    const capabilities = await jsonFetch(`${baseUrl}/api/planning/capabilities`);
 
     expect(response.status).toBe(200);
     expect(response.body.tools).toEqual(expect.arrayContaining([
@@ -72,6 +73,22 @@ describe('planning routes', () => {
     const ids = response.body.tools.map((tool: { id: string }) => tool.id);
     expect(ids.filter((id: string) => id === 'cloudflare')).toHaveLength(0);
     expect(ids.filter((id: string) => id === 'supabase')).toHaveLength(0);
+    expect(capabilities.status).toBe(200);
+    expect(capabilities.body.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'cloudflare-hosting',
+        checkedAt: '2026-06-04',
+        planningImplications: expect.arrayContaining([
+          expect.stringContaining('Cloudflare AI routing explicit'),
+        ]),
+      }),
+      expect.objectContaining({
+        toolId: 'trigger-dev',
+        capabilities: expect.arrayContaining([
+          expect.stringContaining('Run Engine 2'),
+        ]),
+      }),
+    ]));
   });
 
   it('creates a persisted Better-T-Stack scaffold plan from a project brief', async () => {
@@ -130,8 +147,20 @@ describe('planning routes', () => {
       primaryStore: 'supabase',
     });
     expect(response.body.plan.agentLanes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'database', mode: 'parallel', status: 'ready' }),
-      expect.objectContaining({ id: 'workflows', mode: 'parallel', toolIds: expect.arrayContaining(['trigger-dev']) }),
+      expect.objectContaining({
+        id: 'database',
+        sectionId: 'database',
+        mode: 'parallel',
+        status: 'ready',
+        runbook: expect.arrayContaining([expect.stringContaining('entities')]),
+        parallelWith: expect.arrayContaining(['workflows', 'integrations']),
+      }),
+      expect.objectContaining({
+        id: 'workflows',
+        sectionId: 'workflows',
+        mode: 'parallel',
+        toolIds: expect.arrayContaining(['trigger-dev']),
+      }),
     ]));
     expect(response.body.plan.ideationQuestions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'data-source-of-truth', laneId: 'database' }),
@@ -173,6 +202,29 @@ describe('planning routes', () => {
     expect(response.body.plan.scaffold.postScaffoldTasks).toEqual(expect.arrayContaining([
       expect.stringContaining('Apply planning section decisions before execution'),
     ]));
+    expect(response.body.plan.providerCapabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'cloudflare-hosting' }),
+      expect.objectContaining({ toolId: 'supabase-database' }),
+      expect.objectContaining({ toolId: 'trigger-dev' }),
+    ]));
+    expect(response.body.plan.runtimePlan).toMatchObject({
+      recommended: 'node-daemon',
+    });
+    expect(response.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'scaffold',
+        requiresConfirmation: true,
+        command: expect.stringContaining('better-t-stack'),
+      }),
+      expect.objectContaining({
+        id: 'repo-create',
+        command: expect.stringContaining('gh repo create'),
+      }),
+      expect.objectContaining({
+        id: 'deploy-runtime',
+        status: 'ready',
+      }),
+    ]));
     expect(response.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'wanted' }),
       expect.objectContaining({ toolId: 'vercel', status: 'wanted' }),
@@ -185,6 +237,22 @@ describe('planning routes', () => {
     const list = await jsonFetch(`${baseUrl}/api/plans`);
     expect(list.body.plans).toHaveLength(1);
     expect(list.body.plans[0].id).toBe(response.body.plan.id);
+
+    const blocked = await jsonFetch(`${baseUrl}/api/plans/${response.body.plan.id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ actionId: 'scaffold' }),
+    });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toBe('confirmation required');
+
+    const accepted = await jsonFetch(`${baseUrl}/api/plans/${response.body.plan.id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ actionId: 'scaffold', confirmed: true }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scaffold', status: 'accepted' }),
+    ]));
   });
 
   it('updates stack decisions and regenerates the scaffold command', async () => {
@@ -225,6 +293,9 @@ describe('planning routes', () => {
     expect(updated.body.plan.databaseDesign).toMatchObject({
       mode: 'realtime',
       primaryStore: 'convex',
+    });
+    expect(updated.body.plan.runtimePlan).toMatchObject({
+      recommended: 'coolify-daemon',
     });
 
     const answered = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}`, {
