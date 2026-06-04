@@ -219,6 +219,8 @@
 
 .planning-view__plan-row strong,
 .planning-view__detail h2,
+.planning-view__decision-grid h3,
+.planning-view__lanes h3,
 .planning-view__task-list h3,
 .planning-view__ideation h3,
 .planning-view__ideas h3 {
@@ -241,6 +243,8 @@
 }
 
 .planning-view__detail h2,
+.planning-view__decision-grid h3,
+.planning-view__lanes h3,
 .planning-view__task-list h3,
 .planning-view__ideation h3,
 .planning-view__ideas h3 {
@@ -267,6 +271,89 @@
   font-size: 12px;
   line-height: 1.55;
   white-space: pre;
+}
+
+.planning-view__decision-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(220px, 0.85fr);
+  gap: 10px;
+}
+
+.planning-view__decision-grid > section,
+.planning-view__lanes {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__question-list,
+.planning-view__lanes {
+  display: grid;
+  gap: 8px;
+}
+
+.planning-view__question,
+.planning-view__lane {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.planning-view__lane {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.planning-view__lane div {
+  display: grid;
+  gap: 3px;
+}
+
+.planning-view__question strong,
+.planning-view__lane strong {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--text-strong);
+}
+
+.planning-view__question span,
+.planning-view__question small,
+.planning-view__lane span,
+.planning-view__lane small {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.planning-view__database {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.planning-view__database span {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.planning-view__decision-grid ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 .planning-view__task-list ul {
@@ -363,6 +450,11 @@
 @media (max-width: 680px) {
   .planning-view__hero {
     flex-direction: column;
+  }
+
+  .planning-view__decision-grid,
+  .planning-view__lane {
+    grid-template-columns: 1fr;
   }
 
   .planning-view__stack-grid {

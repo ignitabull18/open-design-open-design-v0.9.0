@@ -5,6 +5,7 @@ export type PlanningToolKind =
   | 'payments'
   | 'project-management'
   | 'ai-runtime'
+  | 'workflow-automation'
   | 'secrets'
   | 'integrations'
   | 'memory'
@@ -30,6 +31,7 @@ export type PlanningToolId =
   | 'cloudflare-ai-gateway'
   | 'ollama-cloud'
   | 'openrouter'
+  | 'trigger-dev'
   | 'onepassword'
   | 'composio'
   | 'supermemory'
@@ -70,6 +72,36 @@ export interface ProjectToolConnection {
   notes?: string;
 }
 
+export interface DatabaseDesignPlan {
+  mode: 'transactional' | 'realtime' | 'edge' | 'self-hosted' | 'hybrid';
+  primaryStore: 'supabase' | 'convex' | 'postgres-coolify' | 'cloudflare-d1' | 'none';
+  entities: string[];
+  relationships: string[];
+  accessPatterns: string[];
+  migrations: string[];
+  riskNotes: string[];
+}
+
+export interface PlanningAgentLane {
+  id: 'product' | 'architecture' | 'database' | 'workflows' | 'integrations' | 'delivery';
+  label: string;
+  mode: 'sequential' | 'parallel';
+  status: 'not_started' | 'ready' | 'blocked';
+  dependsOn: PlanningAgentLane['id'][];
+  toolIds: PlanningToolId[];
+  brief: string;
+  outputs: string[];
+}
+
+export interface IdeationQuestion {
+  id: string;
+  laneId: PlanningAgentLane['id'];
+  question: string;
+  whyItMatters: string;
+  answerType: 'choice' | 'freeform' | 'checklist';
+  options?: string[];
+}
+
 export interface ScaffoldPlan {
   engine: 'better-t-stack' | 'custom';
   command: string;
@@ -98,6 +130,9 @@ export interface ProjectPlan {
   intent: ProjectIntentBrief;
   selectedTools: ProjectToolConnection[];
   stack: ProjectStackDecision;
+  databaseDesign: DatabaseDesignPlan;
+  agentLanes: PlanningAgentLane[];
+  ideationQuestions: IdeationQuestion[];
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];

@@ -18,6 +18,7 @@ The first supported stack catalog is intentionally opinionated around the user's
 | Payments | Stripe |
 | Project management | Linear, GitHub Issues, Google Docs |
 | AI/runtime | Codex, Cloudflare AI Gateway, Ollama Cloud, OpenRouter |
+| Workflow automation | Trigger.dev |
 | Secrets | 1Password |
 | Integrations | Composio.dev |
 | AI memory | Supermemory.ai |
@@ -44,12 +45,19 @@ Use current primary-source docs and changelogs when changing scaffold defaults o
 - Composio changelog: `https://docs.composio.dev/docs/changelog/2026/02/01`
 - Supermemory developer changelog: `https://supermemory.ai/docs/changelog/developer-platform`
 - OpenRouter changelog: `https://openrouter.ai/docs/changelog`
+- Trigger.dev changelog: `https://trigger.dev/changelog/`
+
+Recent planning implications from the current primary sources:
+
+- Trigger.dev should be treated as the long-running workflow lane because v4 adds AI coding assistant skills, Vercel integration, Supabase env var sync, task TTL defaults, MCP tooling, metrics/query dashboards, and bidirectional input streams.
+- Composio planning must store session and connected-account assumptions because current releases emphasize `composio.use()` session reuse, session updates, connected account arrays, webhook subscriptions, V3 payloads, and MCP API-key enforcement.
+- Cloudflare and Supabase capability choices should stay source-backed and refreshable because Workers/AI Gateway/Access/D1/R2/Queues/Workflows and Supabase platform defaults change quickly enough to affect architecture decisions.
 
 ## Current architecture
 
 The shared contract lives in `packages/contracts/src/api/plans.ts`.
 
-The daemon persists plans in SQLite through the `plans` table. It stores JSON for intent, selected tools, stack, scaffold, repo, and delivery so the plan remains inspectable and can be regenerated when stack fields change.
+The daemon persists plans in SQLite through the `plans` table. It stores JSON for intent, selected tools, stack, database design, planning agent lanes, pointed ideation questions, scaffold, repo, and delivery so the plan remains inspectable and can be regenerated when stack fields change.
 
 The daemon route layer owns:
 
@@ -90,7 +98,17 @@ Current defaults:
 - auth: Better Auth when selected, otherwise no Better-T-Stack auth flag
 - addons: Turborepo, MCP, skills, Ultracite, and Fumadocs for Next.js
 
-Requirements outside Better-T-Stack's native command flags stay as post-scaffold tasks. Stripe, 1Password secret handoff, Cloudflare AI Gateway routing, Ollama Cloud/OpenRouter providers, Composio, Supermemory, Linear/GitHub Issues/Google Docs artifacts, and Coolify/Hostinger deployment wiring are tracked this way.
+Requirements outside Better-T-Stack's native command flags stay as post-scaffold tasks. Stripe, 1Password secret handoff, Cloudflare AI Gateway routing, Ollama Cloud/OpenRouter providers, Trigger.dev, Composio, Supermemory, Linear/GitHub Issues/Google Docs artifacts, and Coolify/Hostinger deployment wiring are tracked this way.
+
+## Planning model
+
+Plans should support both logical sequencing and parallel work:
+
+- Sequential lanes: product brief first, architecture after product, delivery after architecture/database/workflows/integrations.
+- Parallel lanes: database design, workflow automation, and integrations can start once the product brief is clear.
+- Database design belongs in the plan before scaffold execution. It captures primary store, data mode, core entities, relationships, access patterns, migrations, and risk notes.
+- Ideation should ask pointed questions, not just generate ideas. Questions must cover required user workflows, data source of truth, long-running workflows, Cloudflare feature fit, integration account ownership, and secret ownership.
+- Provider capability awareness must be tied to current source URLs and refreshed when changing defaults or generating execution tasks.
 
 ## Implementation phases
 
@@ -112,6 +130,9 @@ Requirements outside Better-T-Stack's native command flags stay as post-scaffold
 
 - Add brainstorm sessions attached to a plan.
 - Store brainstorm output as plan ideation sessions with a prompt, summary, suggested directions, stack deltas, tool ids, and next steps.
+- Surface pointed ideation questions from the plan so the user can answer feature, database, workflow, Cloudflare, integration, and secret-ownership decisions before scaffold execution.
+- Show planning agent lanes that can run sequentially or in parallel and record each lane's expected outputs.
+- Generate a database design draft from the current stack choice.
 - Ask which tools the user wants to connect, then mark tools as `wanted`, `connected`, `deferred`, or `blocked`.
 - Generate Linear issue drafts, GitHub issue drafts, and Google Docs PRD outlines from the accepted plan.
 

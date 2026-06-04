@@ -219,6 +219,9 @@ function migrate(db: SqliteDb): void {
       intent_json TEXT NOT NULL,
       selected_tools_json TEXT NOT NULL,
       stack_json TEXT NOT NULL,
+      database_design_json TEXT NOT NULL DEFAULT '{}',
+      agent_lanes_json TEXT NOT NULL DEFAULT '[]',
+      ideation_questions_json TEXT NOT NULL DEFAULT '[]',
       scaffold_json TEXT NOT NULL,
       repo_json TEXT NOT NULL,
       delivery_json TEXT NOT NULL,
@@ -306,6 +309,16 @@ function migrate(db: SqliteDb): void {
   }
   if (!deploymentCols.some((c: DbRow) => c.name === 'provider_metadata_json')) {
     db.exec(`ALTER TABLE deployments ADD COLUMN provider_metadata_json TEXT`);
+  }
+  const planCols = db.prepare(`PRAGMA table_info(plans)`).all() as DbRow[];
+  if (!planCols.some((c: DbRow) => c.name === 'database_design_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN database_design_json TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'agent_lanes_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN agent_lanes_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'ideation_questions_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN ideation_questions_json TEXT NOT NULL DEFAULT '[]'`);
   }
   // schedule_json holds the full RoutineSchedule object (kind discriminator
   // plus kind-specific fields like time/timezone/weekday). The legacy
@@ -1482,6 +1495,9 @@ const PLAN_COLS = `id, name,
   intent_json AS intentJson,
   selected_tools_json AS selectedToolsJson,
   stack_json AS stackJson,
+  database_design_json AS databaseDesignJson,
+  agent_lanes_json AS agentLanesJson,
+  ideation_questions_json AS ideationQuestionsJson,
   scaffold_json AS scaffoldJson,
   repo_json AS repoJson,
   delivery_json AS deliveryJson,
@@ -1505,15 +1521,19 @@ export function getPlan(db: SqliteDb, id: string) {
 export function insertPlan(db: SqliteDb, plan: DbRow) {
   db.prepare(
     `INSERT INTO plans
-       (id, name, intent_json, selected_tools_json, stack_json, scaffold_json,
-        repo_json, delivery_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, intent_json, selected_tools_json, stack_json,
+        database_design_json, agent_lanes_json, ideation_questions_json,
+        scaffold_json, repo_json, delivery_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     plan.id,
     plan.name,
     JSON.stringify(plan.intent ?? {}),
     JSON.stringify(plan.selectedTools ?? []),
     JSON.stringify(plan.stack ?? {}),
+    JSON.stringify(plan.databaseDesign ?? {}),
+    JSON.stringify(plan.agentLanes ?? []),
+    JSON.stringify(plan.ideationQuestions ?? []),
     JSON.stringify(plan.scaffold ?? {}),
     JSON.stringify(plan.repo ?? {}),
     JSON.stringify(plan.delivery ?? []),
@@ -1539,6 +1559,9 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
             intent_json = ?,
             selected_tools_json = ?,
             stack_json = ?,
+            database_design_json = ?,
+            agent_lanes_json = ?,
+            ideation_questions_json = ?,
             scaffold_json = ?,
             repo_json = ?,
             delivery_json = ?,
@@ -1549,6 +1572,9 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
     JSON.stringify(merged.intent ?? {}),
     JSON.stringify(merged.selectedTools ?? []),
     JSON.stringify(merged.stack ?? {}),
+    JSON.stringify(merged.databaseDesign ?? {}),
+    JSON.stringify(merged.agentLanes ?? []),
+    JSON.stringify(merged.ideationQuestions ?? []),
     JSON.stringify(merged.scaffold ?? {}),
     JSON.stringify(merged.repo ?? {}),
     JSON.stringify(merged.delivery ?? []),
@@ -1570,6 +1596,9 @@ function normalizePlan(row: DbRow) {
     intent: parseJsonObject(row.intentJson, {}),
     selectedTools: parseJsonObject(row.selectedToolsJson, []),
     stack: parseJsonObject(row.stackJson, {}),
+    databaseDesign: parseJsonObject(row.databaseDesignJson, {}),
+    agentLanes: parseJsonObject(row.agentLanesJson, []),
+    ideationQuestions: parseJsonObject(row.ideationQuestionsJson, []),
     scaffold: parseJsonObject(row.scaffoldJson, {}),
     repo: parseJsonObject(row.repoJson, {}),
     delivery: parseJsonObject(row.deliveryJson, []),

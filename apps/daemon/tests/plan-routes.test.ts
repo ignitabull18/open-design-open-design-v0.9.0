@@ -67,6 +67,7 @@ describe('planning routes', () => {
       expect.objectContaining({ id: 'cloudflare-access', kind: 'authentication' }),
       expect.objectContaining({ id: 'supabase-database', kind: 'database' }),
       expect.objectContaining({ id: 'supabase-auth', kind: 'authentication' }),
+      expect.objectContaining({ id: 'trigger-dev', kind: 'workflow-automation' }),
     ]));
     const ids = response.body.tools.map((tool: { id: string }) => tool.id);
     expect(ids.filter((id: string) => id === 'cloudflare')).toHaveLength(0);
@@ -114,10 +115,24 @@ describe('planning routes', () => {
     expect(response.body.plan.scaffold.command).toContain('--database postgres');
     expect(response.body.plan.scaffold.command).toContain('--auth better-auth');
     expect(response.body.plan.scaffold.docsSources).toContain('https://www.better-t-stack.dev/docs');
+    expect(response.body.plan.scaffold.docsSources).toContain('https://trigger.dev/changelog/');
+    expect(response.body.plan.databaseDesign).toMatchObject({
+      mode: 'transactional',
+      primaryStore: 'supabase',
+    });
+    expect(response.body.plan.agentLanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'database', mode: 'parallel', status: 'ready' }),
+      expect.objectContaining({ id: 'workflows', mode: 'parallel', toolIds: expect.arrayContaining(['trigger-dev']) }),
+    ]));
+    expect(response.body.plan.ideationQuestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'data-source-of-truth', laneId: 'database' }),
+      expect.objectContaining({ id: 'workflow-duration', laneId: 'workflows' }),
+    ]));
     expect(response.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'wanted' }),
       expect.objectContaining({ toolId: 'vercel', status: 'wanted' }),
       expect.objectContaining({ toolId: 'supabase-database', status: 'wanted' }),
+      expect.objectContaining({ toolId: 'trigger-dev', status: 'wanted' }),
       expect.objectContaining({ toolId: 'stripe', status: 'wanted' }),
       expect.objectContaining({ toolId: 'onepassword', status: 'wanted' }),
     ]));
@@ -160,6 +175,11 @@ describe('planning routes', () => {
     expect(updated.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'coolify' }),
       expect.objectContaining({ toolId: 'convex' }),
+      expect.objectContaining({ toolId: 'trigger-dev' }),
     ]));
+    expect(updated.body.plan.databaseDesign).toMatchObject({
+      mode: 'realtime',
+      primaryStore: 'convex',
+    });
   });
 });

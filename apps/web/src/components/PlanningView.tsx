@@ -157,8 +157,9 @@ export function PlanningView() {
           <p className="planning-view__kicker">Project planning</p>
           <h1 id="planning-title" className="entry-section__title">Planning</h1>
           <p className="planning-view__lede">
-            Store the project brief, choose the stack, generate the Better-T-Stack scaffold
-            command, and keep GitHub plus deployment intent attached to the plan.
+            Store the project brief, choose the stack, design the database, split the work into
+            agent lanes, generate the Better-T-Stack scaffold command, and keep GitHub plus
+            deployment intent attached to the plan.
           </p>
         </div>
         <div className="planning-view__badge" aria-hidden="true">
@@ -293,7 +294,7 @@ export function PlanningView() {
                 onClick={() => setSelectedId(plan.id)}
               >
                 <strong>{plan.name}</strong>
-                <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}</span>
+          <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}</span>
               </button>
             ))}
           </div>
@@ -360,6 +361,44 @@ function PlanDetail({
         <p>{plan.intent.purpose}</p>
       </div>
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
+      <div className="planning-view__decision-grid">
+        <section>
+          <h3>Pointed questions</h3>
+          <div className="planning-view__question-list">
+            {plan.ideationQuestions.map((question) => (
+              <article key={question.id} className="planning-view__question">
+                <strong>{question.question}</strong>
+                <span>{question.whyItMatters}</span>
+                {question.options?.length ? <small>{question.options.join(' · ')}</small> : null}
+              </article>
+            ))}
+          </div>
+        </section>
+        <section>
+          <h3>Database design</h3>
+          <div className="planning-view__database">
+            <span>{plan.databaseDesign.mode}</span>
+            <span>{plan.databaseDesign.primaryStore}</span>
+          </div>
+          <ul>
+            {plan.databaseDesign.entities.slice(0, 6).map((entity) => (
+              <li key={entity}>{entity}</li>
+            ))}
+          </ul>
+        </section>
+      </div>
+      <div className="planning-view__lanes">
+        <h3>Agent lanes</h3>
+        {plan.agentLanes.map((lane) => (
+          <article key={lane.id} className="planning-view__lane">
+            <div>
+              <strong>{lane.label}</strong>
+              <span>{lane.brief}</span>
+            </div>
+            <small>{lane.mode} · {lane.status}{lane.dependsOn.length ? ` · after ${lane.dependsOn.join(', ')}` : ''}</small>
+          </article>
+        ))}
+      </div>
       <div className="planning-view__task-list">
         <h3>Post-scaffold tasks</h3>
         <ul>

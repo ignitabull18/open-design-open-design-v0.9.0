@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type {
   CreateProjectIdeationRequest,
   CreateProjectPlanRequest,
+  DatabaseDesignPlan,
   DeliveryPlan,
+  IdeationQuestion,
+  PlanningAgentLane,
   PlanningToolOption,
   ProjectIdeaOption,
   ProjectIdeationSession,
@@ -58,6 +61,7 @@ const APPROVED_TOOLS: PlanningToolOption[] = [
   { id: 'cloudflare-ai-gateway', kind: 'ai-runtime', label: 'Cloudflare AI Gateway', notes: 'Unified AI routing, observability, caching, and guardrails.' },
   { id: 'ollama-cloud', kind: 'ai-runtime', label: 'Ollama Cloud', notes: 'OpenAI-compatible hosted Ollama model endpoint.' },
   { id: 'openrouter', kind: 'ai-runtime', label: 'OpenRouter', notes: 'Model routing and fallback provider.' },
+  { id: 'trigger-dev', kind: 'workflow-automation', label: 'Trigger.dev', notes: 'Long-running workflows, background jobs, scheduled work, and durable task runs.' },
   { id: 'onepassword', kind: 'secrets', label: '1Password', notes: 'Default source of truth for secrets and env handoff.' },
   { id: 'composio', kind: 'integrations', label: 'Composio.dev', notes: 'Integration/tool execution layer for external SaaS APIs.' },
   { id: 'supermemory', kind: 'memory', label: 'Supermemory.ai', notes: 'AI memory provider for project and agent context.' },
@@ -87,6 +91,7 @@ const SOURCE_URLS = [
   'https://docs.composio.dev/docs/changelog/2026/02/01',
   'https://supermemory.ai/docs/changelog/developer-platform',
   'https://openrouter.ai/docs/changelog',
+  'https://trigger.dev/changelog/',
 ];
 
 export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
@@ -234,6 +239,9 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     intent: input.intent,
     selectedTools,
     stack,
+    databaseDesign: buildDatabaseDesign(stack),
+    agentLanes: buildAgentLanes(stack, selectedTools),
+    ideationQuestions: buildIdeationQuestions(stack),
     scaffold: buildScaffoldPlan(input.name, stack, selectedTools),
     repo: {
       ...repoRest,
@@ -272,6 +280,7 @@ function buildScaffoldPlan(
     'Add Stripe manually because Better-T-Stack currently advertises Polar, not Stripe, as its native payments flag.',
     'Wire Cloudflare AI Gateway, Ollama Cloud, and OpenRouter as explicit model-provider config rather than hardcoded model calls.',
     'Wire Composio.dev as the integration/tool execution layer and keep toolkit slugs in config.',
+    'Wire Trigger.dev for long-running workflows, scheduled jobs, retries, and provider sync tasks after env sources are settled.',
     'Wire Supermemory.ai as project memory only after API key availability is verified.',
     'Generate Linear/GitHub Issues/Google Docs planning artifacts from the accepted plan.',
   ];
@@ -293,6 +302,7 @@ function buildIdeationSession(plan: ProjectPlan, prompt: string): ProjectIdeatio
   const options = buildIdeaOptions(plan, prompt);
   const summary = [
     `Explored ${options.length} directions for ${plan.name}.`,
+    `Next questions to resolve: ${plan.ideationQuestions.slice(0, 3).map((question) => question.question).join(' ')}`,
     'Each direction keeps Better-T-Stack as the scaffold baseline and calls out the tools that need connection or follow-up wiring.',
   ].join(' ');
   return {
@@ -330,6 +340,7 @@ function buildIdeaOptions(plan: ProjectPlan, prompt: string): ProjectIdeaOption[
       },
       toolIds: ['github', 'cloudflare-hosting', 'supabase-database', 'stripe', 'onepassword', 'cloudflare-ai-gateway', 'openrouter'],
       nextSteps: [
+        'Answer the database ownership and workflow-duration questions before scaffolding.',
         'Accept the stack and review the generated Better-T-Stack command.',
         'Create the GitHub repo after gh auth is available.',
         'Wire 1Password-backed env files before deploying to Cloudflare.',
@@ -352,8 +363,9 @@ function buildIdeaOptions(plan: ProjectPlan, prompt: string): ProjectIdeaOption[
         auth: 'cloudflare-access',
         hosting: uniqueHosting(['coolify', 'hostinger']),
       },
-      toolIds: ['github', 'coolify', 'hostinger', 'postgres-coolify', 'cloudflare-access', 'onepassword', 'composio'],
+      toolIds: ['github', 'coolify', 'hostinger', 'postgres-coolify', 'cloudflare-access', 'onepassword', 'composio', 'trigger-dev'],
       nextSteps: [
+        'Decide which workflows belong in Trigger.dev versus Coolify cron or Cloudflare Workflows.',
         'Provision the Coolify app and Postgres service after scaffold validation.',
         'Put Cloudflare Access in front of admin routes.',
         'Track Hostinger DNS and VPS handoff separately from app deploy status.',
@@ -376,8 +388,9 @@ function buildIdeaOptions(plan: ProjectPlan, prompt: string): ProjectIdeaOption[
         auth: 'better-auth',
         hosting: uniqueHosting([...(baseStack.hosting ?? []), 'vercel']),
       },
-      toolIds: ['github', 'convex', 'vercel', 'better-auth', 'linear', 'github-issues', 'google-docs', 'supermemory'],
+      toolIds: ['github', 'convex', 'vercel', 'better-auth', 'trigger-dev', 'linear', 'github-issues', 'google-docs', 'supermemory'],
       nextSteps: [
+        'Separate realtime product state from background workflow execution.',
         'Validate Better-T-Stack flags for the Convex/TanStack direction before scaffolding.',
         'Generate Linear and GitHub issue drafts from the accepted plan.',
         'Attach Supermemory only after the API key source is confirmed in 1Password.',
@@ -386,6 +399,179 @@ function buildIdeaOptions(plan: ProjectPlan, prompt: string): ProjectIdeaOption[
   }
 
   return options.slice(0, 3);
+}
+
+function buildDatabaseDesign(stack: ProjectStackDecision): DatabaseDesignPlan {
+  const primaryStore = stack.database ?? 'supabase';
+  const mode: DatabaseDesignPlan['mode'] =
+    primaryStore === 'convex'
+      ? 'realtime'
+      : primaryStore === 'cloudflare-d1'
+        ? 'edge'
+        : primaryStore === 'postgres-coolify'
+          ? 'self-hosted'
+          : primaryStore === 'none'
+            ? 'hybrid'
+            : 'transactional';
+  return {
+    mode,
+    primaryStore,
+    entities: [
+      'users',
+      'organizations',
+      'projects',
+      'plans',
+      'tasks',
+      'workflow_runs',
+      'integration_connections',
+      'audit_events',
+    ],
+    relationships: [
+      'organizations own projects and invite users through membership records',
+      'projects own plans, database designs, workflow runs, and delivery targets',
+      'integration connections map provider accounts to projects without storing provider secrets in app tables',
+    ],
+    accessPatterns: [
+      'fetch project dashboard by organization and latest plan status',
+      'list workflow runs by project, status, and updated time',
+      'load integration connection health by provider before agent execution',
+      'append audit events for scaffold, repository, deployment, and secret handoff actions',
+    ],
+    migrations: [
+      'create tenant tables before provider-specific tables',
+      'add row-level ownership policies before exposing project data through APIs',
+      'stage workflow run tables before enabling Trigger.dev or Cloudflare workflow execution',
+    ],
+    riskNotes: [
+      primaryStore === 'cloudflare-d1'
+        ? 'D1 is a strong edge fit, but design around SQLite limits and keep large logs in R2 or Postgres.'
+        : 'Keep large workflow logs and provider payloads out of core transactional tables.',
+      primaryStore === 'convex'
+        ? 'Convex is a realtime product-state fit; long-running side effects still need a workflow runner such as Trigger.dev.'
+        : 'Decide which records need realtime sync before adding realtime subscriptions.',
+    ],
+  };
+}
+
+function buildAgentLanes(stack: ProjectStackDecision, selectedTools: ProjectToolConnection[]): PlanningAgentLane[] {
+  const toolIds = new Set(selectedTools.map((tool) => tool.toolId));
+  const databaseTools = selectedTools
+    .map((tool) => tool.toolId)
+    .filter((toolId) => ['supabase-database', 'cloudflare-data', 'convex', 'postgres-coolify'].includes(toolId));
+  const deliveryTools = selectedTools
+    .map((tool) => tool.toolId)
+    .filter((toolId) => ['cloudflare-hosting', 'vercel', 'coolify', 'hostinger'].includes(toolId));
+  return [
+    {
+      id: 'product',
+      label: 'Product brief agent',
+      mode: 'sequential',
+      status: 'ready',
+      dependsOn: [],
+      toolIds: ['linear', 'github-issues', 'google-docs'],
+      brief: 'Turn the purpose, audience, constraints, and success criteria into a concrete feature map and acceptance checklist.',
+      outputs: ['feature map', 'success criteria', 'MVP boundary'],
+    },
+    {
+      id: 'architecture',
+      label: 'Stack architecture agent',
+      mode: 'sequential',
+      status: 'ready',
+      dependsOn: ['product'],
+      toolIds: ['github', 'codex', 'cloudflare-ai-gateway', 'openrouter'],
+      brief: 'Choose the frontend, backend, runtime, auth, and scaffold flags from the approved stack catalog.',
+      outputs: ['stack decision', 'Better-T-Stack command', 'provider fit notes'],
+    },
+    {
+      id: 'database',
+      label: 'Database design agent',
+      mode: 'parallel',
+      status: databaseTools.length > 0 ? 'ready' : 'blocked',
+      dependsOn: ['product'],
+      toolIds: databaseTools,
+      brief: `Design the data model for ${stack.database ?? 'the selected database'} including tenancy, access patterns, migrations, and realtime boundaries.`,
+      outputs: ['entity map', 'relationship map', 'migration plan', 'RLS/access notes'],
+    },
+    {
+      id: 'workflows',
+      label: 'Workflow automation agent',
+      mode: 'parallel',
+      status: 'ready',
+      dependsOn: ['product'],
+      toolIds: toolIds.has('trigger-dev') ? ['trigger-dev'] : ['trigger-dev', 'cloudflare-hosting'],
+      brief: 'Separate short request/response actions from long-running workflows, retries, schedules, webhooks, and provider sync jobs.',
+      outputs: ['workflow inventory', 'Trigger.dev task map', 'retry and schedule policy'],
+    },
+    {
+      id: 'integrations',
+      label: 'Integration agent',
+      mode: 'parallel',
+      status: 'ready',
+      dependsOn: ['product'],
+      toolIds: ['composio', 'onepassword', 'supermemory'],
+      brief: 'Map external tools, connected accounts, memory requirements, and secret sources before scaffold execution.',
+      outputs: ['integration matrix', 'secret checklist', 'memory policy'],
+    },
+    {
+      id: 'delivery',
+      label: 'Delivery agent',
+      mode: 'sequential',
+      status: deliveryTools.length > 0 ? 'ready' : 'blocked',
+      dependsOn: ['architecture', 'database', 'workflows', 'integrations'],
+      toolIds: deliveryTools,
+      brief: 'Create the repo, pick deploy targets, and verify preview/live URLs after the scaffold passes local checks.',
+      outputs: ['repo plan', 'deployment plan', 'verification checklist'],
+    },
+  ];
+}
+
+function buildIdeationQuestions(stack: ProjectStackDecision): IdeationQuestion[] {
+  const database = stack.database ?? 'supabase';
+  return [
+    {
+      id: 'feature-scope',
+      laneId: 'product',
+      question: 'Which three user workflows must work before this project is considered useful?',
+      whyItMatters: 'The first workflows decide the scaffold shape, tables, routes, and provider setup order.',
+      answerType: 'checklist',
+    },
+    {
+      id: 'data-source-of-truth',
+      laneId: 'database',
+      question: `Should ${database} be the source of truth for product state, operational logs, or both?`,
+      whyItMatters: 'This controls table design, retention, realtime subscriptions, and where workflow payloads live.',
+      answerType: 'choice',
+      options: ['product state only', 'workflow logs only', 'both', 'split storage by data type'],
+    },
+    {
+      id: 'workflow-duration',
+      laneId: 'workflows',
+      question: 'Which actions can run longer than a single web request or need retries, schedules, or human approval?',
+      whyItMatters: 'Those should be modeled as Trigger.dev or Cloudflare workflow tasks instead of normal API handlers.',
+      answerType: 'checklist',
+    },
+    {
+      id: 'cloudflare-fit',
+      laneId: 'architecture',
+      question: 'Which Cloudflare capabilities are required: Workers, Pages, D1, R2, Queues, Workflows, AI Gateway, Access, or Vectorize?',
+      whyItMatters: 'Cloudflare feature fit decides runtime, data placement, auth boundary, and deployment topology.',
+      answerType: 'checklist',
+    },
+    {
+      id: 'integration-accounts',
+      laneId: 'integrations',
+      question: 'Which connected accounts should the app act through, and which need per-user versus workspace-level auth?',
+      whyItMatters: 'Composio session reuse, account mapping, and webhook security depend on this decision.',
+      answerType: 'freeform',
+    },
+    {
+      id: 'secret-ownership',
+      laneId: 'delivery',
+      question: 'Which secrets are user-provided, project-provided, or environment-provided through 1Password?',
+      whyItMatters: 'Secret ownership decides what can be committed, what belongs in env files, and what must be configured before deploy.',
+      answerType: 'checklist',
+    },
+  ];
 }
 
 function uniqueHosting(values: Array<NonNullable<ProjectStackDecision['hosting']>[number]>): NonNullable<ProjectStackDecision['hosting']> {
@@ -423,7 +609,7 @@ function defaultAddons(stack: ProjectStackDecision): string[] {
 }
 
 function defaultToolConnections(stack: ProjectStackDecision): ProjectToolConnection[] {
-  const ids = new Set(['github', 'stripe', 'onepassword', 'codex', 'composio', 'supermemory']);
+  const ids = new Set(['github', 'stripe', 'onepassword', 'codex', 'composio', 'supermemory', 'trigger-dev']);
   for (const host of stack.hosting ?? []) ids.add(host === 'cloudflare' ? 'cloudflare-hosting' : host);
   if (stack.database === 'supabase') ids.add('supabase-database');
   if (stack.database === 'convex') ids.add('convex');
