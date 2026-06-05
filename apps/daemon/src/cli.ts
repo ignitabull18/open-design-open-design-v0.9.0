@@ -187,6 +187,7 @@ const PLAN_STRING_FLAGS = new Set([
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
+  'kind', 'title', 'content-file',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4650,6 +4651,8 @@ async function runPlan(args) {
                                                  Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
+  od plan artifact <id> --kind <kind> --title <title> --content-file <path|->
+                                                 Create one plan execution artifact.
   od plan artifacts <id> [--json]                List generated plan execution artifacts.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
@@ -4993,6 +4996,33 @@ Common options:
       for (const artifact of artifacts) {
         console.log(`${artifact.id}\t${artifact.kind}\t${artifact.title}`);
       }
+      return;
+    }
+    case 'artifact': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const kind = typeof flags.kind === 'string' ? flags.kind.trim() : '';
+      const title = typeof flags.title === 'string' ? flags.title.trim() : '';
+      if (!id || !kind || !title || !flags['content-file']) {
+        console.error('Usage: od plan artifact <id> --kind <kind> --title <title> --content-file <path|-> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/artifacts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind,
+          title,
+          content: readTextFlag(flags['content-file'], '--content-file'),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/artifacts failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] artifact ${data.artifact?.id ?? '-'} ${data.artifact?.kind ?? kind}`);
+      console.log(data.artifact?.title ?? title);
       return;
     }
     case 'section': {

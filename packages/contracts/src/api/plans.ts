@@ -331,6 +331,12 @@ export interface CheckProjectPlanToolRequest {
   toolId: PlanningToolId;
 }
 
+export interface CreateProjectPlanArtifactRequest {
+  kind: PlanningExecutionArtifact['kind'];
+  title: string;
+  content: string;
+}
+
 export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
@@ -360,6 +366,11 @@ export interface ProjectPlanExecutionRunResponse {
   plan: ProjectPlan;
   run: PlanningExecutionRun;
   artifacts: PlanningExecutionArtifact[];
+}
+
+export interface ProjectPlanArtifactResponse {
+  plan: ProjectPlan;
+  artifact: PlanningExecutionArtifact;
 }
 
 export interface ProjectPlanToolCheckResponse {

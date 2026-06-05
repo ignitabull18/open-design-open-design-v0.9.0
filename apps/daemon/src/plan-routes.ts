@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type {
   CheckProjectPlanToolRequest,
+  CreateProjectPlanArtifactRequest,
   CreateProjectIdeationRequest,
   ExecuteProjectPlanActionRequest,
   CreateProjectPlanRequest,
@@ -1060,6 +1061,31 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/artifacts', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeCreateArtifactBody(req.body || {});
+      const artifact: PlanningExecutionArtifact = {
+        id: `plan-artifact-${randomUUID()}`,
+        planId: existing.id,
+        kind: body.kind,
+        title: body.title,
+        content: body.content,
+        createdAt: Date.now(),
+      };
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        executionArtifacts: [...(existing.executionArtifacts ?? []), artifact],
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({ plan: updated, artifact });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.patch('/api/plans/:id', (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1175,6 +1201,37 @@ function normalizeActionExecutionBody(
 
 function isPlanningExecutionActionId(value: string): value is PlanningExecutionAction['id'] {
   return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'provider-setup', 'project-management', 'database-materialize', 'database-migrate', 'design-materialize'].includes(value);
+}
+
+function normalizeCreateArtifactBody(body: Record<string, unknown>): CreateProjectPlanArtifactRequest {
+  const kind = cleanRequiredString(body.kind, 'kind') as PlanningExecutionArtifact['kind'];
+  if (!isPlanningExecutionArtifactKind(kind)) {
+    throw new Error('kind must be a known planning execution artifact kind');
+  }
+  return {
+    kind,
+    title: cleanRequiredString(body.title, 'title'),
+    content: cleanRequiredString(body.content, 'content'),
+  };
+}
+
+function isPlanningExecutionArtifactKind(value: string): value is PlanningExecutionArtifact['kind'] {
+  return [
+    'provider-research',
+    'provider-setup',
+    'section-output',
+    'specialist-agent-manifest',
+    'parallel-orchestration',
+    'database-draft',
+    'database-materialization',
+    'database-migration',
+    'design-materialization',
+    'scaffold-plan',
+    'repo-plan',
+    'deployment-plan',
+    'project-management-plan',
+    'tool-check',
+  ].includes(value);
 }
 
 function normalizeCapabilityRefreshBody(body: Record<string, unknown>): RefreshProviderCapabilitySnapshotsRequest {

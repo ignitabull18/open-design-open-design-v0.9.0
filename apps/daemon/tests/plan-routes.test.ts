@@ -687,6 +687,78 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('creates standalone plan execution artifacts', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Artifact Studio',
+        intent: { purpose: 'Persist generated planning artifacts independently.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const artifact = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'project-management-plan',
+        title: 'Manual PRD outline',
+        content: 'Purpose, scope, milestones, and issue handoff notes.',
+      }),
+    });
+
+    expect(artifact.status).toBe(201);
+    expect(artifact.body.artifact).toMatchObject({
+      planId: created.body.plan.id,
+      kind: 'project-management-plan',
+      title: 'Manual PRD outline',
+      content: expect.stringContaining('issue handoff'),
+    });
+    expect(artifact.body.plan.executionArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: artifact.body.artifact.id,
+        kind: 'project-management-plan',
+      }),
+    ]));
+
+    const execution = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/execution`);
+    expect(execution.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: artifact.body.artifact.id,
+        title: 'Manual PRD outline',
+      }),
+    ]));
+  });
+
+  it('rejects unknown standalone artifact kinds', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Artifact Guard Studio',
+        intent: { purpose: 'Validate artifact kind input.' },
+      }),
+    });
+
+    const artifact = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'unknown-kind',
+        title: 'Bad artifact',
+        content: 'Should not persist.',
+      }),
+    });
+
+    expect(artifact.status).toBe(400);
+    expect(artifact.body.error).toContain('known planning execution artifact kind');
+  });
+
   it('blocks selected tools when a live provider check fails', async () => {
     const toolCheckCalls: Array<{ command: string; args: string[] }> = [];
     const baseUrl = await startPlanServer({
