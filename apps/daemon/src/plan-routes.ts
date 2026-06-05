@@ -1199,18 +1199,18 @@ function buildExecutionActions(
     {
       id: 'database-migrate',
       label: 'Apply database migrations',
-      status: isSqlDatabase(stack.database ?? 'supabase') ? 'ready' : 'blocked',
+      status: canExecuteDatabaseDeployment(stack.database ?? 'supabase') ? 'ready' : 'blocked',
       requiresConfirmation: true,
       command: buildDatabaseMigrationCommandPreview(stack),
       preconditions: [
-        'The database design files have been materialized and reviewed.',
+        'The database design files or provider schema files have been materialized and reviewed.',
         'Provider CLI credentials are connected for the selected database.',
-        'A backup or rollback path is documented before applying live migrations.',
+        'A backup, rollback, or redeploy path is documented before applying live database changes.',
       ],
       effects: [
-        'Runs the generated migration against the selected database provider when provider identity is available.',
+        'Runs the generated migration or provider schema deployment against the selected database provider when provider identity is available.',
         'Records stdout, stderr, exit code, and provider-specific migration proof.',
-        'Leaves Convex and non-SQL database plans blocked until schema/function generation is implemented.',
+        'Leaves unsupported non-SQL database plans blocked until provider-specific schema generation is implemented.',
       ],
       relatedSectionIds: ['database', 'delivery'],
     },
@@ -1388,7 +1388,7 @@ async function executeDatabaseMigrateAction(
     title: `${action.label}: ${plan.databaseDesign.primaryStore}`,
     mode: unsupported ? 'dry-run' : 'external',
     summary: status === 'completed'
-      ? `Applied database migrations for ${plan.databaseDesign.primaryStore}.`
+      ? `Applied database deployment for ${plan.databaseDesign.primaryStore}.`
       : unsupported
         ? `Database migration execution is blocked for ${plan.databaseDesign.primaryStore}: ${result.stderr}`
         : 'Database migration execution failed; inspect the attached artifact for stdout and stderr.',
@@ -2213,7 +2213,15 @@ function buildDatabaseMigrationInvocation(
         env: { PGDATABASE: databaseUrl },
       };
     }
-    case 'convex':
+    case 'convex': {
+      const schemaPath = path.resolve(sourceDir, 'convex', 'schema.ts');
+      return {
+        ...buildConvexDeploymentInvocation(plan.stack.packageManager),
+        env: process.env.CONVEX_DEPLOYMENT?.trim()
+          ? { CONVEX_DEPLOYMENT: process.env.CONVEX_DEPLOYMENT.trim(), CONVEX_SCHEMA_PATH: schemaPath }
+          : { CONVEX_SCHEMA_PATH: schemaPath },
+      };
+    }
     case 'none':
     default:
       return null;
@@ -2234,6 +2242,20 @@ function buildCloudflareD1MigrationInvocation(packageManager: ProjectStackDecisi
   }
 }
 
+function buildConvexDeploymentInvocation(packageManager: ProjectStackDecision['packageManager']): DatabaseMigrationInvocation {
+  switch (packageManager ?? 'pnpm') {
+    case 'npm':
+      return { command: 'npx', args: ['convex', 'deploy'], displayCommand: 'npx convex deploy' };
+    case 'yarn':
+      return { command: 'yarn', args: ['convex', 'deploy'], displayCommand: 'yarn convex deploy' };
+    case 'bun':
+      return { command: 'bunx', args: ['convex', 'deploy'], displayCommand: 'bunx convex deploy' };
+    case 'pnpm':
+    default:
+      return { command: 'pnpm', args: ['convex', 'deploy'], displayCommand: 'pnpm convex deploy' };
+  }
+}
+
 function buildDatabaseMigrationBlockedReason(plan: ProjectPlan): string {
   switch (plan.databaseDesign.primaryStore) {
     case 'cloudflare-d1':
@@ -2241,7 +2263,7 @@ function buildDatabaseMigrationBlockedReason(plan: ProjectPlan): string {
     case 'postgres-coolify':
       return 'DATABASE_URL or POSTGRES_DATABASE_URL is required to apply Postgres migrations.';
     case 'convex':
-      return 'Convex schema/function deployment is not implemented by this SQL migration executor.';
+      return 'Convex deployment command is not available. Materialize convex/schema.ts and connect the Convex CLI before deploying.';
     case 'none':
       return 'No database provider is selected for migration execution.';
     case 'supabase':
@@ -2542,6 +2564,10 @@ async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): P
   await writeProjectFile(sourceDir, 'db/README.md', buildDatabaseReadme(plan), writes);
   if (isSqlDatabase(plan.databaseDesign.primaryStore)) {
     await writeProjectFile(sourceDir, 'db/migrations/0001_planning_schema.sql', buildDatabaseMigrationSql(plan), writes);
+  } else if (plan.databaseDesign.primaryStore === 'convex') {
+    await writeProjectFile(sourceDir, 'db/schema-notes.md', buildDatabaseSchemaNotes(plan), writes);
+    await writeProjectFile(sourceDir, 'convex/schema.ts', buildConvexSchemaTs(plan), writes);
+    await writeProjectFile(sourceDir, 'convex/planning.ts', buildConvexPlanningFunctionsTs(plan), writes);
   } else {
     await writeProjectFile(sourceDir, 'db/schema-notes.md', buildDatabaseSchemaNotes(plan), writes);
   }
@@ -2583,6 +2609,10 @@ async function writeProjectFile(
 
 function isSqlDatabase(primaryStore: string): boolean {
   return ['supabase', 'postgres-coolify', 'cloudflare-d1'].includes(primaryStore);
+}
+
+function canExecuteDatabaseDeployment(primaryStore: string): boolean {
+  return isSqlDatabase(primaryStore) || primaryStore === 'convex';
 }
 
 function buildDesignPlanMarkdown(plan: ProjectPlan): string {
@@ -2913,7 +2943,7 @@ function buildProviderSetupDetails(toolId: ProjectToolConnection['toolId']): Pic
         envVars: ['CONVEX_DEPLOYMENT', 'NEXT_PUBLIC_CONVEX_URL'],
         setupSteps: ['Create or link the Convex deployment.', 'Translate database entities into Convex schema/functions instead of SQL migrations.'],
         verification: ['Run convex dev or deploy dry-run.', 'Record generated Convex deployment URL.'],
-        blockerNotes: ['Convex remains blocked for SQL migration execution until Convex schema generation exists.'],
+        blockerNotes: ['Convex deploy remains blocked until the generated schema/functions are reviewed and the Convex CLI is connected.'],
       };
     case 'postgres-coolify':
       return {
@@ -3119,7 +3149,7 @@ function buildDatabaseReadme(plan: ProjectPlan): string {
       : primaryStore === 'postgres-coolify'
         ? 'Self-hosted Postgres on Coolify needs extension setup, backups, and RLS policy review before production use.'
         : primaryStore === 'convex'
-          ? 'Convex uses schema and function files instead of SQL migrations. Use schema-notes.md as the model for a Convex schema pass.'
+          ? 'Convex uses schema and function files instead of SQL migrations. Review generated convex/schema.ts and convex/planning.ts before deploying.'
           : 'No SQL store is selected. Use schema-notes.md to decide whether the project needs a database.';
   return [
     '# Database Workspace',
@@ -3155,6 +3185,164 @@ function buildDatabaseSchemaNotes(plan: ProjectPlan): string {
     '## Access Policies',
     '- Tenant data must be scoped by organization or project membership.',
     '- Integration credentials should reference external secret storage instead of storing raw secrets.',
+  ].join('\n');
+}
+
+function buildConvexSchemaTs(plan: ProjectPlan): string {
+  return [
+    'import { defineSchema, defineTable } from "convex/server";',
+    'import { v } from "convex/values";',
+    '',
+    '// Generated by Open Design planning. Review authorization rules in functions before deploying.',
+    `// Plan: ${plan.name}`,
+    '',
+    'export default defineSchema({',
+    '  organizations: defineTable({',
+    '    name: v.string(),',
+    '    createdAt: v.number(),',
+    '  }).index("by_name", ["name"]),',
+    '',
+    '  organizationMemberships: defineTable({',
+    '    organizationId: v.id("organizations"),',
+    '    userId: v.string(),',
+    '    role: v.union(v.literal("owner"), v.literal("admin"), v.literal("member")),',
+    '    createdAt: v.number(),',
+    '  })',
+    '    .index("by_organization", ["organizationId"])',
+    '    .index("by_user", ["userId"])',
+    '    .index("by_organization_user", ["organizationId", "userId"]),',
+    '',
+    '  projects: defineTable({',
+    '    organizationId: v.id("organizations"),',
+    '    name: v.string(),',
+    '    purpose: v.string(),',
+    '    createdAt: v.number(),',
+    '  })',
+    '    .index("by_organization", ["organizationId"])',
+    '    .index("by_organization_name", ["organizationId", "name"]),',
+    '',
+    '  plans: defineTable({',
+    '    projectId: v.id("projects"),',
+    '    status: v.union(v.literal("draft"), v.literal("reviewing"), v.literal("accepted"), v.literal("blocked")),',
+    '    stack: v.any(),',
+    '    sections: v.any(),',
+    '    updatedAt: v.number(),',
+    '  })',
+    '    .index("by_project", ["projectId"])',
+    '    .index("by_project_status", ["projectId", "status"]),',
+    '',
+    '  workflowRuns: defineTable({',
+    '    projectId: v.id("projects"),',
+    '    provider: v.string(),',
+    '    status: v.union(v.literal("queued"), v.literal("running"), v.literal("completed"), v.literal("blocked"), v.literal("failed")),',
+    '    externalRunId: v.optional(v.string()),',
+    '    evidence: v.array(v.string()),',
+    '    updatedAt: v.number(),',
+    '  })',
+    '    .index("by_project", ["projectId"])',
+    '    .index("by_project_status", ["projectId", "status"])',
+    '    .index("by_provider", ["provider"]),',
+    '',
+    '  integrationConnections: defineTable({',
+    '    projectId: v.id("projects"),',
+    '    provider: v.string(),',
+    '    accountRef: v.optional(v.string()),',
+    '    status: v.union(v.literal("wanted"), v.literal("connected"), v.literal("deferred"), v.literal("blocked")),',
+    '    updatedAt: v.number(),',
+    '  })',
+    '    .index("by_project", ["projectId"])',
+    '    .index("by_project_provider", ["projectId", "provider"])',
+    '    .index("by_status", ["status"]),',
+    '',
+    '  auditEvents: defineTable({',
+    '    projectId: v.optional(v.id("projects")),',
+    '    actorId: v.optional(v.string()),',
+    '    eventType: v.string(),',
+    '    payload: v.any(),',
+    '    createdAt: v.number(),',
+    '  })',
+    '    .index("by_project_created", ["projectId", "createdAt"])',
+    '    .index("by_event_type", ["eventType"]),',
+    '});',
+  ].join('\n');
+}
+
+function buildConvexPlanningFunctionsTs(plan: ProjectPlan): string {
+  return [
+    'import { mutation, query } from "./_generated/server";',
+    'import { v } from "convex/values";',
+    '',
+    '// Generated by Open Design planning. Replace placeholder identity checks before production use.',
+    `// Plan: ${plan.name}`,
+    '',
+    'async function requireProjectAccess(ctx: any, projectId: string) {',
+    '  const project = await ctx.db.get(projectId);',
+    '  if (!project) throw new Error("Project not found");',
+    '  // TODO: Check organizationMemberships against the authenticated user before returning data.',
+    '  return project;',
+    '}',
+    '',
+    'export const listPlansByProject = query({',
+    '  args: { projectId: v.id("projects") },',
+    '  handler: async (ctx, args) => {',
+    '    await requireProjectAccess(ctx, args.projectId);',
+    '    return ctx.db',
+    '      .query("plans")',
+    '      .withIndex("by_project", (q) => q.eq("projectId", args.projectId))',
+    '      .collect();',
+    '  },',
+    '});',
+    '',
+    'export const upsertIntegrationConnection = mutation({',
+    '  args: {',
+    '    projectId: v.id("projects"),',
+    '    provider: v.string(),',
+    '    accountRef: v.optional(v.string()),',
+    '    status: v.union(v.literal("wanted"), v.literal("connected"), v.literal("deferred"), v.literal("blocked")),',
+    '  },',
+    '  handler: async (ctx, args) => {',
+    '    await requireProjectAccess(ctx, args.projectId);',
+    '    const existing = await ctx.db',
+    '      .query("integrationConnections")',
+    '      .withIndex("by_project_provider", (q) => q.eq("projectId", args.projectId).eq("provider", args.provider))',
+    '      .first();',
+    '    const patch = {',
+    '      accountRef: args.accountRef,',
+    '      status: args.status,',
+    '      updatedAt: Date.now(),',
+    '    };',
+    '    if (existing) {',
+    '      await ctx.db.patch(existing._id, patch);',
+    '      return existing._id;',
+    '    }',
+    '    return ctx.db.insert("integrationConnections", {',
+    '      projectId: args.projectId,',
+    '      provider: args.provider,',
+    '      ...patch,',
+    '    });',
+    '  },',
+    '});',
+    '',
+    'export const recordWorkflowRun = mutation({',
+    '  args: {',
+    '    projectId: v.id("projects"),',
+    '    provider: v.string(),',
+    '    status: v.union(v.literal("queued"), v.literal("running"), v.literal("completed"), v.literal("blocked"), v.literal("failed")),',
+    '    externalRunId: v.optional(v.string()),',
+    '    evidence: v.array(v.string()),',
+    '  },',
+    '  handler: async (ctx, args) => {',
+    '    await requireProjectAccess(ctx, args.projectId);',
+    '    return ctx.db.insert("workflowRuns", {',
+    '      projectId: args.projectId,',
+    '      provider: args.provider,',
+    '      status: args.status,',
+    '      externalRunId: args.externalRunId,',
+    '      evidence: args.evidence,',
+    '      updatedAt: Date.now(),',
+    '    });',
+    '  },',
+    '});',
   ].join('\n');
 }
 

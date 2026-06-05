@@ -1497,6 +1497,107 @@ describe('planning routes', () => {
     expect(envExample).toContain('STRIPE_WEBHOOK_SECRET=');
   });
 
+  it('materializes and deploys Convex database schema files', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'convex-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"convex-studio"}\n');
+    const migrationCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      databaseMigrationRunner: async (request) => {
+        migrationCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'Convex deployment complete',
+          stderr: '',
+          durationMs: 23,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Convex Studio',
+        intent: { purpose: 'Use Convex for realtime planning state.' },
+        selectedTools: [
+          { toolId: 'convex', status: 'wanted' },
+          { toolId: 'trigger-dev', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'tanstack-start',
+          backend: 'convex',
+          runtime: 'node',
+          database: 'convex',
+          auth: 'better-auth',
+          packageManager: 'pnpm',
+        },
+      }),
+    });
+
+    const materialized = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/database-materialize/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/convex-studio',
+      }),
+    });
+
+    expect(materialized.status).toBe(201);
+    expect(materialized.body.run).toMatchObject({
+      actionId: 'database-materialize',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Wrote 5 database design file'),
+    });
+    expect(materialized.body.run.evidence).toEqual(expect.arrayContaining([
+      'wrote db/schema-notes.md',
+      'wrote convex/schema.ts',
+      'wrote convex/planning.ts',
+    ]));
+    const schema = readFileSync(path.join(sourceDir, 'convex', 'schema.ts'), 'utf8');
+    const functions = readFileSync(path.join(sourceDir, 'convex', 'planning.ts'), 'utf8');
+    expect(schema).toContain('defineSchema');
+    expect(schema).toContain('integrationConnections');
+    expect(schema).toContain('workflowRuns');
+    expect(functions).toContain('listPlansByProject');
+    expect(functions).toContain('recordWorkflowRun');
+
+    const deployed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/database-migrate/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/convex-studio',
+      }),
+    });
+
+    expect(deployed.status).toBe(201);
+    expect(migrationCalls).toEqual([
+      {
+        command: 'pnpm',
+        args: ['convex', 'deploy'],
+        cwd: sourceDir,
+      },
+    ]);
+    expect(deployed.body.run).toMatchObject({
+      actionId: 'database-migrate',
+      status: 'completed',
+      mode: 'external',
+      command: 'pnpm convex deploy',
+      summary: expect.stringContaining('Applied database deployment for convex'),
+    });
+    expect(deployed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'database-migration',
+        content: expect.stringContaining('Convex deployment complete'),
+      }),
+    ]));
+  });
+
   it('blocks database migration execution when provider identity is missing', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'd1-studio');
