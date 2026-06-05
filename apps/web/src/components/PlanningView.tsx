@@ -6,6 +6,7 @@ import type {
   ProviderCapabilityRefreshSchedule,
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
+  ProjectLaunchProofReport,
   ProjectPlan,
   ProjectPlanReadinessReport,
   ProjectToolConnection,
@@ -21,6 +22,7 @@ import {
   createProjectIdeationSession,
   createProjectPlan,
   executeProjectPlanAction,
+  getProjectLaunchProof,
   getProjectPlanReadiness,
   isPlanningAuthError,
   listProviderCapabilitySnapshots,
@@ -87,6 +89,7 @@ export function PlanningView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
   const [readinessByPlanId, setReadinessByPlanId] = useState<Record<string, ProjectPlanReadinessReport>>({});
+  const [proofByPlanId, setProofByPlanId] = useState<Record<string, ProjectLaunchProofReport>>({});
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
@@ -172,11 +175,16 @@ export function PlanningView() {
   }, [tools]);
   const selectedIdeation = selectedPlan ? ideationByPlanId[selectedPlan.id] ?? [] : [];
   const selectedReadiness = selectedPlan ? readinessByPlanId[selectedPlan.id] ?? null : null;
+  const selectedProof = selectedPlan ? proofByPlanId[selectedPlan.id] ?? null : null;
 
   const refreshReadiness = useCallback(async (planId: string) => {
-    const result = await getProjectPlanReadiness(planId);
-    setReadinessByPlanId((curr) => ({ ...curr, [planId]: result.readiness }));
-    setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    const [readinessResult, proofResult] = await Promise.all([
+      getProjectPlanReadiness(planId),
+      getProjectLaunchProof(planId),
+    ]);
+    setReadinessByPlanId((curr) => ({ ...curr, [planId]: readinessResult.readiness }));
+    setProofByPlanId((curr) => ({ ...curr, [planId]: proofResult.proof }));
+    setPlans((curr) => curr.map((plan) => (plan.id === readinessResult.plan.id ? readinessResult.plan : plan)));
   }, []);
 
   useEffect(() => {
@@ -196,12 +204,16 @@ export function PlanningView() {
   }, [ideationByPlanId, selectedPlan]);
 
   useEffect(() => {
-    if (!selectedPlan || readinessByPlanId[selectedPlan.id]) return;
+    if (!selectedPlan || (readinessByPlanId[selectedPlan.id] && proofByPlanId[selectedPlan.id])) return;
     let cancelled = false;
-    void getProjectPlanReadiness(selectedPlan.id)
-      .then((result) => {
+    void Promise.all([
+      getProjectPlanReadiness(selectedPlan.id),
+      getProjectLaunchProof(selectedPlan.id),
+    ])
+      .then(([result, proofResult]) => {
         if (cancelled) return;
         setReadinessByPlanId((curr) => ({ ...curr, [selectedPlan.id]: result.readiness }));
+        setProofByPlanId((curr) => ({ ...curr, [selectedPlan.id]: proofResult.proof }));
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -209,7 +221,7 @@ export function PlanningView() {
     return () => {
       cancelled = true;
     };
-  }, [readinessByPlanId, selectedPlan]);
+  }, [proofByPlanId, readinessByPlanId, selectedPlan]);
 
   async function handleCreatePlan() {
     setSaving(true);
@@ -675,6 +687,7 @@ export function PlanningView() {
             <PlanDetail
               plan={selectedPlan}
               readiness={selectedReadiness}
+              proof={selectedProof}
               ideationPrompt={ideationPrompt}
               ideationSessions={selectedIdeation}
               brainstorming={brainstorming}
@@ -793,9 +806,54 @@ function ReadinessPanel({ readiness }: { readiness: ProjectPlanReadinessReport |
   );
 }
 
+function LaunchProofPanel({ proof }: { proof: ProjectLaunchProofReport | null }) {
+  if (!proof) {
+    return (
+      <section className="planning-view__readiness" aria-label="Launch proof">
+        <div className="planning-view__readiness-head">
+          <div>
+            <h3>Launch proof</h3>
+            <p>Loading proof gates...</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+  const incomplete = proof.gates.filter((gate) => gate.status !== 'ready').slice(0, 5);
+  return (
+    <section className="planning-view__readiness planning-view__proof" aria-label="Launch proof">
+      <div className="planning-view__readiness-head">
+        <div>
+          <h3>Launch proof</h3>
+          <p>{proof.summary}</p>
+        </div>
+        <span>{proof.status}</span>
+      </div>
+      <div className="planning-view__readiness-meter">
+        <strong>{proof.readyGateCount}/{proof.totalGateCount}</strong>
+        <span>{proof.blockedGateCount} blocked</span>
+      </div>
+      {incomplete.length > 0 ? (
+        <ul className="planning-view__readiness-list">
+          {incomplete.map((gate) => (
+            <li key={gate.id}>
+              <strong>{gate.label}</strong>
+              <span>{gate.status} · {gate.missingEvidence[0] ?? gate.summary}</span>
+              <small>{gate.runIds.length} run(s) · {gate.artifactIds.length} artifact(s) · {gate.toolCheckIds.length} check(s)</small>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="planning-view__muted">Every launch proof gate has evidence.</p>
+      )}
+    </section>
+  );
+}
+
 function PlanDetail({
   plan,
   readiness,
+  proof,
   ideationPrompt,
   ideationSessions,
   brainstorming,
@@ -836,6 +894,7 @@ function PlanDetail({
 }: {
   plan: ProjectPlan;
   readiness: ProjectPlanReadinessReport | null;
+  proof: ProjectLaunchProofReport | null;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
   brainstorming: boolean;
@@ -912,6 +971,7 @@ function PlanDetail({
         <p>{plan.intent.purpose}</p>
       </div>
       <ReadinessPanel readiness={readiness} />
+      <LaunchProofPanel proof={proof} />
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
       <div className="planning-view__connected-tools">
         <h3>Tool connections</h3>

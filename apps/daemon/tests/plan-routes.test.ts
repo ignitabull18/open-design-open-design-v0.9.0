@@ -4,6 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ProjectLaunchProofGate } from '@open-design/contracts';
 
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { registerPlanRoutes, type RegisterPlanRoutesDeps } from '../src/plan-routes.js';
@@ -914,6 +915,26 @@ describe('planning routes', () => {
       }),
     ]));
 
+    const initialProof = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/proof`);
+
+    expect(initialProof.status).toBe(200);
+    expect(initialProof.body.proof).toMatchObject({
+      planId: created.body.plan.id,
+      status: 'in_progress',
+      readyGateCount: expect.any(Number),
+      totalGateCount: 9,
+      nextGateId: 'repo',
+    });
+    const initialProofGates = new Map<string, ProjectLaunchProofGate>(initialProof.body.proof.gates.map((gate: ProjectLaunchProofGate) => [gate.id, gate]));
+    expect(initialProofGates.get('provider-checks')).toMatchObject({ status: 'not_started' });
+    expect(initialProofGates.get('provider-checks')!.missingEvidence.join('\n')).toContain('github');
+    expect(initialProofGates.get('scaffold')).toMatchObject({ status: 'not_started' });
+    expect(initialProofGates.get('scaffold')!.missingEvidence.join('\n')).toContain('Better-T-Stack');
+    expect(initialProofGates.get('delivery')).toMatchObject({
+      status: 'in_progress',
+      artifactIds: [],
+    });
+
     const artifact = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/artifacts`, {
       method: 'POST',
       body: JSON.stringify({
@@ -938,6 +959,14 @@ describe('planning routes', () => {
         ]),
       }),
     ]));
+
+    const updatedProof = await jsonFetch(`${baseUrl}/api/plans/${artifact.body.plan.id}/proof`);
+    const updatedProofGates = new Map<string, ProjectLaunchProofGate>(updatedProof.body.proof.gates.map((gate: ProjectLaunchProofGate) => [gate.id, gate]));
+    expect(updatedProofGates.get('project-management')).toMatchObject({
+      status: 'ready',
+      missingEvidence: [],
+    });
+    expect(updatedProofGates.get('project-management')!.artifactIds).toContain(artifact.body.artifact.id);
   });
 
   it('rejects unknown standalone artifact kinds', async () => {

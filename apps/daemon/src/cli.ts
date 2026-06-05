@@ -4643,6 +4643,7 @@ async function runPlan(args) {
                                                  Accept a gated execution action.
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
   od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
+  od plan proof <id> [--json]                    Show launch proof gates and missing evidence.
   od plan execute <id> --action <name> --confirmed
                  [--target-dir <path>] [--delivery-target <target>]
                  [--project-management-target <target>] [--validate-providers] [--json]
@@ -4932,6 +4933,27 @@ Common options:
         console.log(`${item.status}\t${item.id}\t${item.label}`);
         const nextStep = item.nextSteps?.[0];
         if (nextStep) console.log(`  next: ${nextStep}`);
+      }
+      return;
+    }
+    case 'proof': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan proof <id> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/proof`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      const proof = data.proof ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] proof ${id}: ${proof.status ?? '-'}`);
+      console.log(`Ready: ${proof.readyGateCount ?? 0}/${proof.totalGateCount ?? 0}\tBlocked: ${proof.blockedGateCount ?? 0}`);
+      console.log(`Summary: ${proof.summary ?? '-'}`);
+      for (const gate of proof.gates ?? []) {
+        console.log(`${gate.status}\t${gate.id}\t${gate.label}`);
+        for (const missing of gate.missingEvidence ?? []) console.log(`  missing: ${missing}`);
+        if (gate.proof?.[0]) console.log(`  proof: ${gate.proof[0]}`);
       }
       return;
     }

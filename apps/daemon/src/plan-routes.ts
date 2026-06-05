@@ -20,6 +20,9 @@ import type {
   ProjectPlanReadinessItem,
   ProjectPlanReadinessReport,
   ProjectPlanReadinessStatus,
+  ProjectLaunchProofGate,
+  ProjectLaunchProofGateId,
+  ProjectLaunchProofReport,
   ProviderCapabilityRefreshPolicy,
   ProviderCapabilityRefreshSchedule,
   PlanningToolOption,
@@ -1032,6 +1035,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.get('/api/plans/:id/proof', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan, proof: buildLaunchProofReport(plan) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.get('/api/plans/:id/sections/:sectionId', (req, res) => {
     try {
       const plan = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1502,6 +1515,203 @@ function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport
     ...(next?.actionId ? { nextActionId: next.actionId } : {}),
     nextSummary: next ? `${next.label}: ${next.nextSteps[0] ?? next.summary}` : 'All readiness items are complete.',
     items,
+  };
+}
+
+function buildLaunchProofReport(plan: ProjectPlan): ProjectLaunchProofReport {
+  const readiness = buildPlanReadinessReport(plan);
+  const gates = buildLaunchProofGates(plan);
+  const readyGateCount = gates.filter((gate) => gate.status === 'ready').length;
+  const blockedGateCount = gates.filter((gate) => gate.status === 'blocked').length;
+  const inProgressGateCount = gates.filter((gate) => gate.status === 'in_progress').length;
+  const nextGate = gates.find((gate) => gate.status === 'blocked')
+    ?? gates.find((gate) => gate.status === 'in_progress')
+    ?? gates.find((gate) => gate.status === 'not_started');
+  const status: ProjectPlanReadinessStatus = readyGateCount === gates.length
+    ? 'ready'
+    : blockedGateCount > 0
+      ? 'blocked'
+      : inProgressGateCount > 0
+        ? 'in_progress'
+        : 'not_started';
+  return {
+    planId: plan.id,
+    generatedAt: readiness.generatedAt,
+    status,
+    summary: status === 'ready'
+      ? 'Every launch proof gate has recorded evidence.'
+      : `Launch proof is incomplete: ${readyGateCount}/${gates.length} gates ready, ${blockedGateCount} blocked.`,
+    readyGateCount,
+    totalGateCount: gates.length,
+    blockedGateCount,
+    ...(nextGate ? { nextGateId: nextGate.id } : {}),
+    nextSteps: nextGate ? nextGate.missingEvidence.slice(0, 4) : [],
+    gates,
+  };
+}
+
+function buildLaunchProofGates(plan: ProjectPlan): ProjectLaunchProofGate[] {
+  const artifactIdsByKind = (kind: PlanningExecutionArtifact['kind']) =>
+    (plan.executionArtifacts ?? []).filter((artifact) => artifact.kind === kind).map((artifact) => artifact.id);
+  const runIdsByAction = (actionId: PlanningExecutionAction['id']) =>
+    (plan.executionRuns ?? []).filter((run) => run.actionId === actionId).map((run) => run.id);
+  const runIdsByKind = (kind: PlanningExecutionRun['kind']) =>
+    (plan.executionRuns ?? []).filter((run) => run.kind === kind).map((run) => run.id);
+  const latestRun = (predicate: (run: PlanningExecutionRun) => boolean) => findLatestRun(plan, predicate);
+  const sectionAnswers = Object.values(plan.sectionAnswers ?? {}).filter(Boolean);
+  const answeredSectionIds = new Set(sectionAnswers.filter((answer) => answer.status === 'answered').map((answer) => answer.sectionId));
+  const missingSectionLabels = plan.workspaceSections
+    .filter((section) => !answeredSectionIds.has(section.id))
+    .map((section) => `Accept ${section.label} section answers.`);
+  const selectedTools = plan.selectedTools ?? [];
+  const checkedToolIds = new Set((plan.toolChecks ?? []).map((check) => check.toolId));
+  const blockedToolChecks = (plan.toolChecks ?? []).filter((check) => check.status === 'blocked');
+  const missingToolChecks = selectedTools
+    .filter((tool) => !checkedToolIds.has(tool.toolId) && tool.status !== 'deferred')
+    .map((tool) => `Run or defer provider check for ${tool.toolId}.`);
+  const providerSetupRun = latestRun((run) => run.actionId === 'provider-setup');
+  const databaseMaterializeRun = latestRun((run) => run.actionId === 'database-materialize');
+  const databaseMigrationRun = latestRun((run) => run.actionId === 'database-migrate');
+  const designRun = latestRun((run) => run.actionId === 'design-materialize');
+  const deliveryRun = latestRun((run) => run.actionId === 'deploy-runtime');
+  const projectManagementRun = latestRun((run) => run.actionId === 'project-management');
+  const gates: ProjectLaunchProofGate[] = [
+    {
+      id: 'planning-sections',
+      label: 'Planning sections',
+      status: missingSectionLabels.length === 0 ? 'ready' : sectionAnswers.length > 0 ? 'in_progress' : 'not_started',
+      summary: `${answeredSectionIds.size}/${plan.workspaceSections.length} sections have accepted answers.`,
+      proof: sectionAnswers.map((answer) => `${answer.sectionId}: ${answer.status}`),
+      missingEvidence: missingSectionLabels,
+      runIds: runIdsByKind('section-agent'),
+      artifactIds: [
+        ...artifactIdsByKind('section-output'),
+        ...artifactIdsByKind('specialist-agent-manifest'),
+        ...artifactIdsByKind('parallel-orchestration'),
+      ],
+      toolCheckIds: [],
+    },
+    {
+      id: 'provider-checks',
+      label: 'Provider checks',
+      status: blockedToolChecks.length > 0 ? 'blocked' : missingToolChecks.length === 0 ? 'ready' : (plan.toolChecks ?? []).length > 0 ? 'in_progress' : 'not_started',
+      summary: `${(plan.toolChecks ?? []).length}/${selectedTools.length} selected tools have check records.`,
+      proof: (plan.toolChecks ?? []).map((check) => `${check.toolId}: ${check.status}`),
+      missingEvidence: [
+        ...missingToolChecks,
+        ...blockedToolChecks.map((check) => `Resolve blocked provider check for ${check.toolId}: ${check.summary}`),
+      ],
+      runIds: runIdsByAction('provider-research'),
+      artifactIds: [
+        ...artifactIdsByKind('provider-research'),
+        ...artifactIdsByKind('tool-check'),
+      ],
+      toolCheckIds: (plan.toolChecks ?? []).map((check) => check.toolId),
+    },
+    buildActionLaunchProofGate({
+      id: 'scaffold',
+      label: 'Better-T-Stack scaffold',
+      status: plan.scaffoldExecution.status === 'completed' ? 'ready' : plan.scaffoldExecution.status === 'blocked' ? 'blocked' : plan.scaffoldExecution.status === 'planned' ? 'in_progress' : 'not_started',
+      summary: `Scaffold status: ${plan.scaffoldExecution.status}.`,
+      proof: [
+        ...(plan.scaffoldExecution.targetDir ? [`targetDir: ${plan.scaffoldExecution.targetDir}`] : []),
+        ...(plan.scaffoldExecution.lastCommand ? [`command: ${plan.scaffoldExecution.lastCommand}`] : []),
+      ],
+      missingEvidence: plan.scaffoldExecution.status === 'completed' ? [] : ['Execute Better-T-Stack scaffold and record generated handoff files.'],
+      runIds: runIdsByAction('scaffold'),
+      artifactIds: artifactIdsByKind('scaffold-plan'),
+    }),
+    buildActionLaunchProofGate({
+      id: 'repo',
+      label: 'GitHub repository',
+      status: plan.repo.status === 'created' ? 'ready' : plan.repo.status === 'blocked' ? 'blocked' : plan.repo.status === 'planned' ? 'in_progress' : 'not_started',
+      summary: `Repository status: ${plan.repo.status}.`,
+      proof: [plan.repo.url ? `repoUrl: ${plan.repo.url}` : `repo: ${plan.repo.owner ?? '-'} / ${plan.repo.name ?? '-'}`],
+      missingEvidence: plan.repo.status === 'created' ? [] : ['Create GitHub repository and record URL.'],
+      runIds: runIdsByAction('repo-create'),
+      artifactIds: artifactIdsByKind('repo-plan'),
+    }),
+    buildActionLaunchProofGate({
+      id: 'provider-setup',
+      label: 'Provider setup',
+      status: providerSetupRun?.status === 'completed' ? 'ready' : providerSetupRun?.status === 'blocked' || providerSetupRun?.status === 'failed' ? 'blocked' : providerSetupRun ? 'in_progress' : 'not_started',
+      summary: providerSetupRun?.summary ?? 'Provider setup has not produced proof yet.',
+      proof: providerSetupRun?.evidence ?? [],
+      missingEvidence: providerSetupRun?.status === 'completed' ? [] : ['Run provider setup and record env/check proof.'],
+      runIds: runIdsByAction('provider-setup'),
+      artifactIds: artifactIdsByKind('provider-setup'),
+    }),
+    buildActionLaunchProofGate({
+      id: 'database',
+      label: 'Database materialization and migration',
+      status: databaseMigrationRun?.status === 'completed'
+        ? 'ready'
+        : databaseMigrationRun?.status === 'blocked' || databaseMigrationRun?.status === 'failed'
+          ? 'blocked'
+          : databaseMaterializeRun?.status === 'completed'
+            ? 'in_progress'
+            : databaseMaterializeRun?.status === 'blocked' || databaseMaterializeRun?.status === 'failed'
+              ? 'blocked'
+              : 'not_started',
+      summary: databaseMigrationRun?.summary ?? databaseMaterializeRun?.summary ?? 'Database materialization and migration proof is missing.',
+      proof: [...(databaseMaterializeRun?.evidence ?? []), ...(databaseMigrationRun?.evidence ?? [])],
+      missingEvidence: databaseMigrationRun?.status === 'completed' ? [] : ['Materialize database files and execute provider migration proof.'],
+      runIds: [...runIdsByAction('database-materialize'), ...runIdsByAction('database-migrate')],
+      artifactIds: [...artifactIdsByKind('database-materialization'), ...artifactIdsByKind('database-migration')],
+    }),
+    buildActionLaunchProofGate({
+      id: 'design',
+      label: 'Design materialization',
+      status: designRun?.status === 'completed' ? 'ready' : designRun?.status === 'blocked' || designRun?.status === 'failed' ? 'blocked' : designRun ? 'in_progress' : 'not_started',
+      summary: designRun?.summary ?? 'Design planning files have not been materialized.',
+      proof: designRun?.evidence ?? [],
+      missingEvidence: designRun?.status === 'completed' ? [] : ['Materialize design plan, user flows, and acceptance criteria.'],
+      runIds: runIdsByAction('design-materialize'),
+      artifactIds: artifactIdsByKind('design-materialization'),
+    }),
+    buildActionLaunchProofGate({
+      id: 'delivery',
+      label: 'Deployment delivery',
+      status: plan.delivery.length > 0 && plan.delivery.every((delivery) => delivery.status === 'deployed')
+        ? 'ready'
+        : plan.delivery.some((delivery) => delivery.status === 'blocked') || deliveryRun?.status === 'blocked' || deliveryRun?.status === 'failed'
+          ? 'blocked'
+          : plan.delivery.some((delivery) => delivery.status === 'planned') || deliveryRun
+            ? 'in_progress'
+            : 'not_started',
+      summary: `Delivery targets: ${plan.delivery.map((delivery) => `${delivery.target}:${delivery.status}`).join(', ') || 'none'}.`,
+      proof: [...plan.delivery.map((delivery) => `${delivery.target}: ${delivery.status}${delivery.notes ? ` (${delivery.notes})` : ''}`), ...(deliveryRun?.evidence ?? [])],
+      missingEvidence: plan.delivery.length > 0 && plan.delivery.every((delivery) => delivery.status === 'deployed') ? [] : ['Deploy every selected target and record live URL or health proof.'],
+      runIds: runIdsByAction('deploy-runtime'),
+      artifactIds: artifactIdsByKind('deployment-plan'),
+    }),
+    buildActionLaunchProofGate({
+      id: 'project-management',
+      label: 'Project-management handoff',
+      status: projectManagementRun?.status === 'completed' || hasArtifactKind(plan, 'project-management-plan') ? 'ready' : projectManagementRun?.status === 'blocked' || projectManagementRun?.status === 'failed' ? 'blocked' : projectManagementRun ? 'in_progress' : 'not_started',
+      summary: projectManagementRun?.summary ?? 'Project-management handoff artifact or external issue/doc proof is missing.',
+      proof: projectManagementRun?.evidence ?? [],
+      missingEvidence: projectManagementRun?.status === 'completed' || hasArtifactKind(plan, 'project-management-plan') ? [] : ['Create GitHub Issues, Linear issues, or Google Docs handoff proof.'],
+      runIds: runIdsByAction('project-management'),
+      artifactIds: artifactIdsByKind('project-management-plan'),
+    }),
+  ];
+  return gates;
+}
+
+function buildActionLaunchProofGate(input: {
+  id: ProjectLaunchProofGateId;
+  label: string;
+  status: ProjectPlanReadinessStatus;
+  summary: string;
+  proof: string[];
+  missingEvidence: string[];
+  runIds: string[];
+  artifactIds: string[];
+}): ProjectLaunchProofGate {
+  return {
+    ...input,
+    toolCheckIds: [],
   };
 }
 

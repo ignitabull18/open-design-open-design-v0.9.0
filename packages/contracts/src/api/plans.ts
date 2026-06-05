@@ -400,6 +400,42 @@ export interface ProjectPlanReadinessReport {
   items: ProjectPlanReadinessItem[];
 }
 
+export type ProjectLaunchProofGateId =
+  | 'planning-sections'
+  | 'provider-checks'
+  | 'scaffold'
+  | 'repo'
+  | 'provider-setup'
+  | 'database'
+  | 'design'
+  | 'delivery'
+  | 'project-management';
+
+export interface ProjectLaunchProofGate {
+  id: ProjectLaunchProofGateId;
+  label: string;
+  status: ProjectPlanReadinessStatus;
+  summary: string;
+  proof: string[];
+  missingEvidence: string[];
+  runIds: string[];
+  artifactIds: string[];
+  toolCheckIds: PlanningToolId[];
+}
+
+export interface ProjectLaunchProofReport {
+  planId: string;
+  generatedAt: number;
+  status: ProjectPlanReadinessStatus;
+  summary: string;
+  readyGateCount: number;
+  totalGateCount: number;
+  blockedGateCount: number;
+  nextGateId?: ProjectLaunchProofGateId;
+  nextSteps: string[];
+  gates: ProjectLaunchProofGate[];
+}
+
 export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
@@ -459,6 +495,11 @@ export interface ProjectPlanExecutionResponse {
 export interface ProjectPlanReadinessResponse {
   plan: ProjectPlan;
   readiness: ProjectPlanReadinessReport;
+}
+
+export interface ProjectLaunchProofResponse {
+  plan: ProjectPlan;
+  proof: ProjectLaunchProofReport;
 }
 
 export interface ProjectPlanExecutionRunResponse {
