@@ -1499,14 +1499,17 @@ function PlanDetail({
 function SectionWorkboardPanel({ plan }: { plan: ProjectPlan }) {
   const workboard = plan.sectionWorkboard;
   if (!workboard) return null;
+  const nextSectionIds = workboard.nextSectionIds ?? [];
+  const parallelGroups = workboard.parallelGroups ?? [];
+  const items = workboard.items ?? [];
   return (
     <div className="planning-view__workboard" aria-label="Section orchestration workboard">
       <div className="planning-view__workboard-summary">
         <strong>{workboard.summary}</strong>
-        <span>Next: {workboard.nextSectionIds.length ? workboard.nextSectionIds.join(', ') : 'none'}</span>
+        <span>Next: {nextSectionIds.length ? nextSectionIds.join(', ') : 'none'}</span>
       </div>
       <div className="planning-view__workboard-groups">
-        {workboard.parallelGroups.map((group) => (
+        {parallelGroups.map((group) => (
           <article key={group.id} className="planning-view__workboard-group">
             <strong>{group.label}</strong>
             <span>{group.mode} · {group.sectionIds.join(', ') || 'none'}</span>
@@ -1515,7 +1518,7 @@ function SectionWorkboardPanel({ plan }: { plan: ProjectPlan }) {
         ))}
       </div>
       <div className="planning-view__workboard-items">
-        {workboard.items.map((item) => (
+        {items.map((item) => (
           <span key={item.sectionId} className={item.readyForParallelRun ? 'is-parallel-ready' : ''}>
             {item.label}: {item.readyForParallelRun ? 'parallel-ready' : item.status}
           </span>
