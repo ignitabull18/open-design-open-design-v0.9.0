@@ -604,6 +604,89 @@ describe('planning routes', () => {
     expect(execution.body.scaffoldExecution).toMatchObject({ status: 'planned' });
   });
 
+  it('executes section-agent runs through an injected specialist runner', async () => {
+    const runnerCalls: Array<{ sectionId: string; role: string; prompt: string }> = [];
+    const baseUrl = await startPlanServer({
+      sectionAgentRunner: async (request) => {
+        runnerCalls.push({
+          sectionId: request.section.id,
+          role: request.manifest.role,
+          prompt: request.prompt,
+        });
+        return {
+          status: 'completed',
+          summary: `Executed ${request.section.label} specialist with external runner.`,
+          output: `External decisions for ${request.section.id}: create schema artifact and validation checklist.`,
+          evidence: [
+            `manifest role: ${request.manifest.role}`,
+            `selected tools: ${request.manifest.inputs.selectedTools.length}`,
+          ],
+          durationMs: 42,
+          command: 'codex plan-section',
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Runner Studio',
+        intent: { purpose: 'Run planning sections with specialist agents.' },
+        selectedTools: [
+          { toolId: 'supabase-database', status: 'wanted' },
+          { toolId: 'stripe', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          payments: 'stripe',
+        },
+      }),
+    });
+    const planId = created.body.plan.id;
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/database/runs`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toEqual([
+      expect.objectContaining({
+        sectionId: 'database',
+        role: 'Database specialist',
+        prompt: expect.stringContaining('Database specialist'),
+      }),
+    ]);
+    expect(executed.body.run).toMatchObject({
+      kind: 'section-agent',
+      sectionId: 'database',
+      status: 'completed',
+      mode: 'external',
+      command: 'codex plan-section',
+      summary: expect.stringContaining('external runner'),
+      evidence: expect.arrayContaining([
+        'manifest role: Database specialist',
+      ]),
+    });
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'database-draft',
+        content: expect.stringContaining('Specialist runner output:'),
+      }),
+      expect.objectContaining({
+        kind: 'database-draft',
+        content: expect.stringContaining('External decisions for database'),
+      }),
+      expect.objectContaining({
+        kind: 'specialist-agent-manifest',
+        content: expect.stringContaining('"role": "Database specialist"'),
+      }),
+    ]));
+  });
+
   it('blocks selected tools when a live provider check fails', async () => {
     const toolCheckCalls: Array<{ command: string; args: string[] }> = [];
     const baseUrl = await startPlanServer({

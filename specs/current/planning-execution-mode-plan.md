@@ -48,6 +48,7 @@ Execution mode is complete only when these surfaces are implemented with UI and 
 
 7. **Real section agents**
    - Let each section lane create an execution run with status, started/completed timestamps, outputs, and artifacts.
+   - Execute through the configured section-agent runner when available, marking the run `external` and appending runner output to the section artifact.
    - Preserve lane dependencies: Product first; Database, Workflows, and Integrations can run in parallel after Product; Delivery waits for Architecture, Database, Workflows, and Integrations.
    - Keep section results attached to the plan and visible in the section workflow panel.
 
@@ -69,10 +70,13 @@ Add endpoints beside the existing `/api/plans` routes:
 - `GET /api/plans/:id/execution`
 - `POST /api/plans/:id/actions/:actionId/execute`
 - `POST /api/plans/:id/sections/:sectionId/runs`
+- `POST /api/plans/:id/sections/runs`
 - `POST /api/plans/:id/tools/:toolId/check`
 - `POST /api/plans/:id/artifacts`
 
 Execution endpoints must return structured status, redacted logs, and the updated plan.
+
+Section-agent runs use deterministic record-only drafts when no runner is configured. Operators can set `OD_PLAN_SECTION_AGENT_COMMAND` plus optional `OD_PLAN_SECTION_AGENT_ARGS_JSON` to run an external specialist command. The daemon writes `{ prompt, manifest }` to stdin as JSON, sets `OD_PLAN_ID`, `OD_PLAN_SECTION_ID`, and `OD_PLAN_SECTION_LABEL`, and accepts either plain stdout or JSON stdout shaped like `{ "status": "completed|blocked|failed", "summary": "...", "output": "...", "evidence": ["..."] }`.
 
 ## CLI surface
 
@@ -124,7 +128,7 @@ Add Coolify/Vercel/Cloudflare/Hostinger execution paths with verification eviden
 
 ### Phase F: section-agent runs
 
-Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling.
+Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling. The current implementation supports injected or env-backed specialist runners, stores external runner output/evidence, and executes multi-section requests in parallel unless the request mode is `sequential`; remaining work is to wire the runner to the product's native agent runtime and stream progress into the Planning UI.
 
 ## Acceptance criteria
 

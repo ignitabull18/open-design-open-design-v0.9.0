@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -194,6 +194,26 @@ interface DatabaseMigrationInvocation {
   env?: Record<string, string>;
 }
 
+interface SectionAgentRunRequest {
+  plan: ProjectPlan;
+  section: ProjectWorkspaceSection;
+  manifest: SpecialistAgentManifest;
+  prompt: string;
+  cwd: string;
+  timeoutMs: number;
+}
+
+interface SectionAgentRunResult {
+  status: Extract<PlanningExecutionRun['status'], 'completed' | 'blocked' | 'failed'>;
+  summary: string;
+  output: string;
+  evidence: string[];
+  durationMs: number;
+  command?: string;
+}
+
+type SectionAgentRunner = (request: SectionAgentRunRequest) => Promise<SectionAgentRunResult>;
+
 interface ProjectMaterializedWrite {
   relativePath: string;
   absolutePath: string;
@@ -210,6 +230,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   providerSourceFetcher?: ProviderSourceFetcher;
   projectManagementRunner?: ProjectManagementCommandRunner;
   databaseMigrationRunner?: DatabaseMigrationCommandRunner;
+  sectionAgentRunner?: SectionAgentRunner;
 }
 
 interface ProjectPlanBuildInput {
@@ -748,6 +769,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const providerSourceFetcher = ctx.providerSourceFetcher ?? fetchProviderSource;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const databaseMigrationRunner = ctx.databaseMigrationRunner ?? runDatabaseMigrationCommand;
+  const sectionAgentRunner = ctx.sectionAgentRunner ?? buildEnvSectionAgentRunner();
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
@@ -957,7 +979,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
-  app.post('/api/plans/:id/sections/runs', (req, res) => {
+  app.post('/api/plans/:id/sections/runs', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
       if (!existing) return res.status(404).json({ error: 'plan not found' });
@@ -966,7 +988,10 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       if (selectedSections.length === 0) {
         return res.status(400).json({ error: 'no matching plan sections to run' });
       }
-      const { runs, artifacts } = runPlanningSections(existing, selectedSections, body);
+      const { runs, artifacts } = await runPlanningSections(existing, selectedSections, body, {
+        sectionAgentRunner,
+        scaffoldRoot,
+      });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         executionRuns: [...(existing.executionRuns ?? []), ...runs],
@@ -986,14 +1011,17 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
-  app.post('/api/plans/:id/sections/:sectionId/runs', (req, res) => {
+  app.post('/api/plans/:id/sections/:sectionId/runs', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
       if (!existing) return res.status(404).json({ error: 'plan not found' });
       const body = normalizeSectionRunBody(req.params.sectionId);
       const section = existing.workspaceSections.find((item) => item.id === body.sectionId);
       if (!section) return res.status(404).json({ error: 'plan section not found' });
-      const { run, artifacts } = runPlanningSection(existing, section);
+      const { run, artifacts } = await runPlanningSection(existing, section, {
+        sectionAgentRunner,
+        scaffoldRoot,
+      });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         executionRuns: [...(existing.executionRuns ?? []), run],
@@ -4516,6 +4544,146 @@ function runDatabaseMigrationCommand(request: DatabaseMigrationCommandRequest): 
   });
 }
 
+function buildEnvSectionAgentRunner(): SectionAgentRunner | undefined {
+  const command = process.env.OD_PLAN_SECTION_AGENT_COMMAND?.trim();
+  if (!command) return undefined;
+  const args = parseJsonStringArray(process.env.OD_PLAN_SECTION_AGENT_ARGS_JSON, 'OD_PLAN_SECTION_AGENT_ARGS_JSON');
+  return (request) => runSectionAgentCommand({
+    ...request,
+    command,
+    args,
+  });
+}
+
+function parseJsonStringArray(value: string | undefined, label: string): string[] {
+  if (!value?.trim()) return [];
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+    throw new Error(`${label} must be a JSON string array`);
+  }
+  return parsed;
+}
+
+function runSectionAgentCommand(request: SectionAgentRunRequest & { command: string; args: string[] }): Promise<SectionAgentRunResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn(request.command, request.args, {
+      cwd: request.cwd,
+      env: {
+        ...process.env,
+        OD_PLAN_ID: request.plan.id,
+        OD_PLAN_SECTION_ID: request.section.id,
+        OD_PLAN_SECTION_LABEL: request.section.label,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        child.kill('SIGTERM');
+      }
+    }, request.timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+      if (stdout.length > 2 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+      if (stderr.length > 2 * 1024 * 1024) stderr = stderr.slice(-2 * 1024 * 1024);
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        status: 'failed',
+        summary: `Section specialist runner failed to start for ${request.section.label}.`,
+        output: '',
+        evidence: [`runner error: ${error.message}`],
+        durationMs: Date.now() - startedAt,
+        command: formatCommand(request.command, request.args),
+      });
+    });
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(normalizeSectionAgentCommandResult({
+        code,
+        signal,
+        stdout,
+        stderr,
+        sectionLabel: request.section.label,
+        durationMs: Date.now() - startedAt,
+        command: formatCommand(request.command, request.args),
+      }));
+    });
+    child.stdin.end(JSON.stringify({
+      prompt: request.prompt,
+      manifest: request.manifest,
+    }));
+  });
+}
+
+function normalizeSectionAgentCommandResult(input: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  sectionLabel: string;
+  durationMs: number;
+  command: string;
+}): SectionAgentRunResult {
+  const parsed = parseSectionAgentJsonOutput(input.stdout);
+  const status = parsed?.status ?? (input.code === 0 ? 'completed' : 'failed');
+  const output = parsed?.output ?? input.stdout.trim();
+  const evidence = [
+    `runner exit code: ${input.code ?? 'none'}`,
+    ...(input.signal ? [`runner signal: ${input.signal}`] : []),
+    ...(parsed?.evidence ?? []),
+    ...(input.stderr.trim() ? [`stderr: ${input.stderr.trim().slice(0, 500)}`] : []),
+  ];
+  return {
+    status,
+    summary: parsed?.summary ?? (
+      input.code === 0
+        ? `Executed ${input.sectionLabel} specialist runner.`
+        : `Section specialist runner failed for ${input.sectionLabel}.`
+    ),
+    output,
+    evidence,
+    durationMs: input.durationMs,
+    command: input.command,
+  };
+}
+
+function parseSectionAgentJsonOutput(value: string): Pick<SectionAgentRunResult, 'status' | 'summary' | 'output' | 'evidence'> | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<SectionAgentRunResult>;
+    const status = parsed.status === 'completed' || parsed.status === 'blocked' || parsed.status === 'failed'
+      ? parsed.status
+      : 'completed';
+    return {
+      status,
+      summary: typeof parsed.summary === 'string' && parsed.summary.trim() ? parsed.summary : 'Executed section specialist runner.',
+      output: typeof parsed.output === 'string' ? parsed.output : trimmed,
+      evidence: Array.isArray(parsed.evidence)
+        ? parsed.evidence.filter((item): item is string => typeof item === 'string')
+        : [],
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function formatCommand(command: string, args: string[]): string {
+  return [command, ...args].join(' ');
+}
+
 interface SpecialistAgentManifest {
   generatedAt: string;
   plan: {
@@ -4568,10 +4736,16 @@ interface SpecialistAgentManifest {
   }>;
 }
 
-function runPlanningSection(
+interface PlanningSectionRunOptions {
+  sectionAgentRunner: SectionAgentRunner | undefined;
+  scaffoldRoot: string;
+}
+
+async function runPlanningSection(
   plan: ProjectPlan,
   section: ProjectWorkspaceSection,
-): { run: PlanningExecutionRun; artifacts: PlanningExecutionArtifact[] } {
+  options: PlanningSectionRunOptions,
+): Promise<{ run: PlanningExecutionRun; artifacts: PlanningExecutionArtifact[] }> {
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
   const laneIds = new Set(section.relatedLaneIds);
@@ -4603,23 +4777,44 @@ function runPlanningSection(
     createdAt: now,
   };
   const manifestArtifact = buildSpecialistAgentManifestArtifact(plan, section, lanes, questions, answer, runId, now);
+  const manifest = JSON.parse(manifestArtifact.content) as SpecialistAgentManifest;
+  const runnerResult = options.sectionAgentRunner
+    ? await options.sectionAgentRunner({
+      plan,
+      section,
+      manifest,
+      prompt: manifest.prompt,
+      cwd: options.scaffoldRoot,
+      timeoutMs: 300_000,
+    })
+    : undefined;
+  if (runnerResult) {
+    draftArtifact.content = [
+      draftArtifact.content,
+      '',
+      'Specialist runner output:',
+      runnerResult.output || '(runner returned no stdout content)',
+    ].join('\n');
+  }
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
     kind: 'section-agent',
     sectionId: section.id,
-    status: 'completed',
+    status: runnerResult?.status ?? 'completed',
     title: `${section.label} planning agent run`,
-    mode: 'record-only',
-    summary: `Generated a durable ${section.label} section output draft from stored answers, lanes, and provider notes.`,
+    mode: runnerResult ? 'external' : 'record-only',
+    summary: runnerResult?.summary ?? `Generated a durable ${section.label} section output draft from stored answers, lanes, and provider notes.`,
+    ...(runnerResult?.command ? { command: runnerResult.command } : {}),
     startedAt: now,
-    completedAt: now,
+    completedAt: runnerResult ? now + Math.max(1, runnerResult.durationMs) : now,
     artifactIds: [draftArtifact.id, manifestArtifact.id],
     evidence: [
       `${lanes.length} lane(s) considered`,
       `${questions.length} pointed question(s) attached`,
       answer ? `section answer status: ${answer.status}` : 'no section answer stored yet',
       `specialist manifest: ${manifestArtifact.id}`,
+      ...(runnerResult ? runnerResult.evidence : []),
     ],
   };
   return { run, artifacts: [draftArtifact, manifestArtifact] };
@@ -4747,8 +4942,25 @@ function runPlanningSections(
   plan: ProjectPlan,
   sections: ProjectWorkspaceSection[],
   input: RunProjectPlanSectionsRequest,
-): { runs: PlanningExecutionRun[]; artifacts: PlanningExecutionArtifact[] } {
-  const results = sections.map((section) => runPlanningSection(plan, section));
+  options: PlanningSectionRunOptions,
+): Promise<{ runs: PlanningExecutionRun[]; artifacts: PlanningExecutionArtifact[] }> {
+  return runPlanningSectionsAsync(plan, sections, input, options);
+}
+
+async function runPlanningSectionsAsync(
+  plan: ProjectPlan,
+  sections: ProjectWorkspaceSection[],
+  input: RunProjectPlanSectionsRequest,
+  options: PlanningSectionRunOptions,
+): Promise<{ runs: PlanningExecutionRun[]; artifacts: PlanningExecutionArtifact[] }> {
+  const results = input.mode === 'sequential'
+    ? []
+    : await Promise.all(sections.map((section) => runPlanningSection(plan, section, options)));
+  if (input.mode === 'sequential') {
+    for (const section of sections) {
+      results.push(await runPlanningSection(plan, section, options));
+    }
+  }
   const orchestration = buildSectionOrchestrationRun(plan, sections, results.map((result) => result.run), input);
   return {
     runs: [orchestration.run, ...results.map((result) => result.run)],
