@@ -80,10 +80,27 @@ interface RepoCommandResult {
 
 type RepoCommandRunner = (request: RepoCommandRequest) => Promise<RepoCommandResult>;
 
+interface DeployCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
+interface DeployCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type DeployCommandRunner = (request: DeployCommandRequest) => Promise<DeployCommandResult>;
+
 export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   scaffoldRoot?: string;
   scaffoldRunner?: ScaffoldCommandRunner;
   repoRunner?: RepoCommandRunner;
+  deployRunner?: DeployCommandRunner;
 }
 
 interface ProjectPlanBuildInput {
@@ -274,6 +291,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const { db } = ctx;
   const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
   const repoRunner = ctx.repoRunner ?? runRepoCommand;
+  const deployRunner = ctx.deployRunner ?? runDeployCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
@@ -458,6 +476,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         scaffoldRoot,
         scaffoldRunner,
         repoRunner,
+        deployRunner,
       });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
@@ -619,6 +638,9 @@ function normalizeActionExecutionBody(
     actionId,
     confirmed: body.confirmed === true,
     ...(typeof body.targetDir === 'string' && body.targetDir.trim() ? { targetDir: body.targetDir.trim() } : {}),
+    ...(typeof body.deliveryTarget === 'string' && ['cloudflare', 'vercel', 'coolify', 'hostinger'].includes(body.deliveryTarget)
+      ? { deliveryTarget: body.deliveryTarget as DeliveryPlan['target'] }
+      : {}),
   };
 }
 
@@ -885,7 +907,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -896,6 +918,9 @@ async function executePlanningAction(
   }
   if (action.id === 'repo-create' && body.targetDir) {
     return executeRepoCreateAction(plan, action, body, options);
+  }
+  if (action.id === 'deploy-runtime' && body.targetDir) {
+    return executeDeployRuntimeAction(plan, action, body, options);
   }
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
@@ -953,6 +978,104 @@ async function executePlanningAction(
       executionActions,
       scaffoldExecution,
       repo,
+      delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+async function executeDeployRuntimeAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string; deployRunner: DeployCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const target = resolveDeliveryTarget(plan, body.deliveryTarget);
+  const unsupported = target !== 'vercel';
+  const invocation = unsupported ? null : buildDeployInvocation(target);
+  let result: DeployCommandResult = {
+    exitCode: unsupported ? 1 : 0,
+    stdout: '',
+    stderr: unsupported ? `${target} deployment execution is not implemented yet.` : '',
+    durationMs: 0,
+  };
+  let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
+  if (invocation) {
+    try {
+      result = await options.deployRunner({
+        command: invocation.command,
+        args: invocation.args,
+        cwd: sourceDir,
+        timeoutMs: 300_000,
+      });
+      if (result.exitCode !== 0) status = 'failed';
+    } catch (err: any) {
+      result = {
+        exitCode: typeof err?.code === 'number' ? err.code : 1,
+        stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+        stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+        durationMs: 0,
+      };
+      status = 'failed';
+    }
+  }
+  const previewUrl = status === 'completed' ? extractFirstUrl(result.stdout) : undefined;
+  const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, result, status, previewUrl);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'deploy-runtime',
+    status,
+    title: `${action.label}: ${target}`,
+    mode: unsupported ? 'dry-run' : 'external',
+    summary: status === 'completed'
+      ? `${target} deployment completed${previewUrl ? ` at ${previewUrl}` : ''}.`
+      : unsupported
+        ? `${target} deployment executor is not implemented yet; recorded the blocked target and required source directory.`
+        : `${target} deployment failed; inspect the attached artifact for stdout and stderr.`,
+    ...(invocation ? { command: [invocation.command, ...invocation.args].join(' ') } : {}),
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      `deliveryTarget: ${target}`,
+      `exitCode: ${result.exitCode}`,
+      ...(previewUrl ? [`previewUrl: ${previewUrl}`] : []),
+    ],
+  };
+  const delivery = plan.delivery.map((item) =>
+    item.target === target
+      ? {
+        ...item,
+        status: status === 'completed' ? 'deployed' as const : 'blocked' as const,
+        notes: status === 'completed'
+          ? `Deployment completed${previewUrl ? ` at ${previewUrl}` : ''}.`
+          : result.stderr.slice(0, 500),
+      }
+      : item,
+  );
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'deploy-runtime'
+      ? { ...item, status: delivery.some((deliveryItem) => deliveryItem.status === 'deployed') ? 'completed' as const : 'accepted' as const }
+      : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
       delivery,
     },
     run,
@@ -1229,6 +1352,23 @@ function buildRepoCreateInvocation(
   };
 }
 
+function resolveDeliveryTarget(plan: ProjectPlan, requested?: DeliveryPlan['target']): DeliveryPlan['target'] {
+  const target = requested ?? plan.delivery[0]?.target;
+  if (!target) throw new Error('deliveryTarget is required before deployment execution');
+  if (!plan.delivery.some((item) => item.target === target)) {
+    throw new Error(`deliveryTarget is not selected for this plan: ${target}`);
+  }
+  return target;
+}
+
+function buildDeployInvocation(target: DeliveryPlan['target']): { command: string; args: string[] } {
+  if (target !== 'vercel') throw new Error(`${target} deployment execution is not implemented yet`);
+  return {
+    command: 'vercel',
+    args: ['deploy', '--yes'],
+  };
+}
+
 async function resolveScaffoldTarget(
   plan: ProjectPlan,
   targetDir: string,
@@ -1352,6 +1492,48 @@ function buildRepoArtifact(
   };
 }
 
+function buildDeployArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  target: DeliveryPlan['target'],
+  invocation: { command: string; args: string[] } | null,
+  result: DeployCommandResult,
+  status: PlanningExecutionRun['status'],
+  previewUrl?: string,
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'deployment-plan',
+    title: `${action.label} ${target} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Delivery target: ${target}`,
+      invocation ? `Command: ${[invocation.command, ...invocation.args].join(' ')}` : 'Command: not available for this delivery target yet',
+      `Source directory: ${sourceDir}`,
+      previewUrl ? `Preview URL: ${previewUrl}` : '',
+      `Exit code: ${result.exitCode}`,
+      `Duration ms: ${result.durationMs}`,
+      '',
+      'stdout:',
+      result.stdout || '(empty)',
+      '',
+      'stderr:',
+      result.stderr || '(empty)',
+    ].filter(Boolean).join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function extractFirstUrl(value: string): string | undefined {
+  const match = value.match(/https?:\/\/[^\s)]+/);
+  return match?.[0];
+}
+
 function cleanRepoSegment(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`${field} is required before creating a GitHub repository`);
@@ -1386,6 +1568,25 @@ function runScaffoldCommand(request: ScaffoldCommandRequest): Promise<ScaffoldCo
 }
 
 function runRepoCommand(request: RepoCommandRequest): Promise<RepoCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+function runDeployCommand(request: DeployCommandRequest): Promise<DeployCommandResult> {
   const startedAt = Date.now();
   return new Promise((resolve) => {
     execFile(request.command, request.args, {

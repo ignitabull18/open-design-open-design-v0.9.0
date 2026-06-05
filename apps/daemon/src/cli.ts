@@ -186,7 +186,7 @@ const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
-  'target-dir', 'tool',
+  'target-dir', 'delivery-target', 'tool',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4640,7 +4640,8 @@ async function runPlan(args) {
                                                  Accept a gated execution action.
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
   od plan execute <id> --action <name> --confirmed
-                 [--target-dir <path>] [--json] Execute or record one plan action.
+                 [--target-dir <path>] [--delivery-target <target>] [--json]
+                                                 Execute or record one plan action.
   od plan run-section <id> --section <name> [--json]
                                                  Run a section planning agent and store its output.
   od plan check-tool <id> --tool <tool-id> [--json]
@@ -4868,12 +4869,13 @@ Common options:
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
       if (!id || !actionId) {
-        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research> [--confirmed] [--target-dir <path>] [--json]');
+        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research> [--confirmed] [--target-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--json]');
         process.exit(2);
       }
       const body = {
         confirmed: flags.confirmed === true,
         ...(typeof flags['target-dir'] === 'string' ? { targetDir: flags['target-dir'] } : {}),
+        ...(typeof flags['delivery-target'] === 'string' ? { deliveryTarget: flags['delivery-target'] } : {}),
       };
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/execute`, {
         method: 'POST',

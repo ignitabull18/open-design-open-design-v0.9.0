@@ -189,6 +189,7 @@ export function executeProjectPlanAction(
       body: JSON.stringify({
         confirmed: input.confirmed === true,
         ...(input.targetDir ? { targetDir: input.targetDir } : {}),
+        ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
       }),
     },
   );

@@ -312,6 +312,7 @@ export interface ExecuteProjectPlanActionRequest {
   actionId: PlanningExecutionAction['id'];
   confirmed?: boolean;
   targetDir?: string;
+  deliveryTarget?: DeliveryPlan['target'];
 }
 
 export interface RunProjectPlanSectionRequest {

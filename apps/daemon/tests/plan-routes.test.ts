@@ -545,6 +545,85 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('executes a confirmed Vercel deployment from a configured scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'deploy-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"deploy-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'Preview: https://deploy-studio.vercel.app',
+          stderr: '',
+          durationMs: 30,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Deploy Studio',
+        intent: { purpose: 'Deploy a scaffolded project to Vercel.' },
+        delivery: [{ target: 'vercel', status: 'planned' }],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'node',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['vercel'],
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/deploy-studio',
+        deliveryTarget: 'vercel',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'vercel',
+      args: ['deploy', '--yes'],
+      cwd: sourceDir,
+    });
+    expect(executed.body.run).toMatchObject({
+      actionId: 'deploy-runtime',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('https://deploy-studio.vercel.app'),
+    });
+    expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'vercel',
+        status: 'deployed',
+        notes: expect.stringContaining('https://deploy-studio.vercel.app'),
+      }),
+    ]));
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deploy-runtime', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'deployment-plan',
+        content: expect.stringContaining('Preview URL: https://deploy-studio.vercel.app'),
+      }),
+    ]));
+  });
+
   it('updates stack decisions and regenerates the scaffold command', async () => {
     const baseUrl = await startPlanServer();
     const created = await jsonFetch(`${baseUrl}/api/plans`, {

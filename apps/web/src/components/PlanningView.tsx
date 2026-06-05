@@ -64,6 +64,7 @@ export function PlanningView() {
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [executionSaving, setExecutionSaving] = useState<string | null>(null);
   const [executionTargets, setExecutionTargets] = useState<Record<string, string>>({});
+  const [deliveryTargets, setDeliveryTargets] = useState<Record<string, ProjectPlan['delivery'][number]['target'] | ''>>({});
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -256,7 +257,11 @@ export function PlanningView() {
     }
   }
 
-  async function handleExecuteAction(actionId: ProjectPlan['executionActions'][number]['id'], targetDir?: string) {
+  async function handleExecuteAction(
+    actionId: ProjectPlan['executionActions'][number]['id'],
+    targetDir?: string,
+    deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
+  ) {
     if (!selectedPlan) return;
     setExecutionSaving(`action:${actionId}`);
     setError(null);
@@ -265,6 +270,7 @@ export function PlanningView() {
         actionId,
         confirmed: true,
         ...(targetDir?.trim() ? { targetDir: targetDir.trim() } : {}),
+        ...(deliveryTarget ? { deliveryTarget } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
     } catch (err) {
@@ -539,6 +545,10 @@ export function PlanningView() {
               onExecutionTargetChange={(actionId, targetDir) => {
                 setExecutionTargets((curr) => ({ ...curr, [actionId]: targetDir }));
               }}
+              deliveryTargets={deliveryTargets}
+              onDeliveryTargetChange={(actionId, deliveryTarget) => {
+                setDeliveryTargets((curr) => ({ ...curr, [actionId]: deliveryTarget }));
+              }}
               onRunSection={handleRunSection}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
@@ -591,6 +601,8 @@ function PlanDetail({
   onExecuteAction,
   executionTargets,
   onExecutionTargetChange,
+  deliveryTargets,
+  onDeliveryTargetChange,
   onRunSection,
   onCheckTool,
   onRefreshCapabilities,
@@ -608,9 +620,15 @@ function PlanDetail({
   onBrainstorm: () => void;
   onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
   onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
-  onExecuteAction: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir?: string) => void;
+  onExecuteAction: (
+    actionId: ProjectPlan['executionActions'][number]['id'],
+    targetDir?: string,
+    deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
+  ) => void;
   executionTargets: Record<string, string>;
   onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
+  deliveryTargets: Record<string, ProjectPlan['delivery'][number]['target'] | ''>;
+  onDeliveryTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], deliveryTarget: ProjectPlan['delivery'][number]['target'] | '') => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
@@ -733,6 +751,32 @@ function PlanDetail({
                 />
               </label>
             ) : null}
+            {action.id === 'deploy-runtime' ? (
+              <div className="planning-view__execution-grid">
+                <label className="planning-view__execution-target">
+                  <span>Deployment source directory</span>
+                  <input
+                    value={executionTargets[action.id] ?? ''}
+                    placeholder="workspace/my-project"
+                    onChange={(event) => onExecutionTargetChange(action.id, event.target.value)}
+                  />
+                </label>
+                <label className="planning-view__execution-target">
+                  <span>Delivery target</span>
+                  <select
+                    value={deliveryTargets[action.id] ?? plan.delivery[0]?.target ?? ''}
+                    onChange={(event) => {
+                      onDeliveryTargetChange(action.id, event.target.value as ProjectPlan['delivery'][number]['target'] | '');
+                    }}
+                  >
+                    {plan.delivery.length === 0 ? <option value="">No delivery targets</option> : null}
+                    {plan.delivery.map((delivery) => (
+                      <option key={delivery.target} value={delivery.target}>{delivery.target}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
             <button
               type="button"
               className="planning-view__secondary"
@@ -745,7 +789,7 @@ function PlanDetail({
               type="button"
               className="planning-view__secondary"
               disabled={executionSaving === `action:${action.id}`}
-              onClick={() => onExecuteAction(action.id, executionTargets[action.id])}
+              onClick={() => onExecuteAction(action.id, executionTargets[action.id], deliveryTargets[action.id] || plan.delivery[0]?.target)}
             >
               {executionSaving === `action:${action.id}` ? 'Recording...' : 'Execute'}
             </button>
