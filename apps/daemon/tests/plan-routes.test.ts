@@ -91,6 +91,53 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('refreshes provider capability snapshots from live source URLs', async () => {
+    const fetchCalls: string[] = [];
+    const baseUrl = await startPlanServer({
+      providerSourceFetcher: async (url) => {
+        fetchCalls.push(url);
+        return {
+          url,
+          statusCode: 200,
+          ok: true,
+          title: url.includes('supabase') ? 'Supabase Changelog' : 'Provider Changelog',
+          excerpt: `Latest provider details from ${url}`,
+          durationMs: 7,
+        };
+      },
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/planning/capabilities/refresh`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchCalls).toEqual(expect.arrayContaining([
+      'https://developers.cloudflare.com/changelog/product-group/ai/',
+      'https://supabase.com/changelog',
+      'https://trigger.dev/changelog/',
+    ]));
+    expect(response.body.sourceUrls).toEqual(expect.arrayContaining([
+      'https://www.better-t-stack.dev/docs',
+      'https://trigger.dev/changelog/',
+    ]));
+    expect(response.body.refreshedAt).toEqual(expect.any(Number));
+    expect(response.body.refreshEvidence).toEqual(expect.arrayContaining([
+      expect.stringContaining('ok 200 https://supabase.com/changelog'),
+    ]));
+    expect(response.body.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'supabase-database',
+        checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        refreshEvidence: expect.arrayContaining([
+          expect.stringContaining('Fetched https://supabase.com/changelog'),
+          expect.stringContaining('Title: Supabase Changelog'),
+        ]),
+      }),
+    ]));
+  });
+
   it('creates a persisted Better-T-Stack scaffold plan from a project brief', async () => {
     const baseUrl = await startPlanServer();
 

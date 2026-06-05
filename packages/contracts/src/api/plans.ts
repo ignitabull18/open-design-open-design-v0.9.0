@@ -152,6 +152,7 @@ export interface ProviderCapabilitySnapshot {
   capabilities: string[];
   planningImplications: string[];
   riskNotes: string[];
+  refreshEvidence?: string[];
 }
 
 export interface PlanningRuntimePlan {
@@ -364,6 +365,9 @@ export interface PlanningToolOptionsResponse {
 
 export interface ProviderCapabilitySnapshotsResponse {
   capabilities: ProviderCapabilitySnapshot[];
+  sourceUrls?: string[];
+  refreshedAt?: number;
+  refreshEvidence?: string[];
 }
 
 export interface PlanningSessionResponse {

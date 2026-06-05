@@ -123,6 +123,18 @@ interface ToolCheckCommandResult {
 
 type ToolCheckCommandRunner = (request: ToolCheckCommandRequest) => Promise<ToolCheckCommandResult>;
 
+interface ProviderSourceFetch {
+  url: string;
+  statusCode?: number;
+  ok: boolean;
+  title?: string;
+  excerpt?: string;
+  error?: string;
+  durationMs: number;
+}
+
+type ProviderSourceFetcher = (url: string) => Promise<ProviderSourceFetch>;
+
 interface ProjectManagementCommandRequest {
   command: string;
   args: string[];
@@ -152,6 +164,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   deployRunner?: DeployCommandRunner;
   deployHealthChecker?: DeploymentHealthChecker;
   toolCheckRunner?: ToolCheckCommandRunner;
+  providerSourceFetcher?: ProviderSourceFetcher;
   projectManagementRunner?: ProjectManagementCommandRunner;
 }
 
@@ -346,6 +359,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const deployRunner = ctx.deployRunner ?? runDeployCommand;
   const deployHealthChecker = ctx.deployHealthChecker ?? runDeploymentHealthCheck;
   const toolCheckRunner = ctx.toolCheckRunner ?? runToolCheckCommand;
+  const providerSourceFetcher = ctx.providerSourceFetcher ?? fetchProviderSource;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
@@ -357,13 +371,15 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     res.json({ capabilities: PROVIDER_CAPABILITIES });
   });
 
-  app.post('/api/planning/capabilities/refresh', (_req, res) => {
-    const checkedAt = new Date().toISOString().slice(0, 10);
-    res.json({
-      capabilities: PROVIDER_CAPABILITIES.map((snapshot) => ({ ...snapshot, checkedAt })),
-      sourceUrls: SOURCE_URLS,
-      refreshedAt: Date.now(),
-    });
+  app.post('/api/planning/capabilities/refresh', async (_req, res) => {
+    try {
+      const refreshed = await refreshProviderCapabilities({
+        providerSourceFetcher,
+      });
+      res.json(refreshed);
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
   });
 
   app.get('/api/plans', (_req, res) => {
@@ -854,6 +870,47 @@ function buildProviderCapabilities(selectedTools: ProjectToolConnection[]): Prov
       || (snapshot.toolId === 'github' && selected.has('github-issues'))
       || (snapshot.toolId === 'supabase-database' && selected.has('supabase-auth')),
   );
+}
+
+async function refreshProviderCapabilities(
+  options: { providerSourceFetcher: ProviderSourceFetcher },
+): Promise<{
+  capabilities: ProviderCapabilitySnapshot[];
+  sourceUrls: string[];
+  refreshedAt: number;
+  refreshEvidence: string[];
+}> {
+  const refreshedAt = Date.now();
+  const checkedAt = new Date(refreshedAt).toISOString().slice(0, 10);
+  const urls = Array.from(new Set(PROVIDER_CAPABILITIES.map((snapshot) => snapshot.sourceUrl)));
+  const fetches = await Promise.all(urls.map((url) => options.providerSourceFetcher(url)));
+  const byUrl = new Map(fetches.map((item) => [item.url, item]));
+  const capabilities = PROVIDER_CAPABILITIES.map((snapshot) => {
+    const source = byUrl.get(snapshot.sourceUrl);
+    const refreshEvidence = source
+      ? [
+        `Fetched ${source.url}`,
+        `Status: ${source.statusCode ?? 'unknown'} (${source.ok ? 'ok' : 'blocked'})`,
+        `Duration ms: ${source.durationMs}`,
+        ...(source.title ? [`Title: ${source.title}`] : []),
+        ...(source.excerpt ? [`Excerpt: ${source.excerpt}`] : []),
+        ...(source.error ? [`Error: ${source.error}`] : []),
+      ]
+      : [`No live fetch result for ${snapshot.sourceUrl}`];
+    return {
+      ...snapshot,
+      checkedAt,
+      refreshEvidence,
+    };
+  });
+  return {
+    capabilities,
+    sourceUrls: SOURCE_URLS,
+    refreshedAt,
+    refreshEvidence: fetches.map((item) =>
+      `${item.ok ? 'ok' : 'blocked'} ${item.statusCode ?? 'unknown'} ${item.url}${item.title ? ` - ${item.title}` : ''}`,
+    ),
+  };
 }
 
 function buildRuntimePlan(
@@ -2394,6 +2451,61 @@ async function runDeploymentHealthCheck(url: string): Promise<DeploymentHealthCh
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchProviderSource(url: string): Promise<ProviderSourceFetch> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    const text = await response.text().catch(() => '');
+    const title = extractHtmlTitle(text);
+    const excerpt = buildSourceExcerpt(text);
+    return {
+      url,
+      statusCode: response.status,
+      ok: response.ok,
+      ...(title ? { title } : {}),
+      ...(excerpt ? { excerpt } : {}),
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (err: any) {
+    return {
+      url,
+      ok: false,
+      error: String(err?.message ?? err),
+      durationMs: Date.now() - startedAt,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function extractHtmlTitle(value: string): string | undefined {
+  const match = value.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = match?.[1];
+  return title ? normalizeWhitespace(stripHtml(title)).slice(0, 160) : undefined;
+}
+
+function buildSourceExcerpt(value: string): string | undefined {
+  const stripped = normalizeWhitespace(stripHtml(value));
+  return stripped ? stripped.slice(0, 240) : undefined;
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function runToolCheckCommand(request: ToolCheckCommandRequest): Promise<ToolCheckCommandResult> {
