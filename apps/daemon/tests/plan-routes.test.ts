@@ -1338,6 +1338,86 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('materializes design planning files into a scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'design-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"design-studio"}\n');
+    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Design Studio',
+        intent: {
+          purpose: 'Design a planning app with distinct product sections.',
+          audience: 'Solo builders customizing their stack',
+        },
+        selectedTools: [
+          { toolId: 'google-docs', status: 'wanted' },
+          { toolId: 'github-issues', status: 'wanted' },
+          { toolId: 'stripe', status: 'wanted' },
+          { toolId: 'trigger-dev', status: 'wanted' },
+        ],
+        sectionAnswers: {
+          design: {
+            status: 'answered',
+            answers: [
+              'Keep planning, design, database, integrations, AI, workflows, and delivery as separate sections.',
+              'Show execution proof and blockers directly on each action.',
+            ],
+            notes: 'The design should prioritize repeated operational use over a marketing landing page.',
+          },
+        },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/design-materialize/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/design-studio',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'design-materialize',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Wrote 3 design planning file'),
+    });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'wrote docs/design-plan.md',
+      'wrote docs/user-flows.md',
+      'wrote docs/design-acceptance.md',
+    ]));
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'design-materialize', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'design-materialization',
+        content: expect.stringContaining('docs/design-plan.md'),
+      }),
+    ]));
+    const designPlan = readFileSync(path.join(sourceDir, 'docs', 'design-plan.md'), 'utf8');
+    const userFlows = readFileSync(path.join(sourceDir, 'docs', 'user-flows.md'), 'utf8');
+    const acceptance = readFileSync(path.join(sourceDir, 'docs', 'design-acceptance.md'), 'utf8');
+    expect(designPlan).toContain('Audience: Solo builders customizing their stack');
+    expect(designPlan).toContain('Keep planning, design, database, integrations, AI, workflows, and delivery as separate sections.');
+    expect(userFlows).toContain('Materialize design and database files into the scaffolded source tree.');
+    expect(userFlows).toContain('Selected tools: google-docs, github-issues, stripe, trigger-dev');
+    expect(acceptance).toContain('Planning, Design, Database, Integrations, AI, Workflows, and Delivery remain visually and functionally distinct.');
+  });
+
   it('blocks database migration execution when provider identity is missing', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'd1-studio');

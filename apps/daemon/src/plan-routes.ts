@@ -194,7 +194,7 @@ interface DatabaseMigrationInvocation {
   env?: Record<string, string>;
 }
 
-interface DatabaseMaterializedWrite {
+interface ProjectMaterializedWrite {
   relativePath: string;
   absolutePath: string;
   bytes: number;
@@ -773,7 +773,7 @@ function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjec
 function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
   if (!isPlanningExecutionActionId(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, or database-migrate');
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, database-migrate, or design-materialize');
   }
   return {
     actionId,
@@ -787,7 +787,7 @@ function normalizeActionExecutionBody(
 ): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
   if (!isPlanningExecutionActionId(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, or database-migrate');
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, database-migrate, or design-materialize');
   }
   return {
     actionId,
@@ -803,7 +803,7 @@ function normalizeActionExecutionBody(
 }
 
 function isPlanningExecutionActionId(value: string): value is PlanningExecutionAction['id'] {
-  return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize', 'database-migrate'].includes(value);
+  return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize', 'database-migrate', 'design-materialize'].includes(value);
 }
 
 function normalizeCapabilityRefreshBody(body: Record<string, unknown>): RefreshProviderCapabilitySnapshotsRequest {
@@ -1162,6 +1162,23 @@ function buildExecutionActions(
       relatedSectionIds: ['database', 'planning', 'delivery'],
     },
     {
+      id: 'design-materialize',
+      label: 'Write design planning files',
+      status: 'ready',
+      requiresConfirmation: true,
+      preconditions: [
+        'The scaffold source directory exists inside the configured scaffold root.',
+        'Design section decisions, pointed questions, and user flows have been reviewed.',
+        'Database and integration constraints that affect screen state are represented in the plan.',
+      ],
+      effects: [
+        'Writes docs/design-plan.md with the design section brief, screens, states, and acceptance criteria.',
+        'Writes docs/user-flows.md with ordered workflow paths across planning, database, integrations, AI, and delivery.',
+        'Writes docs/design-acceptance.md with testable UI and workflow acceptance checks.',
+      ],
+      relatedSectionIds: ['design', 'planning', 'database', 'integrations', 'ai', 'workflows', 'delivery'],
+    },
+    {
       id: 'database-migrate',
       label: 'Apply database migrations',
       status: isSqlDatabase(stack.database ?? 'supabase') ? 'ready' : 'blocked',
@@ -1221,6 +1238,9 @@ async function executePlanningAction(
   }
   if (action.id === 'database-materialize' && body.targetDir) {
     return executeDatabaseMaterializeAction(plan, action, body, options);
+  }
+  if (action.id === 'design-materialize' && body.targetDir) {
+    return executeDesignMaterializeAction(plan, action, body, options);
   }
   if (action.id === 'database-migrate' && body.targetDir) {
     return executeDatabaseMigrateAction(plan, action, body, options);
@@ -1415,6 +1435,55 @@ async function executeDatabaseMaterializeAction(
   };
   const executionActions = plan.executionActions.map((item) =>
     item.id === 'database-materialize' ? { ...item, status: 'completed' as const } : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+async function executeDesignMaterializeAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const writes = await writeDesignPlanningFiles(plan, sourceDir);
+  const artifact = buildDesignMaterializeArtifact(plan, action, runId, sourceDir, writes);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'design-materialize',
+    status: 'completed',
+    title: action.label,
+    mode: 'external',
+    summary: `Wrote ${writes.length} design planning file(s) into ${sourceDir}.`,
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      ...writes.map((write) => `wrote ${write.relativePath}`),
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'design-materialize' ? { ...item, status: 'completed' as const } : item,
   );
   return {
     planPatch: {
@@ -1849,9 +1918,11 @@ function buildActionArtifact(
             ? 'database-materialization'
             : action.id === 'database-migrate'
               ? 'database-migration'
-              : action.id === 'project-management'
-                ? 'project-management-plan'
-                : 'deployment-plan',
+              : action.id === 'design-materialize'
+                ? 'design-materialization'
+                : action.id === 'project-management'
+                  ? 'project-management-plan'
+                  : 'deployment-plan',
     title: `${action.label} execution note`,
     content,
     createdAt: now,
@@ -2393,8 +2464,8 @@ async function resolveRepoSourceDir(targetDir: string, scaffoldRoot: string): Pr
   return sourceDir;
 }
 
-async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): Promise<DatabaseMaterializedWrite[]> {
-  const writes: DatabaseMaterializedWrite[] = [];
+async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): Promise<ProjectMaterializedWrite[]> {
+  const writes: ProjectMaterializedWrite[] = [];
   await writeProjectFile(sourceDir, 'docs/database-plan.md', buildDatabasePlanMarkdown(plan), writes);
   await writeProjectFile(sourceDir, 'db/README.md', buildDatabaseReadme(plan), writes);
   if (isSqlDatabase(plan.databaseDesign.primaryStore)) {
@@ -2405,14 +2476,22 @@ async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): P
   return writes;
 }
 
+async function writeDesignPlanningFiles(plan: ProjectPlan, sourceDir: string): Promise<ProjectMaterializedWrite[]> {
+  const writes: ProjectMaterializedWrite[] = [];
+  await writeProjectFile(sourceDir, 'docs/design-plan.md', buildDesignPlanMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'docs/user-flows.md', buildUserFlowsMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'docs/design-acceptance.md', buildDesignAcceptanceMarkdown(plan), writes);
+  return writes;
+}
+
 async function writeProjectFile(
   sourceDir: string,
   relativePath: string,
   content: string,
-  writes: DatabaseMaterializedWrite[],
+  writes: ProjectMaterializedWrite[],
 ): Promise<void> {
   const absolutePath = path.resolve(sourceDir, relativePath);
-  assertPathInside(absolutePath, sourceDir, 'generated database files must stay inside the scaffold source directory');
+  assertPathInside(absolutePath, sourceDir, 'generated planning files must stay inside the scaffold source directory');
   await fs.mkdir(path.dirname(absolutePath), { recursive: true });
   await fs.writeFile(absolutePath, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
   writes.push({
@@ -2424,6 +2503,176 @@ async function writeProjectFile(
 
 function isSqlDatabase(primaryStore: string): boolean {
   return ['supabase', 'postgres-coolify', 'cloudflare-d1'].includes(primaryStore);
+}
+
+function buildDesignPlanMarkdown(plan: ProjectPlan): string {
+  const context = buildDesignContext(plan);
+  return [
+    '# Design Plan',
+    '',
+    `Project: ${plan.name}`,
+    `Purpose: ${plan.intent.purpose}`,
+    plan.intent.audience ? `Audience: ${plan.intent.audience}` : '',
+    '',
+    '## Design Section Ownership',
+    `Purpose: ${context.section?.purpose ?? 'Shape the product experience and user-facing workflows.'}`,
+    '',
+    'Owns:',
+    ...formatBullets(context.section?.owns ?? ['user flows', 'screen inventory', 'interaction states', 'accessibility expectations']),
+    '',
+    'Does not own:',
+    ...formatBullets(context.section?.doesNotOwn ?? ['database source of truth', 'secret storage', 'provider auth scopes']),
+    '',
+    '## Accepted Design Inputs',
+    ...formatBullets(context.answer?.answers.length ? context.answer.answers : ['No accepted design answers have been stored yet.']),
+    context.answer?.notes ? `Notes: ${context.answer.notes}` : '',
+    '',
+    '## Screen Inventory',
+    ...formatBullets(buildDesignScreenInventory(plan)),
+    '',
+    '## Required States',
+    ...formatBullets(buildDesignStateChecklist(plan)),
+    '',
+    '## Provider-Aware Constraints',
+    ...formatBullets(buildDesignProviderConstraints(plan)),
+  ].filter(Boolean).join('\n');
+}
+
+function buildUserFlowsMarkdown(plan: ProjectPlan): string {
+  const context = buildDesignContext(plan);
+  return [
+    '# User Flows',
+    '',
+    `Project: ${plan.name}`,
+    '',
+    '## Primary Workflow',
+    ...formatNumbered([
+      'Capture the project purpose, audience, and success criteria in Planning.',
+      'Answer pointed questions for design, database, integrations, AI, workflows, and delivery.',
+      'Review generated stack decisions and Better-T-Stack scaffold command before execution.',
+      'Materialize design and database files into the scaffolded source tree.',
+      'Run deployment, migration, and project-management handoff actions with recorded proof.',
+    ]),
+    '',
+    '## Design Agent Lanes',
+    ...formatBullets(context.lanes.map((lane) => `${lane.label}: ${lane.outputs.join(', ')}`)),
+    '',
+    '## Pointed Design Questions',
+    ...formatBullets(context.questions.map((question) => `${question.question} (${question.answerType})`)),
+    '',
+    '## Cross-Section Dependencies',
+    ...formatBullets([
+      `Database source of truth: ${plan.databaseDesign.primaryStore}`,
+      `Runtime target: ${plan.runtimePlan.recommended}`,
+      `Delivery targets: ${plan.delivery.map((item) => item.target).join(', ') || 'not selected'}`,
+      `Selected tools: ${plan.selectedTools.map((tool) => tool.toolId).join(', ') || 'none'}`,
+    ]),
+  ].filter(Boolean).join('\n');
+}
+
+function buildDesignAcceptanceMarkdown(plan: ProjectPlan): string {
+  return [
+    '# Design Acceptance Criteria',
+    '',
+    `Project: ${plan.name}`,
+    '',
+    '## Product Clarity',
+    ...formatBullets([
+      'The first screen states the project purpose, current planning status, and next required action.',
+      'Planning, Design, Database, Integrations, AI, Workflows, and Delivery remain visually and functionally distinct.',
+      'Every section shows accepted answers, unanswered blocking questions, and related execution actions.',
+    ]),
+    '',
+    '## Workflow Usability',
+    ...formatBullets([
+      'Users can run ready section agents individually or in parallel without losing section context.',
+      'Actions that write files, create external resources, or deploy require explicit confirmation.',
+      'Each completed action surfaces artifacts, command proof, and follow-up evidence in the execution history.',
+    ]),
+    '',
+    '## Implementation Readiness',
+    ...formatBullets([
+      'Design docs reference database states, integration auth states, workflow run states, and delivery proof states.',
+      'Generated UI avoids hiding provider setup blockers behind generic “done” states.',
+      'Scaffolded screens have empty, loading, error, blocked, ready, running, completed, and failed states where applicable.',
+    ]),
+    '',
+    '## Accessibility And Responsiveness',
+    ...formatBullets([
+      'Primary workflows are keyboard-reachable and visible at desktop and mobile widths.',
+      'Status, blocker, and proof text remains readable without relying on color alone.',
+      'Long provider names, commands, URLs, and artifact paths wrap without overlapping controls.',
+    ]),
+  ].join('\n');
+}
+
+function buildDesignContext(plan: ProjectPlan): {
+  section?: ProjectWorkspaceSection;
+  answer?: ProjectSectionAnswer;
+  lanes: PlanningAgentLane[];
+  questions: IdeationQuestion[];
+} {
+  const section = plan.workspaceSections.find((item) => item.id === 'design');
+  const laneIds = new Set(section?.relatedLaneIds ?? []);
+  const lanes = plan.agentLanes.filter((lane) => lane.sectionId === 'design' || laneIds.has(lane.id));
+  const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
+  return {
+    ...(section ? { section } : {}),
+    ...(plan.sectionAnswers.design ? { answer: plan.sectionAnswers.design } : {}),
+    lanes,
+    questions,
+  };
+}
+
+function buildDesignScreenInventory(plan: ProjectPlan): string[] {
+  const screens = [
+    'Project planning dashboard with section status, pointed questions, and accepted decisions.',
+    'Design section workspace with flow map, screen inventory, state checklist, and acceptance criteria.',
+    'Database section workspace with entities, relationships, migration order, and provider notes.',
+    'Integrations section workspace with connected-account mapping, auth ownership, and webhook states.',
+    'AI section workspace with model/runtime routing, memory, and safety boundaries.',
+    'Workflows section workspace with long-running jobs, retries, schedules, and run history.',
+    'Delivery section workspace with scaffold, repository, deployment, migration, and handoff proof.',
+  ];
+  if (plan.selectedTools.some((tool) => tool.toolId === 'stripe')) {
+    screens.push('Payments setup view with products, prices, customer state, and webhook verification.');
+  }
+  if (plan.selectedTools.some((tool) => ['linear', 'github-issues', 'google-docs'].includes(tool.toolId))) {
+    screens.push('Project-management handoff view showing target, generated work items, and external proof.');
+  }
+  return screens;
+}
+
+function buildDesignStateChecklist(plan: ProjectPlan): string[] {
+  return [
+    'Not started: section exists but has no accepted answers.',
+    'Drafting: pointed questions are visible and editable.',
+    'Answered: accepted decisions are stored and reflected in generated actions.',
+    'Blocked: missing provider configuration, auth, credentials, or target directory is explicit.',
+    'Ready: an action can run and shows its preconditions before confirmation.',
+    'Running: active section-agent or execution action shows progress without hiding previous proof.',
+    'Completed: artifacts, command evidence, and next steps are linked from execution history.',
+    `Database-specific: ${plan.databaseDesign.primaryStore} migration and schema states are represented separately from UI state.`,
+  ];
+}
+
+function buildDesignProviderConstraints(plan: ProjectPlan): string[] {
+  const constraints = plan.providerCapabilities.flatMap((snapshot) =>
+    snapshot.planningImplications.slice(0, 2).map((item) => `${snapshot.toolId}: ${item}`),
+  );
+  if (constraints.length > 0) return constraints;
+  return [
+    'Refresh provider capability snapshots before treating provider-specific UI or workflow assumptions as current.',
+    'Keep provider setup blockers visible until a live check or execution artifact records proof.',
+  ];
+}
+
+function formatBullets(items: string[]): string[] {
+  return items.length ? items.map((item) => `- ${item}`) : ['- None recorded.'];
+}
+
+function formatNumbered(items: string[]): string[] {
+  return items.map((item, index) => `${index + 1}. ${item}`);
 }
 
 function buildDatabasePlanMarkdown(plan: ProjectPlan): string {
@@ -2797,7 +3046,7 @@ function buildDatabaseMaterializeArtifact(
   action: PlanningExecutionAction,
   runId: string,
   sourceDir: string,
-  writes: DatabaseMaterializedWrite[],
+  writes: ProjectMaterializedWrite[],
 ): PlanningExecutionArtifact {
   return {
     id: `plan-artifact-${randomUUID()}`,
@@ -2817,6 +3066,38 @@ function buildDatabaseMaterializeArtifact(
       'Review notes:',
       '- Confirm tenant ownership and auth assumptions before applying migrations.',
       '- Keep provider secrets in the selected secret manager, not in generated files.',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function buildDesignMaterializeArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  writes: ProjectMaterializedWrite[],
+): PlanningExecutionArtifact {
+  const designAnswer = plan.sectionAnswers.design;
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'design-materialization',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      'Status: completed',
+      `Source directory: ${sourceDir}`,
+      `Design answer status: ${designAnswer?.status ?? 'not_started'}`,
+      '',
+      'Generated files:',
+      ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
+      '',
+      'Review notes:',
+      '- Confirm generated flows match the intended MVP before implementation.',
+      '- Keep planning, design, database, integrations, AI, workflows, and delivery as distinct product surfaces.',
+      '- Validate responsive and accessibility states before treating the scaffold as ready for users.',
     ].join('\n'),
     createdAt: Date.now(),
   };
