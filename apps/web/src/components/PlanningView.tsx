@@ -1087,6 +1087,25 @@ function PlanDetail({
   const activeSection = plan.workspaceSections.find((section) => section.id === activeSectionId)
     ?? plan.workspaceSections[0]
     ?? null;
+  const runningSectionIds = useMemo(() => {
+    if (executionSaving?.startsWith('section:')) {
+      return new Set<ProjectWorkspaceSection['id']>([
+        executionSaving.slice('section:'.length) as ProjectWorkspaceSection['id'],
+      ]);
+    }
+    if (!executionSaving?.startsWith('sections:')) return new Set<ProjectWorkspaceSection['id']>();
+    const mode = executionSaving.slice('sections:'.length) as NonNullable<RunProjectPlanSectionsRequest['mode']>;
+    const workboard = plan.sectionWorkboard;
+    if (mode === 'parallel') {
+      return new Set(
+        (workboard?.items ?? [])
+          .filter((item) => item.readyForParallelRun)
+          .map((item) => item.sectionId),
+      );
+    }
+    const sequentialGroup = workboard?.parallelGroups.find((group) => group.mode === 'sequential');
+    return new Set(sequentialGroup?.sectionIds ?? plan.workspaceSections.map((section) => section.id));
+  }, [executionSaving, plan.sectionWorkboard, plan.workspaceSections]);
   const selectedProjectManagementTools = plan.selectedTools
     .map((tool) => tool.toolId)
     .filter((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
@@ -1218,6 +1237,7 @@ function PlanDetail({
             section={activeSection}
             plan={plan}
             saving={sectionSaving === activeSection.id}
+            running={runningSectionIds.has(activeSection.id)}
             actionSaving={actionSaving}
             executionSaving={executionSaving}
             onSave={onSaveSectionAnswer}
@@ -1641,6 +1661,7 @@ function SectionWorkflowPanel({
   section,
   plan,
   saving,
+  running,
   actionSaving,
   executionSaving,
   onSave,
@@ -1650,6 +1671,7 @@ function SectionWorkflowPanel({
   section: ProjectWorkspaceSection;
   plan: ProjectPlan;
   saving: boolean;
+  running: boolean;
   actionSaving: string | null;
   executionSaving: string | null;
   onSave: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
@@ -1699,10 +1721,10 @@ function SectionWorkflowPanel({
         <button
           type="button"
           className="planning-view__secondary"
-          disabled={executionSaving === `section:${section.id}`}
+          disabled={running}
           onClick={() => onRunSection(section.id)}
         >
-          {executionSaving === `section:${section.id}` ? 'Running...' : 'Run section agent'}
+          {running ? 'Running...' : 'Run section agent'}
         </button>
       </div>
       <div className="planning-view__section-dashboard" aria-label={`${section.label} section dashboard`}>
@@ -1726,11 +1748,17 @@ function SectionWorkflowPanel({
       <div className="planning-view__section-agent-summary">
         <div>
           <h4>Latest specialist run</h4>
-          {latestRun ? (
+          {running ? (
+            <div className="planning-view__workflow-item is-running" aria-live="polite">
+              <strong>running · pending</strong>
+              <span>The {section.label} specialist is generating section output and proof.</span>
+              <small>Previous stored run remains visible after completion.</small>
+            </div>
+          ) : latestRun ? (
             <div className="planning-view__workflow-item">
               <strong>{latestRun.status} · {latestRun.mode}</strong>
               <span>{latestRun.summary}</span>
-              <small>{latestRun.evidence.slice(0, 3).join(' · ')}</small>
+              <small>{formatSectionRunMeta(latestRun)}</small>
             </div>
           ) : (
             <span className="planning-view__muted">No specialist run has been recorded for this section yet.</span>
@@ -1870,4 +1898,12 @@ function SectionWorkflowPanel({
       </div>
     </article>
   );
+}
+
+function formatSectionRunMeta(run: ProjectPlan['executionRuns'][number]): string {
+  const evidence = run.evidence.slice(0, 3).join(' · ');
+  const timing = run.completedAt
+    ? `completed ${new Date(run.completedAt).toLocaleString()}`
+    : `started ${new Date(run.startedAt).toLocaleString()}`;
+  return evidence ? `${timing} · ${evidence}` : timing;
 }

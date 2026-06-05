@@ -911,6 +911,13 @@
   min-width: 0;
 }
 
+.planning-view__workflow-item.is-running {
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
 .planning-view__workflow-item code {
   overflow: auto;
   padding: 7px;
