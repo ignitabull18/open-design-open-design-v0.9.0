@@ -761,9 +761,15 @@ function PlanDetail({
               <span>{action.status} · {action.requiresConfirmation ? 'confirmation required' : 'open'}</span>
             </div>
             {action.command ? <code>{action.command}</code> : null}
-            {action.id === 'scaffold' || action.id === 'repo-create' ? (
+            {action.id === 'scaffold' || action.id === 'repo-create' || action.id === 'database-materialize' ? (
               <label className="planning-view__execution-target">
-                <span>{action.id === 'scaffold' ? 'Scaffold parent directory' : 'Scaffold source directory'}</span>
+                <span>
+                  {action.id === 'scaffold'
+                    ? 'Scaffold parent directory'
+                    : action.id === 'database-materialize'
+                      ? 'Database source directory'
+                      : 'Scaffold source directory'}
+                </span>
                 <input
                   value={executionTargets[action.id] ?? ''}
                   placeholder={action.id === 'scaffold' ? 'workspace' : 'workspace/my-project'}

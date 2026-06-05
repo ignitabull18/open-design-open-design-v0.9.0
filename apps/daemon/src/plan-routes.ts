@@ -112,6 +112,12 @@ interface ProjectManagementCommandResult {
 
 type ProjectManagementCommandRunner = (request: ProjectManagementCommandRequest) => Promise<ProjectManagementCommandResult>;
 
+interface DatabaseMaterializedWrite {
+  relativePath: string;
+  absolutePath: string;
+  bytes: number;
+}
+
 export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   scaffoldRoot?: string;
   scaffoldRunner?: ScaffoldCommandRunner;
@@ -636,8 +642,8 @@ function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjec
 
 function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, or project-management');
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, or database-materialize');
   }
   return {
     actionId,
@@ -650,8 +656,8 @@ function normalizeActionExecutionBody(
   body: Record<string, unknown>,
 ): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, or project-management');
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, or database-materialize');
   }
   return {
     actionId,
@@ -923,6 +929,23 @@ function buildExecutionActions(
       relatedSectionIds: ['delivery', 'integrations'],
     },
     {
+      id: 'database-materialize',
+      label: 'Write database design files',
+      status: 'ready',
+      requiresConfirmation: true,
+      preconditions: [
+        'The scaffold source directory exists inside the configured scaffold root.',
+        'Database section decisions are accepted or reviewed.',
+        'The generated files are reviewed before applying migrations to a live provider.',
+      ],
+      effects: [
+        'Writes docs/database-plan.md into the scaffolded project.',
+        'Writes db/migrations/0001_planning_schema.sql for SQL-compatible stores.',
+        'Writes db/README.md with provider-specific next steps.',
+      ],
+      relatedSectionIds: ['database', 'planning', 'delivery'],
+    },
+    {
       id: 'project-management',
       label: 'Create project-management handoff',
       status: 'ready',
@@ -960,6 +983,9 @@ async function executePlanningAction(
   }
   if (action.id === 'deploy-runtime' && body.targetDir) {
     return executeDeployRuntimeAction(plan, action, body, options);
+  }
+  if (action.id === 'database-materialize' && body.targetDir) {
+    return executeDatabaseMaterializeAction(plan, action, body, options);
   }
   if (action.id === 'project-management') {
     return executeProjectManagementAction(plan, action, body, options);
@@ -1028,6 +1054,55 @@ async function executePlanningAction(
 }
 
 type ProjectManagementTarget = Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'>;
+
+async function executeDatabaseMaterializeAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const writes = await writeDatabaseDesignFiles(plan, sourceDir);
+  const artifact = buildDatabaseMaterializeArtifact(plan, action, runId, sourceDir, writes);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'database-materialize',
+    status: 'completed',
+    title: action.label,
+    mode: 'external',
+    summary: `Wrote ${writes.length} database design file(s) into ${sourceDir}.`,
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      ...writes.map((write) => `wrote ${write.relativePath}`),
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'database-materialize' ? { ...item, status: 'completed' as const } : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
 
 async function executeProjectManagementAction(
   plan: ProjectPlan,
@@ -1439,7 +1514,11 @@ function buildActionArtifact(
         ? 'scaffold-plan'
         : action.id === 'repo-create'
           ? 'repo-plan'
-          : 'deployment-plan',
+          : action.id === 'database-materialize'
+            ? 'database-materialization'
+            : action.id === 'project-management'
+              ? 'project-management-plan'
+              : 'deployment-plan',
     title: `${action.label} execution note`,
     content,
     createdAt: now,
@@ -1673,6 +1752,278 @@ async function resolveRepoSourceDir(targetDir: string, scaffoldRoot: string): Pr
   return sourceDir;
 }
 
+async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): Promise<DatabaseMaterializedWrite[]> {
+  const writes: DatabaseMaterializedWrite[] = [];
+  await writeProjectFile(sourceDir, 'docs/database-plan.md', buildDatabasePlanMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'db/README.md', buildDatabaseReadme(plan), writes);
+  if (isSqlDatabase(plan.databaseDesign.primaryStore)) {
+    await writeProjectFile(sourceDir, 'db/migrations/0001_planning_schema.sql', buildDatabaseMigrationSql(plan), writes);
+  } else {
+    await writeProjectFile(sourceDir, 'db/schema-notes.md', buildDatabaseSchemaNotes(plan), writes);
+  }
+  return writes;
+}
+
+async function writeProjectFile(
+  sourceDir: string,
+  relativePath: string,
+  content: string,
+  writes: DatabaseMaterializedWrite[],
+): Promise<void> {
+  const absolutePath = path.resolve(sourceDir, relativePath);
+  assertPathInside(absolutePath, sourceDir, 'generated database files must stay inside the scaffold source directory');
+  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+  await fs.writeFile(absolutePath, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
+  writes.push({
+    relativePath,
+    absolutePath,
+    bytes: Buffer.byteLength(content.endsWith('\n') ? content : `${content}\n`, 'utf8'),
+  });
+}
+
+function isSqlDatabase(primaryStore: string): boolean {
+  return ['supabase', 'postgres-coolify', 'cloudflare-d1'].includes(primaryStore);
+}
+
+function buildDatabasePlanMarkdown(plan: ProjectPlan): string {
+  const db = plan.databaseDesign;
+  return [
+    '# Database Plan',
+    '',
+    `Project: ${plan.name}`,
+    `Primary store: ${db.primaryStore}`,
+    `Mode: ${db.mode}`,
+    '',
+    '## Entities',
+    ...db.entities.map((item) => `- ${item}`),
+    '',
+    '## Relationships',
+    ...db.relationships.map((item) => `- ${item}`),
+    '',
+    '## Access Patterns',
+    ...db.accessPatterns.map((item) => `- ${item}`),
+    '',
+    '## Migration Order',
+    ...db.migrations.map((item) => `- ${item}`),
+    '',
+    '## Risk Notes',
+    ...db.riskNotes.map((item) => `- ${item}`),
+    '',
+    '## Draft Schema',
+    '',
+    buildDatabaseDraftArtifactContent(plan),
+  ].join('\n');
+}
+
+function buildDatabaseReadme(plan: ProjectPlan): string {
+  const primaryStore = plan.databaseDesign.primaryStore;
+  const providerNote = primaryStore === 'cloudflare-d1'
+    ? 'Cloudflare D1 uses SQLite-compatible migrations. Keep authorization in the API layer or Cloudflare Access unless a higher-level auth layer enforces tenant boundaries.'
+    : primaryStore === 'supabase'
+      ? 'Supabase/Postgres supports RLS. Review the generated policies before applying the migration to a live project.'
+      : primaryStore === 'postgres-coolify'
+        ? 'Self-hosted Postgres on Coolify needs extension setup, backups, and RLS policy review before production use.'
+        : primaryStore === 'convex'
+          ? 'Convex uses schema and function files instead of SQL migrations. Use schema-notes.md as the model for a Convex schema pass.'
+          : 'No SQL store is selected. Use schema-notes.md to decide whether the project needs a database.';
+  return [
+    '# Database Workspace',
+    '',
+    `Generated from Open Design plan: ${plan.name}`,
+    '',
+    providerNote,
+    '',
+    '## Files',
+    '- docs/database-plan.md: accepted database planning artifact.',
+    isSqlDatabase(primaryStore)
+      ? '- db/migrations/0001_planning_schema.sql: first SQL-compatible planning migration.'
+      : '- db/schema-notes.md: non-SQL schema implementation notes.',
+    '',
+    '## Next Steps',
+    '- Review tenant ownership and auth assumptions.',
+    '- Apply migrations only after connecting the real provider project.',
+    '- Store provider secrets in the selected secret manager, not in repository files.',
+  ].join('\n');
+}
+
+function buildDatabaseSchemaNotes(plan: ProjectPlan): string {
+  return [
+    '# Database Schema Notes',
+    '',
+    `Primary store: ${plan.databaseDesign.primaryStore}`,
+    '',
+    'This plan does not target a SQL-compatible migration file. Translate the entities and relationships below into the selected provider schema.',
+    '',
+    '## Entities',
+    ...plan.databaseDesign.entities.map((item) => `- ${item}`),
+    '',
+    '## Access Policies',
+    '- Tenant data must be scoped by organization or project membership.',
+    '- Integration credentials should reference external secret storage instead of storing raw secrets.',
+  ].join('\n');
+}
+
+function buildDatabaseMigrationSql(plan: ProjectPlan): string {
+  if (plan.databaseDesign.primaryStore === 'cloudflare-d1') return buildD1MigrationSql(plan);
+  return buildPostgresMigrationSql(plan);
+}
+
+function buildPostgresMigrationSql(plan: ProjectPlan): string {
+  return [
+    '-- Generated by Open Design planning. Review before applying to a live database.',
+    'create extension if not exists "pgcrypto";',
+    '',
+    'create table if not exists organizations (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  name text not null,',
+    '  created_at timestamptz not null default now()',
+    ');',
+    '',
+    'create table if not exists organization_memberships (',
+    '  organization_id uuid not null references organizations(id) on delete cascade,',
+    '  user_id uuid not null,',
+    '  role text not null default \'member\',',
+    '  created_at timestamptz not null default now(),',
+    '  primary key (organization_id, user_id)',
+    ');',
+    '',
+    'create table if not exists projects (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  organization_id uuid not null references organizations(id) on delete cascade,',
+    '  name text not null,',
+    '  purpose text not null default \'\',',
+    '  created_at timestamptz not null default now()',
+    ');',
+    '',
+    'create table if not exists plans (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  project_id uuid not null references projects(id) on delete cascade,',
+    '  status text not null default \'draft\',',
+    '  stack jsonb not null default \'{}\'::jsonb,',
+    '  sections jsonb not null default \'{}\'::jsonb,',
+    '  created_at timestamptz not null default now(),',
+    '  updated_at timestamptz not null default now()',
+    ');',
+    '',
+    'create table if not exists workflow_runs (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  project_id uuid not null references projects(id) on delete cascade,',
+    '  provider text not null,',
+    '  status text not null default \'queued\',',
+    '  evidence jsonb not null default \'[]\'::jsonb,',
+    '  created_at timestamptz not null default now(),',
+    '  updated_at timestamptz not null default now()',
+    ');',
+    '',
+    'create table if not exists integration_connections (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  project_id uuid not null references projects(id) on delete cascade,',
+    '  provider text not null,',
+    '  status text not null default \'blocked\',',
+    '  external_ref text,',
+    '  created_at timestamptz not null default now(),',
+    '  updated_at timestamptz not null default now()',
+    ');',
+    '',
+    'create table if not exists audit_events (',
+    '  id uuid primary key default gen_random_uuid(),',
+    '  project_id uuid references projects(id) on delete set null,',
+    '  actor_id uuid,',
+    '  event_type text not null,',
+    '  payload jsonb not null default \'{}\'::jsonb,',
+    '  created_at timestamptz not null default now()',
+    ');',
+    '',
+    'create index if not exists projects_organization_id_idx on projects(organization_id);',
+    'create index if not exists plans_project_id_status_idx on plans(project_id, status);',
+    'create index if not exists workflow_runs_project_id_status_idx on workflow_runs(project_id, status);',
+    'create index if not exists integration_connections_project_id_provider_idx on integration_connections(project_id, provider);',
+    'create index if not exists audit_events_project_id_created_at_idx on audit_events(project_id, created_at desc);',
+    '',
+    'alter table organizations enable row level security;',
+    'alter table organization_memberships enable row level security;',
+    'alter table projects enable row level security;',
+    'alter table plans enable row level security;',
+    'alter table workflow_runs enable row level security;',
+    'alter table integration_connections enable row level security;',
+    'alter table audit_events enable row level security;',
+  ].join('\n');
+}
+
+function buildD1MigrationSql(plan: ProjectPlan): string {
+  return [
+    '-- Generated by Open Design planning for Cloudflare D1. Review before applying.',
+    `-- Plan: ${plan.name}`,
+    '',
+    'create table if not exists organizations (',
+    '  id text primary key,',
+    '  name text not null,',
+    '  created_at integer not null',
+    ');',
+    '',
+    'create table if not exists organization_memberships (',
+    '  organization_id text not null references organizations(id) on delete cascade,',
+    '  user_id text not null,',
+    '  role text not null default \'member\',',
+    '  created_at integer not null,',
+    '  primary key (organization_id, user_id)',
+    ');',
+    '',
+    'create table if not exists projects (',
+    '  id text primary key,',
+    '  organization_id text not null references organizations(id) on delete cascade,',
+    '  name text not null,',
+    '  purpose text not null default \'\',',
+    '  created_at integer not null',
+    ');',
+    '',
+    'create table if not exists plans (',
+    '  id text primary key,',
+    '  project_id text not null references projects(id) on delete cascade,',
+    '  status text not null default \'draft\',',
+    '  stack_json text not null default \'{}\',',
+    '  sections_json text not null default \'{}\',',
+    '  created_at integer not null,',
+    '  updated_at integer not null',
+    ');',
+    '',
+    'create table if not exists workflow_runs (',
+    '  id text primary key,',
+    '  project_id text not null references projects(id) on delete cascade,',
+    '  provider text not null,',
+    '  status text not null default \'queued\',',
+    '  evidence_json text not null default \'[]\',',
+    '  created_at integer not null,',
+    '  updated_at integer not null',
+    ');',
+    '',
+    'create table if not exists integration_connections (',
+    '  id text primary key,',
+    '  project_id text not null references projects(id) on delete cascade,',
+    '  provider text not null,',
+    '  status text not null default \'blocked\',',
+    '  external_ref text,',
+    '  created_at integer not null,',
+    '  updated_at integer not null',
+    ');',
+    '',
+    'create table if not exists audit_events (',
+    '  id text primary key,',
+    '  project_id text references projects(id) on delete set null,',
+    '  actor_id text,',
+    '  event_type text not null,',
+    '  payload_json text not null default \'{}\',',
+    '  created_at integer not null',
+    ');',
+    '',
+    'create index if not exists projects_organization_id_idx on projects(organization_id);',
+    'create index if not exists plans_project_id_status_idx on plans(project_id, status);',
+    'create index if not exists workflow_runs_project_id_status_idx on workflow_runs(project_id, status);',
+    'create index if not exists integration_connections_project_id_provider_idx on integration_connections(project_id, provider);',
+    'create index if not exists audit_events_project_id_created_at_idx on audit_events(project_id, created_at desc);',
+  ].join('\n');
+}
+
 function assertPathInside(candidate: string, root: string, message: string) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
@@ -1790,6 +2141,36 @@ function buildDeployArtifact(
       'stderr:',
       result.stderr || '(empty)',
     ].filter(Boolean).join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function buildDatabaseMaterializeArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  writes: DatabaseMaterializedWrite[],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'database-materialization',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      'Status: completed',
+      `Source directory: ${sourceDir}`,
+      `Primary store: ${plan.databaseDesign.primaryStore}`,
+      '',
+      'Generated files:',
+      ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
+      '',
+      'Review notes:',
+      '- Confirm tenant ownership and auth assumptions before applying migrations.',
+      '- Keep provider secrets in the selected secret manager, not in generated files.',
+    ].join('\n'),
     createdAt: Date.now(),
   };
 }

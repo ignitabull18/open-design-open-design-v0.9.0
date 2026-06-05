@@ -1,5 +1,5 @@
 import express from 'express';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -622,6 +622,60 @@ describe('planning routes', () => {
         content: expect.stringContaining('Preview URL: https://deploy-studio.vercel.app'),
       }),
     ]));
+  });
+
+  it('materializes database planning files into a scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'database-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"database-studio"}\n');
+    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Database Studio',
+        intent: { purpose: 'Design a tenant-aware project planning database.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/database-materialize/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/database-studio',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'database-materialize',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Wrote 3 database design file'),
+    });
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'database-materialize', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'database-materialization',
+        content: expect.stringContaining('db/migrations/0001_planning_schema.sql'),
+      }),
+    ]));
+    const databasePlan = readFileSync(path.join(sourceDir, 'docs', 'database-plan.md'), 'utf8');
+    const readme = readFileSync(path.join(sourceDir, 'db', 'README.md'), 'utf8');
+    const migration = readFileSync(path.join(sourceDir, 'db', 'migrations', '0001_planning_schema.sql'), 'utf8');
+    expect(databasePlan).toContain('Primary store: supabase');
+    expect(readme).toContain('Supabase/Postgres supports RLS');
+    expect(migration).toContain('create table if not exists organizations');
+    expect(migration).toContain('alter table plans enable row level security');
   });
 
   it('executes a confirmed GitHub Issues project-management handoff', async () => {
