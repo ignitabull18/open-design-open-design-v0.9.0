@@ -2823,6 +2823,11 @@ describe('planning routes', () => {
       mode: 'external',
       summary: expect.stringContaining('Created github-issues project-management handoff'),
     });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'externalUrl: https://github.com/ignitabull/handoff-studio/issues/1',
+      'externalUrl: https://github.com/ignitabull/handoff-studio/issues/2',
+      'externalUrl: https://github.com/ignitabull/handoff-studio/issues/3',
+    ]));
     expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'project-management', status: 'completed' }),
     ]));
@@ -2833,6 +2838,7 @@ describe('planning routes', () => {
       }),
     ]));
     expect(executed.body.artifacts[0].content).toContain('https://github.com/ignitabull/handoff-studio/issues/1');
+    expect(executed.body.artifacts[0].content).toContain('External proof:');
   });
 
   it('executes a confirmed Linear project-management handoff', async () => {
@@ -2907,8 +2913,12 @@ describe('planning routes', () => {
         mode: 'external',
         summary: expect.stringContaining('Created linear project-management handoff'),
       });
+      expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+        'externalUrl: https://linear.app/acme/issue/OPS-1',
+      ]));
       expect(executed.body.artifacts[0].content).toContain('Project-management target: linear');
       expect(executed.body.artifacts[0].content).toContain('OPS-1');
+      expect(executed.body.artifacts[0].content).toContain('External proof:');
     } finally {
       if (previousApiKey === undefined) delete process.env.LINEAR_API_KEY;
       else process.env.LINEAR_API_KEY = previousApiKey;
@@ -2985,8 +2995,12 @@ describe('planning routes', () => {
       mode: 'external',
       summary: expect.stringContaining('Created google-docs project-management handoff'),
     });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'externalUrl: https://docs.google.com/document/d/test-doc',
+    ]));
     expect(executed.body.artifacts[0].content).toContain('Project-management target: google-docs');
     expect(executed.body.artifacts[0].content).toContain('https://docs.google.com/document/d/test-doc');
+    expect(executed.body.artifacts[0].content).toContain('External proof:');
   });
 
   it('updates stack decisions and regenerates the scaffold command', async () => {

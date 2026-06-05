@@ -3395,6 +3395,7 @@ async function executeProjectManagementAction(
   }
 
   const artifact = buildProjectManagementArtifact(plan, action, runId, target, cwd, issueSpecs, results, status);
+  const externalUrls = extractProjectManagementUrls(results);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -3416,6 +3417,7 @@ async function executeProjectManagementAction(
       `target: ${target}`,
       `cwd: ${cwd}`,
       `issueCount: ${issueSpecs.length}`,
+      ...externalUrls.map((url) => `externalUrl: ${url}`),
       ...results.map((item) => `${item.title}: exit ${item.result.exitCode}`),
     ],
   };
@@ -6177,6 +6179,7 @@ function buildProjectManagementArtifact(
   results: Array<{ title: string; command?: string; result: ProjectManagementCommandResult }>,
   status: PlanningExecutionRun['status'],
 ): PlanningExecutionArtifact {
+  const externalUrls = extractProjectManagementUrls(results);
   return {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
@@ -6196,6 +6199,13 @@ function buildProjectManagementArtifact(
       ]),
       '',
       'Command results:',
+      ...(externalUrls.length
+        ? [
+          'External proof:',
+          ...externalUrls.map((url) => `- ${url}`),
+          '',
+        ]
+        : []),
       ...results.flatMap((item) => [
         `Issue: ${item.title}`,
         item.command ? `Command: ${item.command}` : 'Command: not available for this project-management target yet',
@@ -6210,6 +6220,19 @@ function buildProjectManagementArtifact(
     ].join('\n'),
     createdAt: Date.now(),
   };
+}
+
+function extractProjectManagementUrls(
+  results: Array<{ title: string; command?: string; result: ProjectManagementCommandResult }>,
+): string[] {
+  const urls = results.flatMap((item) =>
+    extractUrls([item.result.stdout, item.result.stderr].filter(Boolean).join('\n')),
+  );
+  return Array.from(new Set(urls));
+}
+
+function extractUrls(value: string): string[] {
+  return Array.from(value.matchAll(/https?:\/\/[^\s)"'}\]]+/g)).map((match) => match[0]!);
 }
 
 function extractFirstUrl(value: string): string | undefined {
