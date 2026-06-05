@@ -1404,8 +1404,13 @@ describe('planning routes', () => {
     });
 
     expect(executed.status).toBe(201);
-    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls).toHaveLength(2);
     expect(runnerCalls[0]).toMatchObject({
+      command: 'vercel',
+      args: ['whoami'],
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[1]).toMatchObject({
       command: 'vercel',
       args: ['deploy', '--yes'],
       cwd: sourceDir,
@@ -1434,9 +1439,11 @@ describe('planning routes', () => {
       }),
     ]));
     expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'vercel authentication exitCode: 0',
       'healthCheck.ok: yes',
       'healthCheck.statusCode: 200',
     ]));
+    expect(executed.body.artifacts[0].content).toContain('Preflight: vercel authentication');
     expect(executed.body.artifacts[0].content).toContain('Health check: ok');
   });
 
@@ -1501,8 +1508,13 @@ describe('planning routes', () => {
     });
 
     expect(executed.status).toBe(201);
-    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls).toHaveLength(2);
     expect(runnerCalls[0]).toMatchObject({
+      command: 'pnpm',
+      args: ['wrangler', 'whoami'],
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[1]).toMatchObject({
       command: 'pnpm',
       args: ['wrangler', 'deploy'],
       cwd: sourceDir,
@@ -1531,6 +1543,10 @@ describe('planning routes', () => {
         content: expect.stringContaining('Command: pnpm wrangler deploy'),
       }),
     ]));
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'cloudflare authentication exitCode: 0',
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('Preflight: cloudflare authentication');
     expect(executed.body.artifacts[0].content).toContain('Health status: 204');
   });
 
@@ -1605,16 +1621,22 @@ describe('planning routes', () => {
       });
 
       expect(executed.status).toBe(201);
-      expect(runnerCalls).toHaveLength(1);
+      expect(runnerCalls).toHaveLength(2);
       expect(runnerCalls[0]).toMatchObject({
         command: 'bash',
         cwd: sourceDir,
       });
-      expect(runnerCalls[0]?.args.join('\n')).toContain('curl -sS -X POST "$COOLIFY_DEPLOY_URL"');
-      expect(runnerCalls[0]?.env?.COOLIFY_URL).toBe('https://coolify.example.test');
-      expect(runnerCalls[0]?.env?.COOLIFY_API_TOKEN).toBe('coolify_test_token');
-      expect(runnerCalls[0]?.env?.COOLIFY_RESOURCE_UUID).toBe('resource-123');
-      expect(runnerCalls[0]?.env?.COOLIFY_DEPLOY_URL).toBe('https://coolify.example.test/api/v1/deploy?uuid=resource-123&force=false');
+      expect(runnerCalls[0]?.args.join('\n')).toContain('curl -sS -X GET "$COOLIFY_RESOURCE_URL"');
+      expect(runnerCalls[0]?.env?.COOLIFY_RESOURCE_URL).toBe('https://coolify.example.test/api/v1/resources/resource-123');
+      expect(runnerCalls[1]).toMatchObject({
+        command: 'bash',
+        cwd: sourceDir,
+      });
+      expect(runnerCalls[1]?.args.join('\n')).toContain('curl -sS -X POST "$COOLIFY_DEPLOY_URL"');
+      expect(runnerCalls[1]?.env?.COOLIFY_URL).toBe('https://coolify.example.test');
+      expect(runnerCalls[1]?.env?.COOLIFY_API_TOKEN).toBe('coolify_test_token');
+      expect(runnerCalls[1]?.env?.COOLIFY_RESOURCE_UUID).toBe('resource-123');
+      expect(runnerCalls[1]?.env?.COOLIFY_DEPLOY_URL).toBe('https://coolify.example.test/api/v1/deploy?uuid=resource-123&force=false');
       expect(healthCalls).toEqual(['https://coolify-studio.example.test']);
       expect(executed.body.run).toMatchObject({
         actionId: 'deploy-runtime',
@@ -1631,6 +1653,7 @@ describe('planning routes', () => {
         }),
       ]));
       expect(executed.body.artifacts[0].content).toContain('Command: coolify deploy --resource "$COOLIFY_RESOURCE_UUID"');
+      expect(executed.body.artifacts[0].content).toContain('Preflight: coolify resource lookup');
       expect(executed.body.artifacts[0].content).not.toContain('coolify_test_token');
     } finally {
       if (previousUrl === undefined) delete process.env.COOLIFY_URL;
@@ -1719,17 +1742,22 @@ describe('planning routes', () => {
       });
 
       expect(executed.status).toBe(201);
-      expect(runnerCalls).toHaveLength(1);
+      expect(runnerCalls).toHaveLength(2);
       expect(runnerCalls[0]).toMatchObject({
         command: 'bash',
         cwd: sourceDir,
       });
-      expect(runnerCalls[0]?.args.join('\n')).toContain('rsync -az --delete');
-      expect(runnerCalls[0]?.args.join('\n')).toContain('HOSTINGER_POST_DEPLOY_COMMAND');
-      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_HOST).toBe('vps.example.test');
-      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_USER).toBe('deploy');
-      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_PORT).toBe('2222');
-      expect(runnerCalls[0]?.env?.HOSTINGER_DEPLOY_PATH).toBe('/var/www/hostinger-studio');
+      expect(runnerCalls[0]?.args.join('\n')).toContain('ssh -p "$HOSTINGER_SSH_PORT"');
+      expect(runnerCalls[1]).toMatchObject({
+        command: 'bash',
+        cwd: sourceDir,
+      });
+      expect(runnerCalls[1]?.args.join('\n')).toContain('rsync -az --delete');
+      expect(runnerCalls[1]?.args.join('\n')).toContain('HOSTINGER_POST_DEPLOY_COMMAND');
+      expect(runnerCalls[1]?.env?.HOSTINGER_SSH_HOST).toBe('vps.example.test');
+      expect(runnerCalls[1]?.env?.HOSTINGER_SSH_USER).toBe('deploy');
+      expect(runnerCalls[1]?.env?.HOSTINGER_SSH_PORT).toBe('2222');
+      expect(runnerCalls[1]?.env?.HOSTINGER_DEPLOY_PATH).toBe('/var/www/hostinger-studio');
       expect(healthCalls).toEqual(['https://hostinger-studio.example.test']);
       expect(executed.body.run).toMatchObject({
         actionId: 'deploy-runtime',
@@ -1746,6 +1774,7 @@ describe('planning routes', () => {
         }),
       ]));
       expect(executed.body.artifacts[0].content).toContain('Command: rsync ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"');
+      expect(executed.body.artifacts[0].content).toContain('Preflight: hostinger ssh connectivity');
     } finally {
       if (previousHost === undefined) delete process.env.HOSTINGER_SSH_HOST;
       else process.env.HOSTINGER_SSH_HOST = previousHost;
@@ -1760,6 +1789,92 @@ describe('planning routes', () => {
       if (previousPublicUrl === undefined) delete process.env.HOSTINGER_PUBLIC_URL;
       else process.env.HOSTINGER_PUBLIC_URL = previousPublicUrl;
     }
+  });
+
+  it('blocks deployment when provider preflight fails before deploy', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'blocked-deploy-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"blocked-deploy-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const healthCalls: string[] = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'vercel: not authenticated',
+          durationMs: 16,
+        };
+      },
+      deployHealthChecker: async (url) => {
+        healthCalls.push(url);
+        return {
+          url,
+          statusCode: 200,
+          ok: true,
+          durationMs: 8,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Blocked Deploy Studio',
+        intent: { purpose: 'Block deployment before deploy when provider authentication fails.' },
+        delivery: [{ target: 'vercel', status: 'planned' }],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'node',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['vercel'],
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/blocked-deploy-studio',
+        deliveryTarget: 'vercel',
+      }),
+    });
+
+    expect(executed.status).toBe(202);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'vercel',
+      args: ['whoami'],
+      cwd: sourceDir,
+    });
+    expect(healthCalls).toEqual([]);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'deploy-runtime',
+      status: 'blocked',
+      summary: expect.stringContaining('failed provider preflight'),
+    });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'vercel authentication exitCode: 1',
+      'exitCode: 1',
+    ]));
+    expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'vercel',
+        status: 'blocked',
+        notes: expect.stringContaining('vercel: not authenticated'),
+      }),
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('Preflight: vercel authentication');
+    expect(executed.body.artifacts[0].content).toContain('vercel: not authenticated');
   });
 
   it('blocks a deployment when the post-deploy health check fails', async () => {

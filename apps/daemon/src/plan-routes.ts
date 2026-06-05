@@ -122,6 +122,15 @@ interface DeployCommandInvocation {
   args: string[];
   displayCommand: string;
   env?: Record<string, string>;
+  preflight?: DeployCommandPreflight[];
+}
+
+interface DeployCommandPreflight {
+  label: string;
+  command: string;
+  args: string[];
+  displayCommand: string;
+  env?: Record<string, string>;
 }
 
 interface DeploymentHealthCheck {
@@ -3081,31 +3090,58 @@ async function executeDeployRuntimeAction(
     stderr: unsupported ? buildDeployBlockedReason(target) : '',
     durationMs: 0,
   };
+  const preflightExecutions: Array<{ label: string; command: string; result: DeployCommandResult }> = [];
   let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
   if (invocation) {
-    try {
-      result = await options.deployRunner({
-        command: invocation.command,
-        args: invocation.args,
-        cwd: sourceDir,
-        timeoutMs: 300_000,
-        ...(invocation.env ? { env: invocation.env } : {}),
+    for (const preflight of invocation.preflight ?? []) {
+      let preflightResult: DeployCommandResult;
+      try {
+        preflightResult = await options.deployRunner({
+          command: preflight.command,
+          args: preflight.args,
+          cwd: sourceDir,
+          timeoutMs: 60_000,
+          ...(preflight.env ? { env: preflight.env } : {}),
+        });
+      } catch (err: any) {
+        preflightResult = deployCommandErrorResult(err);
+      }
+      preflightExecutions.push({
+        label: preflight.label,
+        command: preflight.displayCommand,
+        result: preflightResult,
       });
-      if (result.exitCode !== 0) status = 'failed';
-    } catch (err: any) {
-      result = {
-        exitCode: typeof err?.code === 'number' ? err.code : 1,
-        stdout: typeof err?.stdout === 'string' ? err.stdout : '',
-        stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
-        durationMs: 0,
-      };
-      status = 'failed';
+      if (preflightResult.exitCode !== 0) {
+        status = 'blocked';
+        result = {
+          exitCode: preflightResult.exitCode,
+          stdout: preflightResult.stdout,
+          stderr: preflightResult.stderr || `${preflight.label} failed.`,
+          durationMs: preflightResult.durationMs,
+        };
+        break;
+      }
+    }
+    if (status === 'completed') {
+      try {
+        result = await options.deployRunner({
+          command: invocation.command,
+          args: invocation.args,
+          cwd: sourceDir,
+          timeoutMs: 300_000,
+          ...(invocation.env ? { env: invocation.env } : {}),
+        });
+        if (result.exitCode !== 0) status = 'failed';
+      } catch (err: any) {
+        result = deployCommandErrorResult(err);
+        status = 'failed';
+      }
     }
   }
   const previewUrl = status === 'completed' ? extractFirstUrl([result.stdout, result.stderr].join('\n')) : undefined;
   const healthCheck = previewUrl ? await options.deployHealthChecker(previewUrl) : undefined;
   if (healthCheck && !healthCheck.ok) status = 'failed';
-  const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, result, status, previewUrl, healthCheck);
+  const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, preflightExecutions, result, status, previewUrl, healthCheck);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -3118,6 +3154,8 @@ async function executeDeployRuntimeAction(
       ? `${target} deployment completed${previewUrl ? ` at ${previewUrl}` : ''}${healthCheck ? ` and health check returned ${healthCheck.statusCode ?? 'unknown'}` : ''}.`
       : unsupported
         ? `${target} deployment executor is missing required provider configuration.`
+        : status === 'blocked'
+          ? `${target} deployment is blocked by a failed provider preflight.`
         : healthCheck && !healthCheck.ok
           ? `${target} deployment completed but health check failed for ${previewUrl}.`
           : `${target} deployment failed; inspect the attached artifact for stdout and stderr.`,
@@ -3128,6 +3166,7 @@ async function executeDeployRuntimeAction(
     evidence: [
       `sourceDir: ${sourceDir}`,
       `deliveryTarget: ${target}`,
+      ...preflightExecutions.map((execution) => `${execution.label} exitCode: ${execution.result.exitCode}`),
       `exitCode: ${result.exitCode}`,
       ...(previewUrl ? [`previewUrl: ${previewUrl}`] : []),
       ...(healthCheck ? [
@@ -3533,6 +3572,14 @@ function buildDeployInvocation(plan: ProjectPlan, target: DeliveryPlan['target']
       command: 'vercel',
       args: ['deploy', '--yes'],
       displayCommand: 'vercel deploy --yes',
+      preflight: [
+        {
+          label: 'vercel authentication',
+          command: 'vercel',
+          args: ['whoami'],
+          displayCommand: 'vercel whoami',
+        },
+      ],
     };
   }
   if (target === 'cloudflare') {
@@ -3550,15 +3597,30 @@ function buildDeployInvocation(plan: ProjectPlan, target: DeliveryPlan['target']
 function buildCloudflareDeployInvocation(packageManager: ProjectStackDecision['packageManager']): DeployCommandInvocation {
   switch (packageManager ?? 'pnpm') {
     case 'npm':
-      return { command: 'npx', args: ['wrangler', 'deploy'], displayCommand: 'npx wrangler deploy' };
+      return withCloudflareDeployPreflight({ command: 'npx', args: ['wrangler', 'deploy'], displayCommand: 'npx wrangler deploy' });
     case 'yarn':
-      return { command: 'yarn', args: ['wrangler', 'deploy'], displayCommand: 'yarn wrangler deploy' };
+      return withCloudflareDeployPreflight({ command: 'yarn', args: ['wrangler', 'deploy'], displayCommand: 'yarn wrangler deploy' });
     case 'bun':
-      return { command: 'bunx', args: ['wrangler', 'deploy'], displayCommand: 'bunx wrangler deploy' };
+      return withCloudflareDeployPreflight({ command: 'bunx', args: ['wrangler', 'deploy'], displayCommand: 'bunx wrangler deploy' });
     case 'pnpm':
     default:
-      return { command: 'pnpm', args: ['wrangler', 'deploy'], displayCommand: 'pnpm wrangler deploy' };
+      return withCloudflareDeployPreflight({ command: 'pnpm', args: ['wrangler', 'deploy'], displayCommand: 'pnpm wrangler deploy' });
   }
+}
+
+function withCloudflareDeployPreflight(invocation: DeployCommandInvocation): DeployCommandInvocation {
+  const [runner, ...rest] = invocation.args;
+  return {
+    ...invocation,
+    preflight: [
+      {
+        label: 'cloudflare authentication',
+        command: invocation.command,
+        args: [...(runner ? [runner] : []), 'whoami', ...rest.filter((arg) => arg !== 'deploy')],
+        displayCommand: `${invocation.command} ${[...(runner ? [runner] : []), 'whoami'].join(' ')}`.trim(),
+      },
+    ],
+  };
 }
 
 function buildCoolifyDeployInvocation(): DeployCommandInvocation | null {
@@ -3568,6 +3630,15 @@ function buildCoolifyDeployInvocation(): DeployCommandInvocation | null {
   if (!baseUrl || !apiToken || !resourceUuid) return null;
   const forceDeploy = process.env.COOLIFY_FORCE_DEPLOY?.trim() === '1' ? 'true' : 'false';
   const deployUrl = `${baseUrl}/api/v1/deploy?uuid=${encodeURIComponent(resourceUuid)}&force=${forceDeploy}`;
+  const resourceUrl = `${baseUrl}/api/v1/resources/${encodeURIComponent(resourceUuid)}`;
+  const env = {
+    COOLIFY_URL: baseUrl,
+    COOLIFY_API_TOKEN: apiToken,
+    COOLIFY_RESOURCE_UUID: resourceUuid,
+    COOLIFY_DEPLOY_URL: deployUrl,
+    COOLIFY_RESOURCE_URL: resourceUrl,
+    ...(process.env.COOLIFY_PUBLIC_URL?.trim() ? { COOLIFY_PUBLIC_URL: process.env.COOLIFY_PUBLIC_URL.trim() } : {}),
+  };
   return {
     command: 'bash',
     args: [
@@ -3580,13 +3651,19 @@ function buildCoolifyDeployInvocation(): DeployCommandInvocation | null {
       ].join('\n'),
     ],
     displayCommand: 'coolify deploy --resource "$COOLIFY_RESOURCE_UUID"',
-    env: {
-      COOLIFY_URL: baseUrl,
-      COOLIFY_API_TOKEN: apiToken,
-      COOLIFY_RESOURCE_UUID: resourceUuid,
-      COOLIFY_DEPLOY_URL: deployUrl,
-      ...(process.env.COOLIFY_PUBLIC_URL?.trim() ? { COOLIFY_PUBLIC_URL: process.env.COOLIFY_PUBLIC_URL.trim() } : {}),
-    },
+    env,
+    preflight: [
+      {
+        label: 'coolify resource lookup',
+        command: 'bash',
+        args: [
+          '-lc',
+          'set -euo pipefail\ncurl -sS -X GET "$COOLIFY_RESOURCE_URL" -H "Authorization: Bearer $COOLIFY_API_TOKEN"',
+        ],
+        displayCommand: 'coolify resource inspect "$COOLIFY_RESOURCE_UUID"',
+        env,
+      },
+    ],
   };
 }
 
@@ -3597,6 +3674,14 @@ function buildHostingerDeployInvocation(): DeployCommandInvocation | null {
   if (!sshHost || !sshUser || !deployPath) return null;
   const sshPort = process.env.HOSTINGER_SSH_PORT?.trim() || '22';
   const postDeployCommand = process.env.HOSTINGER_POST_DEPLOY_COMMAND?.trim();
+  const env = {
+    HOSTINGER_SSH_HOST: sshHost,
+    HOSTINGER_SSH_USER: sshUser,
+    HOSTINGER_SSH_PORT: sshPort,
+    HOSTINGER_DEPLOY_PATH: deployPath,
+    ...(postDeployCommand ? { HOSTINGER_POST_DEPLOY_COMMAND: postDeployCommand } : {}),
+    ...(process.env.HOSTINGER_PUBLIC_URL?.trim() ? { HOSTINGER_PUBLIC_URL: process.env.HOSTINGER_PUBLIC_URL.trim() } : {}),
+  };
   return {
     command: 'bash',
     args: [
@@ -3609,14 +3694,28 @@ function buildHostingerDeployInvocation(): DeployCommandInvocation | null {
       ].join('\n'),
     ],
     displayCommand: 'rsync ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"',
-    env: {
-      HOSTINGER_SSH_HOST: sshHost,
-      HOSTINGER_SSH_USER: sshUser,
-      HOSTINGER_SSH_PORT: sshPort,
-      HOSTINGER_DEPLOY_PATH: deployPath,
-      ...(postDeployCommand ? { HOSTINGER_POST_DEPLOY_COMMAND: postDeployCommand } : {}),
-      ...(process.env.HOSTINGER_PUBLIC_URL?.trim() ? { HOSTINGER_PUBLIC_URL: process.env.HOSTINGER_PUBLIC_URL.trim() } : {}),
-    },
+    env,
+    preflight: [
+      {
+        label: 'hostinger ssh connectivity',
+        command: 'bash',
+        args: [
+          '-lc',
+          'set -euo pipefail\nssh -p "$HOSTINGER_SSH_PORT" "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST" "true"',
+        ],
+        displayCommand: 'ssh "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST" true',
+        env,
+      },
+    ],
+  };
+}
+
+function deployCommandErrorResult(err: any): DeployCommandResult {
+  return {
+    exitCode: typeof err?.code === 'number' ? err.code : 1,
+    stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+    stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+    durationMs: 0,
   };
 }
 
@@ -5490,11 +5589,25 @@ function buildDeployArtifact(
   sourceDir: string,
   target: DeliveryPlan['target'],
   invocation: DeployCommandInvocation | null,
+  preflightExecutions: Array<{ label: string; command: string; result: DeployCommandResult }>,
   result: DeployCommandResult,
   status: PlanningExecutionRun['status'],
   previewUrl?: string,
   healthCheck?: DeploymentHealthCheck,
 ): PlanningExecutionArtifact {
+  const preflightBlocks = preflightExecutions.length > 0
+    ? preflightExecutions.flatMap((execution) => [
+      `Preflight: ${execution.label}`,
+      `Command: ${execution.command}`,
+      `Exit code: ${execution.result.exitCode}`,
+      `Duration ms: ${execution.result.durationMs}`,
+      'stdout:',
+      execution.result.stdout || '(empty)',
+      'stderr:',
+      execution.result.stderr || '(empty)',
+      '',
+    ])
+    : ['No deployment preflight checks were recorded.', ''];
   return {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
@@ -5515,6 +5628,9 @@ function buildDeployArtifact(
       healthCheck ? `Health duration ms: ${healthCheck.durationMs}` : '',
       `Exit code: ${result.exitCode}`,
       `Duration ms: ${result.durationMs}`,
+      '',
+      'Preflight checks:',
+      ...preflightBlocks,
       '',
       'stdout:',
       result.stdout || '(empty)',
