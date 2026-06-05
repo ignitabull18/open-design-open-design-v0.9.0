@@ -1241,7 +1241,7 @@ describe('planning routes', () => {
       actionId: 'project-management',
       status: 'completed',
       mode: 'external',
-      summary: expect.stringContaining('Created 3 GitHub issue'),
+      summary: expect.stringContaining('Created github-issues project-management handoff'),
     });
     expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'project-management', status: 'completed' }),
@@ -1253,6 +1253,160 @@ describe('planning routes', () => {
       }),
     ]));
     expect(executed.body.artifacts[0].content).toContain('https://github.com/ignitabull/handoff-studio/issues/1');
+  });
+
+  it('executes a confirmed Linear project-management handoff', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'linear-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"linear-studio"}\n');
+    const previousApiKey = process.env.LINEAR_API_KEY;
+    const previousTeamId = process.env.LINEAR_TEAM_ID;
+    process.env.LINEAR_API_KEY = 'lin_test_key';
+    process.env.LINEAR_TEAM_ID = 'team_test_id';
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string; env?: Record<string, string> }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      projectManagementRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          ...(request.env ? { env: request.env } : {}),
+        });
+        return {
+          exitCode: 0,
+          stdout: '{"data":{"issueCreate":{"success":true,"issue":{"identifier":"OPS-1","url":"https://linear.app/acme/issue/OPS-1"}}}}',
+          stderr: '',
+          durationMs: 18,
+        };
+      },
+    });
+    try {
+      const created = await jsonFetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Linear Studio',
+          intent: { purpose: 'Create Linear implementation work from the accepted plan.' },
+          selectedTools: [
+            { toolId: 'linear', status: 'wanted' },
+            { toolId: 'supabase-database', status: 'wanted' },
+          ],
+          stack: {
+            frontend: 'next',
+            backend: 'hono',
+            runtime: 'workers',
+            database: 'supabase',
+            auth: 'better-auth',
+          },
+        }),
+      });
+
+      const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/project-management/execute`, {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmed: true,
+          targetDir: 'workspace/linear-studio',
+          projectManagementTarget: 'linear',
+        }),
+      });
+
+      expect(executed.status).toBe(201);
+      expect(runnerCalls).toHaveLength(3);
+      expect(runnerCalls[0]).toMatchObject({
+        command: 'bash',
+        cwd: sourceDir,
+      });
+      expect(runnerCalls[0]?.args.join('\n')).toContain('https://api.linear.app/graphql');
+      expect(runnerCalls[0]?.env?.LINEAR_API_KEY).toBe('lin_test_key');
+      expect(runnerCalls[0]?.env?.LINEAR_TEAM_ID).toBe('team_test_id');
+      expect(runnerCalls[0]?.env?.LINEAR_GRAPHQL_BODY).toContain('IssueCreateInput');
+      expect(executed.body.run).toMatchObject({
+        actionId: 'project-management',
+        status: 'completed',
+        mode: 'external',
+        summary: expect.stringContaining('Created linear project-management handoff'),
+      });
+      expect(executed.body.artifacts[0].content).toContain('Project-management target: linear');
+      expect(executed.body.artifacts[0].content).toContain('OPS-1');
+    } finally {
+      if (previousApiKey === undefined) delete process.env.LINEAR_API_KEY;
+      else process.env.LINEAR_API_KEY = previousApiKey;
+      if (previousTeamId === undefined) delete process.env.LINEAR_TEAM_ID;
+      else process.env.LINEAR_TEAM_ID = previousTeamId;
+    }
+  });
+
+  it('executes a confirmed Google Docs project-management handoff', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'docs-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"docs-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string; env?: Record<string, string> }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      projectManagementRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          ...(request.env ? { env: request.env } : {}),
+        });
+        return {
+          exitCode: 0,
+          stdout: 'https://docs.google.com/document/d/test-doc',
+          stderr: '',
+          durationMs: 20,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Docs Studio',
+        intent: { purpose: 'Create a Google Docs planning handoff.' },
+        selectedTools: [
+          { toolId: 'google-docs', status: 'wanted' },
+          { toolId: 'trigger-dev', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/project-management/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/docs-studio',
+        projectManagementTarget: 'google-docs',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'bash',
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[0]?.args.join('\n')).toContain('gws docs-write');
+    expect(runnerCalls[0]?.env?.GOOGLE_DOCS_TITLE).toBe('Project plan handoff: Docs Studio');
+    const bodyFile = runnerCalls[0]?.env?.GOOGLE_DOCS_BODY_FILE;
+    expect(bodyFile).toEqual(expect.stringContaining('.od/plan-handoffs'));
+    expect(readFileSync(String(bodyFile), 'utf8')).toContain('# Project Plan Handoff: Docs Studio');
+    expect(executed.body.run).toMatchObject({
+      actionId: 'project-management',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Created google-docs project-management handoff'),
+    });
+    expect(executed.body.artifacts[0].content).toContain('Project-management target: google-docs');
+    expect(executed.body.artifacts[0].content).toContain('https://docs.google.com/document/d/test-doc');
   });
 
   it('updates stack decisions and regenerates the scaffold command', async () => {

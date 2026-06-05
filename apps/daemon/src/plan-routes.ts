@@ -142,6 +142,7 @@ interface ProjectManagementCommandRequest {
   args: string[];
   cwd: string;
   timeoutMs: number;
+  env?: Record<string, string>;
 }
 
 interface ProjectManagementCommandResult {
@@ -152,6 +153,14 @@ interface ProjectManagementCommandResult {
 }
 
 type ProjectManagementCommandRunner = (request: ProjectManagementCommandRequest) => Promise<ProjectManagementCommandResult>;
+
+interface ProjectManagementCommandInvocation {
+  title: string;
+  command: string;
+  args: string[];
+  displayCommand: string;
+  env?: Record<string, string>;
+}
 
 interface DatabaseMigrationCommandRequest {
   command: string;
@@ -1174,8 +1183,9 @@ function buildExecutionActions(
         'Planning, database, integrations, workflows, and delivery sections have enough accepted detail to create useful work items.',
       ],
       effects: [
-        'Creates implementation issues from the accepted plan when GitHub Issues is selected.',
-        'Records blocked provider handoff notes when Linear or Google Docs is selected before their executor is connected.',
+        'Creates implementation issues from the accepted plan when GitHub Issues or Linear is selected.',
+        'Creates a Google Docs-ready planning handoff document when Google Docs is selected.',
+        'Records command output and blocked provider configuration when required credentials or CLIs are missing.',
       ],
       relatedSectionIds: ['planning', 'database', 'integrations', 'ai', 'workflows', 'delivery'],
     },
@@ -1426,43 +1436,35 @@ async function executeProjectManagementAction(
   const runId = `plan-run-${randomUUID()}`;
   const target = resolveProjectManagementTarget(plan, body.projectManagementTarget as ProjectManagementTarget | undefined);
   const cwd = await resolveProjectManagementCwd(body.targetDir, options.scaffoldRoot);
-  const unsupported = target !== 'github-issues';
-  const repo = target === 'github-issues' ? `${cleanRepoSegment(plan.repo.owner, 'repo.owner')}/${cleanRepoSegment(plan.repo.name, 'repo.name')}` : '';
   const issueSpecs = buildProjectManagementIssueSpecs(plan);
   const results: Array<{ title: string; command?: string; result: ProjectManagementCommandResult }> = [];
+  const invocations = await buildProjectManagementInvocations(plan, target, cwd, runId, issueSpecs);
+  const unsupported = invocations.length === 0;
   let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
 
   if (unsupported) {
-    results.push({
-      title: `${target} handoff`,
-      result: {
-        exitCode: 1,
-        stdout: '',
-        stderr: `${target} project-management execution is not implemented yet.`,
-        durationMs: 0,
-      },
-    });
+    results.push(buildBlockedProjectManagementResult(target));
   } else {
-    for (const issue of issueSpecs) {
-      const invocation = buildGitHubIssueInvocation(repo, issue);
+    for (const invocation of invocations) {
       try {
         const result = await options.projectManagementRunner({
           command: invocation.command,
           args: invocation.args,
           cwd,
           timeoutMs: 120_000,
+          ...(invocation.env ? { env: invocation.env } : {}),
         });
         if (result.exitCode !== 0) status = 'failed';
         results.push({
-          title: issue.title,
-          command: [invocation.command, ...invocation.args].join(' '),
+          title: invocation.title,
+          command: invocation.displayCommand,
           result,
         });
       } catch (err: any) {
         status = 'failed';
         results.push({
-          title: issue.title,
-          command: [invocation.command, ...invocation.args].join(' '),
+          title: invocation.title,
+          command: invocation.displayCommand,
           result: {
             exitCode: typeof err?.code === 'number' ? err.code : 1,
             stdout: typeof err?.stdout === 'string' ? err.stdout : '',
@@ -1484,10 +1486,10 @@ async function executeProjectManagementAction(
     title: `${action.label}: ${target}`,
     mode: unsupported ? 'dry-run' : 'external',
     summary: status === 'completed'
-      ? `Created ${issueSpecs.length} GitHub issue handoff item(s) for ${plan.name}.`
+      ? `Created ${target} project-management handoff for ${plan.name}.`
       : unsupported
-        ? `${target} handoff executor is not implemented yet; recorded the blocked provider target.`
-        : 'GitHub issue handoff failed; inspect the attached artifact for stdout and stderr.',
+        ? `${target} handoff executor is missing required provider configuration.`
+        : `${target} project-management handoff failed; inspect the attached artifact for stdout and stderr.`,
     ...(results[0]?.command ? { command: results[0].command } : {}),
     startedAt: now,
     completedAt: Date.now(),
@@ -2117,8 +2119,50 @@ function buildProjectManagementIssueSpecs(plan: ProjectPlan): ProjectManagementI
   ];
 }
 
-function buildGitHubIssueInvocation(repo: string, issue: ProjectManagementIssueSpec): { command: string; args: string[] } {
+async function buildProjectManagementInvocations(
+  plan: ProjectPlan,
+  target: ProjectManagementTarget,
+  cwd: string,
+  runId: string,
+  issues: ProjectManagementIssueSpec[],
+): Promise<ProjectManagementCommandInvocation[]> {
+  if (target === 'github-issues') {
+    const repo = `${cleanRepoSegment(plan.repo.owner, 'repo.owner')}/${cleanRepoSegment(plan.repo.name, 'repo.name')}`;
+    return issues.map((issue) => buildGitHubIssueInvocation(repo, issue));
+  }
+  if (target === 'linear') {
+    const apiKey = process.env.LINEAR_API_KEY?.trim();
+    const teamId = process.env.LINEAR_TEAM_ID?.trim();
+    if (!apiKey || !teamId) return [];
+    return issues.map((issue) => buildLinearIssueInvocation(issue, teamId, apiKey));
+  }
+  if (target === 'google-docs') {
+    const bodyFile = await writeGoogleDocsHandoffBody(cwd, runId, plan, issues);
+    return [buildGoogleDocsInvocation(plan, bodyFile)];
+  }
+  return [];
+}
+
+function buildBlockedProjectManagementResult(target: ProjectManagementTarget): { title: string; result: ProjectManagementCommandResult } {
+  const reason = target === 'linear'
+    ? 'LINEAR_API_KEY and LINEAR_TEAM_ID are required before Linear handoff execution.'
+    : target === 'google-docs'
+      ? 'Google Docs handoff command could not be built.'
+      : `${target} project-management execution is not implemented yet.`;
   return {
+    title: `${target} handoff`,
+    result: {
+      exitCode: 1,
+      stdout: '',
+      stderr: reason,
+      durationMs: 0,
+    },
+  };
+}
+
+function buildGitHubIssueInvocation(repo: string, issue: ProjectManagementIssueSpec): ProjectManagementCommandInvocation {
+  return {
+    title: issue.title,
     command: 'gh',
     args: [
       'issue',
@@ -2132,7 +2176,97 @@ function buildGitHubIssueInvocation(repo: string, issue: ProjectManagementIssueS
       '--label',
       issue.labels.join(','),
     ],
+    displayCommand: `gh issue create --repo ${repo} --title "${shellDisplayArg(issue.title)}" --body "<generated from plan sections>" --label ${issue.labels.join(',')}`,
   };
+}
+
+function buildLinearIssueInvocation(
+  issue: ProjectManagementIssueSpec,
+  teamId: string,
+  apiKey: string,
+): ProjectManagementCommandInvocation {
+  const body = JSON.stringify({
+    query: 'mutation OpenDesignIssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }',
+    variables: {
+      input: {
+        teamId,
+        title: issue.title,
+        description: issue.body,
+      },
+    },
+  });
+  return {
+    title: issue.title,
+    command: 'bash',
+    args: [
+      '-lc',
+      'curl -sS -X POST https://api.linear.app/graphql -H "Content-Type: application/json" -H "Authorization: $LINEAR_API_KEY" --data-binary "$LINEAR_GRAPHQL_BODY"',
+    ],
+    displayCommand: `linear graphql issueCreate --team "$LINEAR_TEAM_ID" --title "${shellDisplayArg(issue.title)}"`,
+    env: {
+      LINEAR_API_KEY: apiKey,
+      LINEAR_TEAM_ID: teamId,
+      LINEAR_GRAPHQL_BODY: body,
+    },
+  };
+}
+
+async function writeGoogleDocsHandoffBody(
+  cwd: string,
+  runId: string,
+  plan: ProjectPlan,
+  issues: ProjectManagementIssueSpec[],
+): Promise<string> {
+  const handoffDir = path.join(cwd, '.od', 'plan-handoffs');
+  await fs.mkdir(handoffDir, { recursive: true });
+  const bodyFile = path.join(handoffDir, `${runId}-google-docs.md`);
+  await fs.writeFile(bodyFile, buildGoogleDocsHandoffMarkdown(plan, issues), 'utf8');
+  return bodyFile;
+}
+
+function buildGoogleDocsInvocation(plan: ProjectPlan, bodyFile: string): ProjectManagementCommandInvocation {
+  const title = `Project plan handoff: ${plan.name}`;
+  return {
+    title,
+    command: 'bash',
+    args: [
+      '-lc',
+      'gws docs-write --title "$GOOGLE_DOCS_TITLE" --body-file "$GOOGLE_DOCS_BODY_FILE"',
+    ],
+    displayCommand: 'gws docs-write --title "$GOOGLE_DOCS_TITLE" --body-file "$GOOGLE_DOCS_BODY_FILE"',
+    env: {
+      GOOGLE_DOCS_TITLE: title,
+      GOOGLE_DOCS_BODY_FILE: bodyFile,
+    },
+  };
+}
+
+function buildGoogleDocsHandoffMarkdown(plan: ProjectPlan, issues: ProjectManagementIssueSpec[]): string {
+  return [
+    `# Project Plan Handoff: ${plan.name}`,
+    '',
+    `Purpose: ${plan.intent.purpose}`,
+    plan.intent.audience ? `Audience: ${plan.intent.audience}` : '',
+    '',
+    '## Stack',
+    `- Frontend: ${plan.stack.frontend ?? 'next'}`,
+    `- Backend: ${plan.stack.backend ?? 'hono'}`,
+    `- Runtime: ${plan.stack.runtime ?? 'workers'}`,
+    `- Database: ${plan.stack.database ?? 'supabase'}`,
+    `- Auth: ${plan.stack.auth ?? 'better-auth'}`,
+    '',
+    '## Work Items',
+    ...issues.flatMap((issue) => [
+      `### ${issue.title}`,
+      '',
+      issue.body,
+      '',
+    ]),
+  ].filter(Boolean).join('\n');
+}
+
+function shellDisplayArg(value: string): string {
+  return value.replace(/"/g, '\\"');
 }
 
 async function resolveScaffoldTarget(
@@ -2868,7 +3002,7 @@ function runProjectManagementCommand(request: ProjectManagementCommandRequest): 
       cwd: request.cwd,
       timeout: request.timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
-      env: process.env,
+      env: { ...process.env, ...(request.env ?? {}) },
     }, (error: any, stdout, stderr) => {
       resolve({
         exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
