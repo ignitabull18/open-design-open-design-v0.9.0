@@ -149,6 +149,30 @@ interface ProviderSourceFetch {
 
 type ProviderSourceFetcher = (url: string) => Promise<ProviderSourceFetch>;
 
+interface ProviderSetupCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+  env?: Record<string, string>;
+}
+
+interface ProviderSetupCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type ProviderSetupCommandRunner = (request: ProviderSetupCommandRequest) => Promise<ProviderSetupCommandResult>;
+
+interface ProviderSetupCommandInvocation {
+  command: string;
+  args: string[];
+  displayCommand: string;
+  env?: Record<string, string>;
+}
+
 interface ProjectManagementCommandRequest {
   command: string;
   args: string[];
@@ -232,6 +256,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   deployHealthChecker?: DeploymentHealthChecker;
   toolCheckRunner?: ToolCheckCommandRunner;
   providerSourceFetcher?: ProviderSourceFetcher;
+  providerSetupRunner?: ProviderSetupCommandRunner;
   projectManagementRunner?: ProjectManagementCommandRunner;
   databaseMigrationRunner?: DatabaseMigrationCommandRunner;
   sectionAgentRunner?: SectionAgentRunner;
@@ -771,6 +796,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const deployHealthChecker = ctx.deployHealthChecker ?? runDeploymentHealthCheck;
   const toolCheckRunner = ctx.toolCheckRunner ?? runToolCheckCommand;
   const providerSourceFetcher = ctx.providerSourceFetcher ?? fetchProviderSource;
+  const providerSetupRunner = ctx.providerSetupRunner ?? runProviderSetupCommand;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const databaseMigrationRunner = ctx.databaseMigrationRunner ?? runDatabaseMigrationCommand;
   const sectionAgentRunner = ctx.sectionAgentRunner ?? buildEnvSectionAgentRunner();
@@ -978,6 +1004,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         deployRunner,
         deployHealthChecker,
         providerSourceFetcher,
+        providerSetupRunner,
         projectManagementRunner,
         databaseMigrationRunner,
       });
@@ -2054,7 +2081,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; providerSourceFetcher: ProviderSourceFetcher; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; providerSourceFetcher: ProviderSourceFetcher; providerSetupRunner: ProviderSetupCommandRunner; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'> & Partial<Pick<ProjectPlan, 'providerCapabilities'>>;
   run: PlanningExecutionRun;
@@ -2369,7 +2396,7 @@ async function executeProviderSetupAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string },
+  options: { scaffoldRoot: string; providerSetupRunner: ProviderSetupCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -2379,26 +2406,56 @@ async function executeProviderSetupAction(
   const runId = `plan-run-${randomUUID()}`;
   const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
   const writes = await writeProviderSetupFiles(plan, sourceDir);
-  const artifact = buildProviderSetupArtifact(plan, action, runId, sourceDir, writes);
+  const invocation = buildProviderSetupInvocation(plan);
+  let result: ProviderSetupCommandResult | undefined;
+  let status: PlanningExecutionRun['status'] = 'completed';
+  if (invocation) {
+    try {
+      result = await options.providerSetupRunner({
+        command: invocation.command,
+        args: invocation.args,
+        cwd: sourceDir,
+        timeoutMs: 120_000,
+        ...(invocation.env ? { env: invocation.env } : {}),
+      });
+      if (result.exitCode !== 0) status = 'failed';
+    } catch (err: any) {
+      result = {
+        exitCode: typeof err?.code === 'number' ? err.code : 1,
+        stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+        stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+        durationMs: 0,
+      };
+      status = 'failed';
+    }
+  }
+  const artifact = buildProviderSetupArtifact(plan, action, runId, sourceDir, writes, invocation, result, status);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
     kind: 'action',
     actionId: 'provider-setup',
-    status: 'completed',
+    status,
     title: action.label,
     mode: 'external',
-    summary: `Wrote ${writes.length} provider setup file(s) into ${sourceDir}.`,
+    summary: status === 'completed'
+      ? `Wrote ${writes.length} provider setup file(s) into ${sourceDir}${result ? ' and verified 1Password vault access.' : '.'}`
+      : 'Provider setup command failed; inspect the attached artifact for stdout and stderr.',
+    ...(invocation ? { command: invocation.displayCommand } : {}),
     startedAt: now,
     completedAt: Date.now(),
     artifactIds: [artifact.id],
     evidence: [
       `sourceDir: ${sourceDir}`,
       ...writes.map((write) => `wrote ${write.relativePath}`),
+      ...(invocation ? [`command: ${invocation.displayCommand}`] : ['command: not run; OP_VAULT is required for 1Password validation']),
+      ...(result ? [`exitCode: ${result.exitCode}`] : []),
     ],
   };
   const executionActions = plan.executionActions.map((item) =>
-    item.id === 'provider-setup' ? { ...item, status: 'completed' as const } : item,
+    item.id === 'provider-setup'
+      ? { ...item, status: status === 'completed' ? 'completed' as const : 'accepted' as const }
+      : item,
   );
   return {
     planPatch: {
@@ -3363,6 +3420,27 @@ function buildGoogleDocsHandoffMarkdown(plan: ProjectPlan, issues: ProjectManage
       '',
     ]),
   ].filter(Boolean).join('\n');
+}
+
+function buildProviderSetupInvocation(plan: ProjectPlan): ProviderSetupCommandInvocation | null {
+  const wantsOnePassword = plan.selectedTools.some((tool) => tool.toolId === 'onepassword');
+  if (!wantsOnePassword) return null;
+  const vault = process.env.OP_VAULT?.trim();
+  if (!vault) return null;
+  return {
+    command: 'op',
+    args: ['item', 'list', '--vault', vault, '--format', 'json'],
+    displayCommand: 'op item list --vault "$OP_VAULT" --format json',
+    env: {
+      OP_VAULT: vault,
+      ...(process.env.OP_SERVICE_ACCOUNT_TOKEN?.trim()
+        ? { OP_SERVICE_ACCOUNT_TOKEN: process.env.OP_SERVICE_ACCOUNT_TOKEN.trim() }
+        : {}),
+      ...(process.env.OP_CONNECT_HOST?.trim()
+        ? { OP_CONNECT_HOST: process.env.OP_CONNECT_HOST.trim() }
+        : {}),
+    },
+  };
 }
 
 function shellDisplayArg(value: string): string {
@@ -4732,6 +4810,9 @@ function buildProviderSetupArtifact(
   runId: string,
   sourceDir: string,
   writes: ProjectMaterializedWrite[],
+  invocation: ProviderSetupCommandInvocation | null,
+  result: ProviderSetupCommandResult | undefined,
+  status: PlanningExecutionRun['status'],
 ): PlanningExecutionArtifact {
   return {
     id: `plan-artifact-${randomUUID()}`,
@@ -4741,12 +4822,21 @@ function buildProviderSetupArtifact(
     title: `${action.label} execution log`,
     content: [
       `Plan: ${plan.name}`,
-      'Status: completed',
+      `Status: ${status}`,
       `Source directory: ${sourceDir}`,
       `Selected providers: ${plan.selectedTools.map((tool) => tool.toolId).join(', ') || 'none'}`,
+      invocation ? `Command: ${invocation.displayCommand}` : 'Command: not run; set OP_VAULT to validate 1Password vault access.',
+      result ? `Exit code: ${result.exitCode}` : '',
+      result ? `Duration ms: ${result.durationMs}` : '',
       '',
       'Generated files:',
       ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
+      '',
+      'stdout:',
+      result?.stdout || '(empty)',
+      '',
+      'stderr:',
+      result?.stderr || '(empty)',
       '',
       'Review notes:',
       '- Store secret values in 1Password or the selected secret manager before populating deploy envs.',
@@ -5016,6 +5106,25 @@ function runToolCheckCommand(request: ToolCheckCommandRequest): Promise<ToolChec
 }
 
 function runProjectManagementCommand(request: ProjectManagementCommandRequest): Promise<ProjectManagementCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, ...(request.env ?? {}) },
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+function runProviderSetupCommand(request: ProviderSetupCommandRequest): Promise<ProviderSetupCommandResult> {
   const startedAt = Date.now();
   return new Promise((resolve) => {
     execFile(request.command, request.args, {

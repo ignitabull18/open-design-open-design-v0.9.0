@@ -1868,6 +1868,93 @@ describe('planning routes', () => {
     expect(envExample).toContain('STRIPE_WEBHOOK_SECRET=');
   });
 
+  it('runs 1Password provider setup validation when OP_VAULT is configured', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'secrets-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"secrets-studio"}\n');
+    const previousVault = process.env.OP_VAULT;
+    process.env.OP_VAULT = 'Engineering';
+    const providerSetupCalls: Array<{ command: string; args: string[]; cwd: string; env?: Record<string, string> }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      providerSetupRunner: async (request) => {
+        providerSetupCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          ...(request.env ? { env: request.env } : {}),
+        });
+        return {
+          exitCode: 0,
+          stdout: '[{"title":"Cloudflare","id":"item-1"}]',
+          stderr: '',
+          durationMs: 14,
+        };
+      },
+    });
+
+    try {
+      const created = await jsonFetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Secrets Studio',
+          intent: { purpose: 'Validate 1Password as the provider setup source of truth.' },
+          selectedTools: [
+            { toolId: 'onepassword', status: 'wanted' },
+            { toolId: 'cloudflare-hosting', status: 'wanted' },
+          ],
+          stack: {
+            frontend: 'next',
+            backend: 'hono',
+            runtime: 'workers',
+            database: 'supabase',
+            auth: 'better-auth',
+            hosting: ['cloudflare'],
+          },
+        }),
+      });
+
+      const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/provider-setup/execute`, {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmed: true,
+          targetDir: 'workspace/secrets-studio',
+        }),
+      });
+
+      expect(executed.status).toBe(201);
+      expect(providerSetupCalls).toEqual([
+        expect.objectContaining({
+          command: 'op',
+          args: ['item', 'list', '--vault', 'Engineering', '--format', 'json'],
+          cwd: sourceDir,
+          env: expect.objectContaining({ OP_VAULT: 'Engineering' }),
+        }),
+      ]);
+      expect(executed.body.run).toMatchObject({
+        actionId: 'provider-setup',
+        status: 'completed',
+        command: 'op item list --vault "$OP_VAULT" --format json',
+        summary: expect.stringContaining('verified 1Password vault access'),
+      });
+      expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+        'command: op item list --vault "$OP_VAULT" --format json',
+        'exitCode: 0',
+      ]));
+      expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'provider-setup',
+          content: expect.stringContaining('[{"title":"Cloudflare","id":"item-1"}]'),
+        }),
+      ]));
+      expect(executed.body.artifacts[0].content).toContain('Command: op item list --vault "$OP_VAULT" --format json');
+    } finally {
+      if (previousVault === undefined) delete process.env.OP_VAULT;
+      else process.env.OP_VAULT = previousVault;
+    }
+  });
+
   it('materializes and deploys Convex database schema files', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'convex-studio');
