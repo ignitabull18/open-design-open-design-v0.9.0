@@ -235,6 +235,7 @@ export function executeProjectPlanAction(
         ...(input.targetDir ? { targetDir: input.targetDir } : {}),
         ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
         ...(input.projectManagementTarget ? { projectManagementTarget: input.projectManagementTarget } : {}),
+        ...(input.validateProviders ? { validateProviders: true } : {}),
       }),
     },
   );

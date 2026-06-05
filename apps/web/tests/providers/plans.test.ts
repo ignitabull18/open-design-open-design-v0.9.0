@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, getProjectPlanReadiness } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, getProjectPlanReadiness } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -72,6 +72,46 @@ describe('plans provider', () => {
       kind: 'project-management-plan',
       title: 'PRD handoff',
       content: 'Handoff notes',
+    });
+  });
+
+  it('executes provider setup with provider validation enabled', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: { id: 'plan-1' },
+      run: {
+        id: 'plan-run-1',
+        planId: 'plan-1',
+        kind: 'action',
+        actionId: 'provider-setup',
+        status: 'completed',
+        title: 'Provider setup',
+        mode: 'external',
+        summary: 'Validated providers.',
+        startedAt: 1,
+        artifactIds: [],
+        evidence: [],
+      },
+      artifacts: [],
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await executeProjectPlanAction('plan-1', {
+      actionId: 'provider-setup',
+      confirmed: true,
+      targetDir: 'workspace/my-app',
+      validateProviders: true,
+    });
+
+    expect(result.run.actionId).toBe('provider-setup');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/actions/provider-setup/execute');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      confirmed: true,
+      targetDir: 'workspace/my-app',
+      validateProviders: true,
     });
   });
 });
