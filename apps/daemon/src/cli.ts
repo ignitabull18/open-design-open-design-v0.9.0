@@ -4820,10 +4820,19 @@ Common options:
       const data = await fetchPlan(base, id);
       const sections = data.plan?.workspaceSections ?? [];
       const sectionAnswers = data.plan?.sectionAnswers ?? {};
-      if (flags.json) return process.stdout.write(JSON.stringify({ sections, sectionAnswers }, null, 2) + '\n');
+      const sectionWorkboard = data.plan?.sectionWorkboard;
+      if (flags.json) return process.stdout.write(JSON.stringify({ sections, sectionAnswers, sectionWorkboard }, null, 2) + '\n');
+      if (sectionWorkboard) {
+        console.log(`Workboard: ${sectionWorkboard.summary}`);
+        console.log(`Next: ${(sectionWorkboard.nextSectionIds ?? []).join(', ') || 'none'}`);
+        for (const group of sectionWorkboard.parallelGroups ?? []) {
+          console.log(`${group.mode}\t${group.id}\t${(group.sectionIds ?? []).join(', ')}`);
+        }
+      }
       for (const section of sections) {
         const answer = sectionAnswers[section.id];
-        console.log(`${section.id}\t${section.label}\t${answer?.status ?? 'not_started'}\t${section.purpose}`);
+        const workItem = sectionWorkboard?.items?.find((item) => item.sectionId === section.id);
+        console.log(`${section.id}\t${section.label}\t${answer?.status ?? 'not_started'}\t${workItem?.readyForParallelRun ? 'parallel-ready' : workItem?.status ?? 'not_started'}\t${section.purpose}`);
         if (answer?.answers?.length) {
           for (const line of answer.answers) console.log(`  - ${line}`);
         }

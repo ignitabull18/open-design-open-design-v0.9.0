@@ -31,6 +31,9 @@ import type {
   ProjectSectionAnswer,
   ProjectPlan,
   ProjectSectionAnswers,
+  ProjectSectionWorkboard,
+  ProjectSectionWorkboardGroup,
+  ProjectSectionWorkboardItem,
   ProjectSectionWorkflow,
   ProjectStackDecision,
   ProjectToolConnection,
@@ -1727,6 +1730,9 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
   const sectionAnswers = normalizeSectionAnswers(input.sectionAnswers ?? {});
   const repoPatch = input.repo ?? {};
   const { provider: _provider, status: repoStatus, ...repoRest } = repoPatch;
+  const executionRuns = input.executionRuns ?? [];
+  const agentLanes = buildAgentLanes(stack, selectedTools, sectionAnswers);
+  const workspaceSections = buildWorkspaceSections(stack, selectedTools);
   return {
     id: input.id,
     name: input.name,
@@ -1734,14 +1740,15 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     selectedTools,
     stack,
     databaseDesign: buildDatabaseDesign(stack),
-    agentLanes: buildAgentLanes(stack, selectedTools, sectionAnswers),
+    agentLanes,
     ideationQuestions: buildIdeationQuestions(stack),
-    workspaceSections: buildWorkspaceSections(stack, selectedTools),
+    workspaceSections,
     sectionAnswers,
+    sectionWorkboard: buildSectionWorkboard(workspaceSections, agentLanes, sectionAnswers, executionRuns),
     providerCapabilities: buildProviderCapabilities(selectedTools),
     runtimePlan: buildRuntimePlan(stack, selectedTools),
     executionActions: buildExecutionActions(input.name, stack, selectedTools, sectionAnswers, repoPatch),
-    executionRuns: input.executionRuns ?? [],
+    executionRuns,
     executionArtifacts: input.executionArtifacts ?? [],
     toolChecks: input.toolChecks ?? [],
     scaffoldExecution: input.scaffoldExecution ?? { status: 'not_started' },
@@ -6681,6 +6688,145 @@ function buildWorkspaceSections(
       outputs: ['repo URL', 'scaffold log', 'deployment plan', 'live proof'],
       relatedLaneIds: ['delivery'],
       toolIds: hasAny(['github', 'cloudflare-hosting', 'vercel', 'coolify', 'hostinger']),
+    },
+  ];
+}
+
+function buildSectionWorkboard(
+  sections: ProjectWorkspaceSection[],
+  lanes: PlanningAgentLane[],
+  sectionAnswers: ProjectSectionAnswers,
+  executionRuns: PlanningExecutionRun[],
+): ProjectSectionWorkboard {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const readyLaneIds = new Set(lanes.filter((lane) => lane.status === 'ready').map((lane) => lane.id));
+  const items = sections.map((section): ProjectSectionWorkboardItem => {
+    const sectionLaneIds = new Set(section.relatedLaneIds);
+    const sectionLanes = lanes.filter((lane) => lane.sectionId === section.id || sectionLaneIds.has(lane.id));
+    const laneIds = sectionLanes.map((lane) => lane.id);
+    const dependsOn = Array.from(new Set(sectionLanes.flatMap((lane) => lane.dependsOn)));
+    const parallelWith = Array.from(new Set(sectionLanes.flatMap((lane) => lane.parallelWith)));
+    const answer = sectionAnswers[section.id];
+    const latestRun = [...executionRuns]
+      .reverse()
+      .find((run) => run.kind === 'section-agent' && run.sectionId === section.id);
+    const unresolvedDependencies = dependsOn.filter((dependencyId) => !readyLaneIds.has(dependencyId));
+    const blockedLanes = sectionLanes.filter((lane) => lane.status === 'blocked');
+    const readyForParallelRun = sectionLanes.length > 0
+      && sectionLanes.some((lane) => lane.mode === 'parallel')
+      && blockedLanes.length === 0
+      && unresolvedDependencies.length === 0;
+    const status: ProjectPlanReadinessStatus = answer?.status === 'answered'
+      ? 'ready'
+      : latestRun?.status === 'completed'
+        ? 'in_progress'
+        : answer?.status === 'blocked' || latestRun?.status === 'blocked' || latestRun?.status === 'failed' || blockedLanes.length > 0
+          ? 'blocked'
+          : 'not_started';
+    const blockers = [
+      ...blockedLanes.map((lane) => `${lane.id} lane is blocked`),
+      ...unresolvedDependencies.map((dependencyId) => `${dependencyId} lane must be ready before ${section.id}`),
+      ...(answer?.status === 'blocked' ? [`${section.label} section answer is blocked`] : []),
+      ...(latestRun?.status === 'blocked' || latestRun?.status === 'failed' ? [`latest section run is ${latestRun.status}`] : []),
+    ];
+    return {
+      sectionId: section.id,
+      label: section.label,
+      status,
+      mode: sectionLanes.some((lane) => lane.mode === 'parallel') ? 'parallel' : 'sequential',
+      answerStatus: answer?.status ?? 'not_started',
+      laneIds,
+      dependsOn,
+      parallelWith,
+      ...(latestRun ? { latestRunStatus: latestRun.status } : {}),
+      readyForParallelRun,
+      blockers,
+      nextSteps: status === 'ready'
+        ? []
+        : [
+          answer?.answers.length ? `Accept or revise the ${section.label} section answers.` : `Answer the ${section.label} section questions.`,
+          readyForParallelRun ? `Run ${section.label} with the ready parallel batch.` : `Run the ${section.label} section agent when dependencies are ready.`,
+        ],
+    };
+  });
+  const sequentialOrder = buildSequentialSectionOrder(sections, lanes);
+  const parallelGroups = buildSectionWorkboardGroups(items, lanes, laneById);
+  const readySectionIds = items.filter((item) => item.status === 'ready').map((item) => item.sectionId);
+  const blockedSectionIds = items.filter((item) => item.status === 'blocked').map((item) => item.sectionId);
+  const nextSectionIds = items
+    .filter((item) => item.status !== 'ready' && (item.readyForParallelRun || item.blockers.length === 0))
+    .slice(0, 3)
+    .map((item) => item.sectionId);
+  return {
+    summary: `${readySectionIds.length}/${items.length} sections ready, ${items.filter((item) => item.readyForParallelRun).length} can run in parallel, ${blockedSectionIds.length} blocked.`,
+    items,
+    sequentialOrder,
+    parallelGroups,
+    readySectionIds,
+    blockedSectionIds,
+    nextSectionIds,
+  };
+}
+
+function buildSequentialSectionOrder(
+  sections: ProjectWorkspaceSection[],
+  lanes: PlanningAgentLane[],
+): ProjectWorkspaceSection['id'][] {
+  const sectionByLane = new Map<PlanningAgentLane['id'], ProjectWorkspaceSection['id']>();
+  for (const section of sections) {
+    for (const laneId of section.relatedLaneIds) sectionByLane.set(laneId, section.id);
+  }
+  const ordered: ProjectWorkspaceSection['id'][] = [];
+  const push = (sectionId: ProjectWorkspaceSection['id'] | undefined) => {
+    if (sectionId && !ordered.includes(sectionId)) ordered.push(sectionId);
+  };
+  for (const lane of lanes) {
+    for (const dependencyId of lane.dependsOn) push(sectionByLane.get(dependencyId));
+    push(lane.sectionId ?? sectionByLane.get(lane.id));
+  }
+  for (const section of sections) push(section.id);
+  return ordered;
+}
+
+function buildSectionWorkboardGroups(
+  items: ProjectSectionWorkboardItem[],
+  lanes: PlanningAgentLane[],
+  laneById: Map<PlanningAgentLane['id'], PlanningAgentLane>,
+): ProjectSectionWorkboardGroup[] {
+  const parallelItems = items.filter((item) => item.mode === 'parallel');
+  const parallelLaneIds = new Set(parallelItems.flatMap((item) => item.laneIds));
+  const parallelBlockedBy = Array.from(new Set(parallelItems.flatMap((item) => item.blockers)));
+  const sequentialLaneIds = lanes
+    .filter((lane) => lane.mode === 'sequential')
+    .map((lane) => lane.id);
+  return [
+    {
+      id: 'frontload',
+      label: 'Frontload decisions',
+      mode: 'sequential',
+      sectionIds: items
+        .filter((item) => item.sectionId === 'planning' || item.sectionId === 'ai')
+        .map((item) => item.sectionId),
+      laneIds: sequentialLaneIds.filter((laneId) => ['product', 'architecture'].includes(laneId)),
+      blockedBy: [],
+    },
+    {
+      id: 'parallel-specialists',
+      label: 'Parallel specialist pass',
+      mode: 'parallel',
+      sectionIds: parallelItems.map((item) => item.sectionId),
+      laneIds: Array.from(parallelLaneIds).filter((laneId) => laneById.has(laneId)),
+      blockedBy: parallelBlockedBy,
+    },
+    {
+      id: 'delivery-handoff',
+      label: 'Delivery handoff',
+      mode: 'sequential',
+      sectionIds: items
+        .filter((item) => item.sectionId === 'delivery')
+        .map((item) => item.sectionId),
+      laneIds: sequentialLaneIds.filter((laneId) => laneId === 'delivery'),
+      blockedBy: items.find((item) => item.sectionId === 'delivery')?.blockers ?? [],
     },
   ];
 }

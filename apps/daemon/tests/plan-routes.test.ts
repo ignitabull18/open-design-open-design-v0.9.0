@@ -347,6 +347,32 @@ describe('planning routes', () => {
         owns: expect.arrayContaining(['connected accounts', 'webhook contracts']),
       }),
     ]));
+    expect(response.body.plan.sectionWorkboard).toMatchObject({
+      sequentialOrder: expect.arrayContaining(['planning', 'database', 'workflows', 'integrations', 'delivery']),
+      readySectionIds: expect.arrayContaining(['planning']),
+      nextSectionIds: expect.arrayContaining(['design', 'database', 'integrations']),
+      parallelGroups: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'parallel-specialists',
+          mode: 'parallel',
+          sectionIds: expect.arrayContaining(['database', 'integrations', 'workflows']),
+        }),
+      ]),
+    });
+    expect(response.body.plan.sectionWorkboard.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sectionId: 'database',
+        mode: 'parallel',
+        readyForParallelRun: true,
+        dependsOn: expect.arrayContaining(['product']),
+      }),
+      expect.objectContaining({
+        sectionId: 'delivery',
+        mode: 'sequential',
+        readyForParallelRun: false,
+        blockers: [],
+      }),
+    ]));
     expect(response.body.plan.sectionAnswers).toMatchObject({
       planning: {
         sectionId: 'planning',
@@ -2572,6 +2598,14 @@ describe('planning routes', () => {
       expect.objectContaining({
         id: 'database',
         brief: expect.stringContaining('Current database answers'),
+      }),
+    ]));
+    expect(answered.body.plan.sectionWorkboard.readySectionIds).toEqual(expect.arrayContaining(['database']));
+    expect(answered.body.plan.sectionWorkboard.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sectionId: 'database',
+        status: 'ready',
+        answerStatus: 'answered',
       }),
     ]));
   });

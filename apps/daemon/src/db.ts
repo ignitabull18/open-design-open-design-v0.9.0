@@ -224,6 +224,7 @@ function migrate(db: SqliteDb): void {
       ideation_questions_json TEXT NOT NULL DEFAULT '[]',
       workspace_sections_json TEXT NOT NULL DEFAULT '[]',
       section_answers_json TEXT NOT NULL DEFAULT '{}',
+      section_workboard_json TEXT NOT NULL DEFAULT '{}',
       provider_capabilities_json TEXT NOT NULL DEFAULT '[]',
       runtime_plan_json TEXT NOT NULL DEFAULT '{}',
       execution_actions_json TEXT NOT NULL DEFAULT '[]',
@@ -334,6 +335,9 @@ function migrate(db: SqliteDb): void {
   }
   if (!planCols.some((c: DbRow) => c.name === 'section_answers_json')) {
     db.exec(`ALTER TABLE plans ADD COLUMN section_answers_json TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'section_workboard_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN section_workboard_json TEXT NOT NULL DEFAULT '{}'`);
   }
   if (!planCols.some((c: DbRow) => c.name === 'provider_capabilities_json')) {
     db.exec(`ALTER TABLE plans ADD COLUMN provider_capabilities_json TEXT NOT NULL DEFAULT '[]'`);
@@ -1536,6 +1540,7 @@ const PLAN_COLS = `id, name,
   ideation_questions_json AS ideationQuestionsJson,
   workspace_sections_json AS workspaceSectionsJson,
   section_answers_json AS sectionAnswersJson,
+  section_workboard_json AS sectionWorkboardJson,
   provider_capabilities_json AS providerCapabilitiesJson,
   runtime_plan_json AS runtimePlanJson,
   execution_actions_json AS executionActionsJson,
@@ -1568,11 +1573,11 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     `INSERT INTO plans
        (id, name, intent_json, selected_tools_json, stack_json,
         database_design_json, agent_lanes_json, ideation_questions_json,
-        workspace_sections_json, section_answers_json, provider_capabilities_json,
+        workspace_sections_json, section_answers_json, section_workboard_json, provider_capabilities_json,
         runtime_plan_json, execution_actions_json, execution_runs_json, execution_artifacts_json,
         tool_checks_json, scaffold_execution_json, scaffold_json, repo_json, delivery_json,
         created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     plan.id,
     plan.name,
@@ -1584,6 +1589,7 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     JSON.stringify(plan.ideationQuestions ?? []),
     JSON.stringify(plan.workspaceSections ?? []),
     JSON.stringify(plan.sectionAnswers ?? {}),
+    JSON.stringify(plan.sectionWorkboard ?? {}),
     JSON.stringify(plan.providerCapabilities ?? []),
     JSON.stringify(plan.runtimePlan ?? {}),
     JSON.stringify(plan.executionActions ?? []),
@@ -1621,6 +1627,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
             ideation_questions_json = ?,
             workspace_sections_json = ?,
             section_answers_json = ?,
+            section_workboard_json = ?,
             provider_capabilities_json = ?,
             runtime_plan_json = ?,
             execution_actions_json = ?,
@@ -1643,6 +1650,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
     JSON.stringify(merged.ideationQuestions ?? []),
     JSON.stringify(merged.workspaceSections ?? []),
     JSON.stringify(merged.sectionAnswers ?? {}),
+    JSON.stringify(merged.sectionWorkboard ?? {}),
     JSON.stringify(merged.providerCapabilities ?? []),
     JSON.stringify(merged.runtimePlan ?? {}),
     JSON.stringify(merged.executionActions ?? []),
@@ -1676,6 +1684,7 @@ function normalizePlan(row: DbRow) {
     ideationQuestions: parseJsonObject(row.ideationQuestionsJson, []),
     workspaceSections: parseJsonObject(row.workspaceSectionsJson, []),
     sectionAnswers: parseJsonObject(row.sectionAnswersJson, {}),
+    sectionWorkboard: parseJsonObject(row.sectionWorkboardJson, {}),
     providerCapabilities: parseJsonObject(row.providerCapabilitiesJson, []),
     runtimePlan: parseJsonObject(row.runtimePlanJson, {}),
     executionActions: parseJsonObject(row.executionActionsJson, []),

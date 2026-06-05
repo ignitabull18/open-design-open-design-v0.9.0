@@ -931,6 +931,7 @@ function PlanDetail({
             {executionSaving === 'sections:ready' ? 'Running...' : 'Run ready in parallel'}
           </button>
         </div>
+        <SectionWorkboardPanel plan={plan} />
         <div className="planning-view__section-tabs" role="tablist" aria-label="Planning workflow sections">
           {plan.workspaceSections.map((section) => (
             <button
@@ -1237,6 +1238,35 @@ function PlanDetail({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function SectionWorkboardPanel({ plan }: { plan: ProjectPlan }) {
+  const workboard = plan.sectionWorkboard;
+  if (!workboard) return null;
+  return (
+    <div className="planning-view__workboard" aria-label="Section orchestration workboard">
+      <div className="planning-view__workboard-summary">
+        <strong>{workboard.summary}</strong>
+        <span>Next: {workboard.nextSectionIds.length ? workboard.nextSectionIds.join(', ') : 'none'}</span>
+      </div>
+      <div className="planning-view__workboard-groups">
+        {workboard.parallelGroups.map((group) => (
+          <article key={group.id} className="planning-view__workboard-group">
+            <strong>{group.label}</strong>
+            <span>{group.mode} · {group.sectionIds.join(', ') || 'none'}</span>
+            {group.blockedBy.length ? <small>Blocked by {group.blockedBy.join(' · ')}</small> : <small>No blockers recorded</small>}
+          </article>
+        ))}
+      </div>
+      <div className="planning-view__workboard-items">
+        {workboard.items.map((item) => (
+          <span key={item.sectionId} className={item.readyForParallelRun ? 'is-parallel-ready' : ''}>
+            {item.label}: {item.readyForParallelRun ? 'parallel-ready' : item.status}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

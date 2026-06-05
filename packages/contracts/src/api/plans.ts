@@ -137,6 +137,40 @@ export interface ProjectSectionWorkflow {
   providerCapabilities: ProviderCapabilitySnapshot[];
 }
 
+export interface ProjectSectionWorkboardItem {
+  sectionId: ProjectWorkspaceSection['id'];
+  label: string;
+  status: ProjectPlanReadinessStatus;
+  mode: 'sequential' | 'parallel';
+  answerStatus: ProjectSectionAnswer['status'] | 'not_started';
+  laneIds: PlanningAgentLane['id'][];
+  dependsOn: PlanningAgentLane['id'][];
+  parallelWith: PlanningAgentLane['id'][];
+  latestRunStatus?: PlanningExecutionRun['status'];
+  readyForParallelRun: boolean;
+  blockers: string[];
+  nextSteps: string[];
+}
+
+export interface ProjectSectionWorkboardGroup {
+  id: string;
+  label: string;
+  mode: 'sequential' | 'parallel';
+  sectionIds: ProjectWorkspaceSection['id'][];
+  laneIds: PlanningAgentLane['id'][];
+  blockedBy: string[];
+}
+
+export interface ProjectSectionWorkboard {
+  summary: string;
+  items: ProjectSectionWorkboardItem[];
+  sequentialOrder: ProjectWorkspaceSection['id'][];
+  parallelGroups: ProjectSectionWorkboardGroup[];
+  readySectionIds: ProjectWorkspaceSection['id'][];
+  blockedSectionIds: ProjectWorkspaceSection['id'][];
+  nextSectionIds: ProjectWorkspaceSection['id'][];
+}
+
 export interface ScaffoldPlan {
   engine: 'better-t-stack' | 'custom';
   command: string;
@@ -248,6 +282,7 @@ export interface ProjectPlan {
   ideationQuestions: IdeationQuestion[];
   workspaceSections: ProjectWorkspaceSection[];
   sectionAnswers: ProjectSectionAnswers;
+  sectionWorkboard: ProjectSectionWorkboard;
   providerCapabilities: ProviderCapabilitySnapshot[];
   runtimePlan: PlanningRuntimePlan;
   executionActions: PlanningExecutionAction[];
