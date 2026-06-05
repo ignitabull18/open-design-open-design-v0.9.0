@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections, updateProjectPlanTools } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -72,6 +72,39 @@ describe('plans provider', () => {
       kind: 'project-management-plan',
       title: 'PRD handoff',
       content: 'Handoff notes',
+    });
+  });
+
+  it('updates selected tool connection statuses through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: {
+        id: 'plan-1',
+        selectedTools: [
+          { toolId: 'github', status: 'connected' },
+          { toolId: 'linear', status: 'deferred', notes: 'Use GitHub Issues first.' },
+        ],
+      },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await updateProjectPlanTools('plan-1', [
+      { toolId: 'github', status: 'connected' },
+      { toolId: 'linear', status: 'deferred', notes: 'Use GitHub Issues first.' },
+    ]);
+
+    expect(result.plan.selectedTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'linear', status: 'deferred' }),
+    ]));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({
+      selectedTools: [
+        { toolId: 'github', status: 'connected' },
+        { toolId: 'linear', status: 'deferred', notes: 'Use GitHub Issues first.' },
+      ],
     });
   });
 

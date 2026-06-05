@@ -39,6 +39,7 @@ import {
   runProjectPlanSection,
   runProjectPlanSections,
   updateProviderCapabilityRefreshSchedule,
+  updateProjectPlanTools,
   updateProjectSectionWorkflow,
 } from '../providers/plans';
 
@@ -502,6 +503,34 @@ export function PlanningView() {
     }
   }
 
+  async function handleUpdateToolStatus(
+    toolId: ProjectToolConnection['toolId'],
+    status: ProjectToolConnection['status'],
+  ) {
+    if (!selectedPlan) return;
+    setExecutionSaving(`tool-status:${toolId}`);
+    setError(null);
+    try {
+      const selectedTools = selectedPlan.selectedTools.map((tool) =>
+        tool.toolId === toolId
+          ? {
+            ...tool,
+            status,
+            ...(status === 'deferred' && !tool.notes ? { notes: 'Deferred by planner.' } : {}),
+            ...(status === 'blocked' && !tool.notes ? { notes: 'Blocked by planner.' } : {}),
+          }
+          : tool,
+      );
+      const result = await updateProjectPlanTools(selectedPlan.id, selectedTools);
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
+    }
+  }
+
   async function handleCreateArtifact() {
     if (!selectedPlan) return;
     setArtifactSaving(true);
@@ -820,6 +849,7 @@ export function PlanningView() {
               onSectionRunModeChange={setSectionRunMode}
               onRunReadySections={handleRunReadySections}
               onCheckTool={handleCheckTool}
+              onUpdateToolStatus={handleUpdateToolStatus}
               onRefreshCapabilities={handleRefreshCapabilities}
               onRunDueCapabilityRefresh={handleRunDueCapabilityRefresh}
               onToggleCapabilityRefreshSchedule={handleToggleCapabilityRefreshSchedule}
@@ -985,6 +1015,7 @@ function PlanDetail({
   onSectionRunModeChange,
   onRunReadySections,
   onCheckTool,
+  onUpdateToolStatus,
   onRefreshCapabilities,
   onRunDueCapabilityRefresh,
   onToggleCapabilityRefreshSchedule,
@@ -1039,6 +1070,7 @@ function PlanDetail({
   onSectionRunModeChange: (mode: NonNullable<RunProjectPlanSectionsRequest['mode']>) => void;
   onRunReadySections: (mode: NonNullable<RunProjectPlanSectionsRequest['mode']>) => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
+  onUpdateToolStatus: (toolId: ProjectToolConnection['toolId'], status: ProjectToolConnection['status']) => void;
   onRefreshCapabilities: () => void;
   onRunDueCapabilityRefresh: (force?: boolean) => void;
   onToggleCapabilityRefreshSchedule: (enabled: boolean) => void;
@@ -1092,16 +1124,31 @@ function PlanDetail({
               <article key={tool.toolId} className="planning-view__tool-connection">
                 <div>
                   <strong>{tool.toolId}</strong>
-                  <span>{tool.status}{check ? ` · last check ${check.status}` : ''}</span>
+                  <span>{tool.status}{check ? ` · last check ${check.status}` : ''}{tool.notes ? ` · ${tool.notes}` : ''}</span>
                 </div>
-                <button
-                  type="button"
-                  className="planning-view__secondary"
-                  disabled={executionSaving === `tool:${tool.toolId}`}
-                  onClick={() => onCheckTool(tool.toolId)}
-                >
-                  {executionSaving === `tool:${tool.toolId}` ? 'Checking...' : 'Check'}
-                </button>
+                <div className="planning-view__tool-actions">
+                  <label>
+                    <span>Status</span>
+                    <select
+                      value={tool.status}
+                      disabled={executionSaving === `tool-status:${tool.toolId}`}
+                      onChange={(event) => onUpdateToolStatus(tool.toolId, event.target.value as ProjectToolConnection['status'])}
+                    >
+                      <option value="wanted">Wanted</option>
+                      <option value="connected">Connected</option>
+                      <option value="deferred">Deferred</option>
+                      <option value="blocked">Blocked</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="planning-view__secondary"
+                    disabled={executionSaving === `tool:${tool.toolId}`}
+                    onClick={() => onCheckTool(tool.toolId)}
+                  >
+                    {executionSaving === `tool:${tool.toolId}` ? 'Checking...' : 'Check'}
+                  </button>
+                </div>
               </article>
             );
           })}
