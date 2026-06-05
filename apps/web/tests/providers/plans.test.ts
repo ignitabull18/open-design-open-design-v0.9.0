@@ -159,7 +159,7 @@ describe('plans provider', () => {
     });
   });
 
-  it('fetches a plan launch preview through the daemon API', async () => {
+  it('fetches a plan launch preview through the daemon API with launch inputs', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       plan: { id: 'plan-1' },
       launch: {
@@ -184,12 +184,18 @@ describe('plans provider', () => {
     }));
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const result = await getProjectPlanLaunchPreview('plan-1');
+    const result = await getProjectPlanLaunchPreview('plan-1', {
+      scaffoldParentDir: 'workspace',
+      targetDir: 'workspace/my-app',
+      deliveryTarget: 'vercel',
+      projectManagementTarget: 'github-issues',
+      validateProviders: true,
+    });
 
     expect(result.launch.readyToExecute).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('/api/plans/plan-1/launch');
+    expect(url).toBe('/api/plans/plan-1/launch?targetDir=workspace%2Fmy-app&scaffoldParentDir=workspace&deliveryTarget=vercel&projectManagementTarget=github-issues&validateProviders=true');
     expect(init.credentials).toBe('include');
   });
 });

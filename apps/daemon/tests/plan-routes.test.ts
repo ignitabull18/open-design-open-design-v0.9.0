@@ -1469,6 +1469,18 @@ describe('planning routes', () => {
       expect.objectContaining({ id: 'project-management-target', status: 'ready', value: 'github-issues' }),
     ]));
 
+    const readyPreview = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/launch?scaffoldParentDir=workspace&targetDir=workspace%2Flaunch-inputs-studio&deliveryTarget=vercel&projectManagementTarget=github-issues&actionIds=scaffold,repo-create`);
+    expect(readyPreview.status).toBe(200);
+    expect(readyPreview.body.launch).toMatchObject({
+      readyToExecute: true,
+      actionIds: ['scaffold', 'repo-create'],
+      missingInputs: [],
+    });
+    expect(readyPreview.body.launch.requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scaffold-parent-dir', status: 'ready', value: 'workspace' }),
+      expect.objectContaining({ id: 'target-dir', status: 'ready', value: 'workspace/launch-inputs-studio' }),
+    ]));
+
     const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/launch/execute`, {
       method: 'POST',
       body: JSON.stringify({ confirmed: true }),

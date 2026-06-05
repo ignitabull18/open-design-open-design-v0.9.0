@@ -225,8 +225,22 @@ export function getProjectLaunchProof(planId: string): Promise<ProjectLaunchProo
   return jsonFetch<ProjectLaunchProofResponse>(`/api/plans/${encodeURIComponent(planId)}/proof`);
 }
 
-export function getProjectPlanLaunchPreview(planId: string): Promise<ProjectPlanLaunchPreviewResponse> {
-  return jsonFetch<ProjectPlanLaunchPreviewResponse>(`/api/plans/${encodeURIComponent(planId)}/launch`);
+export function getProjectPlanLaunchPreview(
+  planId: string,
+  input: Partial<ExecuteProjectPlanLaunchRequest> = {},
+): Promise<ProjectPlanLaunchPreviewResponse> {
+  const params = new URLSearchParams();
+  for (const actionId of input.actionIds ?? []) params.append('actionIds', actionId);
+  if (input.targetDir) params.set('targetDir', input.targetDir);
+  if (input.scaffoldParentDir) params.set('scaffoldParentDir', input.scaffoldParentDir);
+  if (input.deliveryTarget) params.set('deliveryTarget', input.deliveryTarget);
+  if (input.projectManagementTarget) params.set('projectManagementTarget', input.projectManagementTarget);
+  if (input.validateProviders) params.set('validateProviders', 'true');
+  if (input.stopOnBlocked === false) params.set('stopOnBlocked', 'false');
+  const query = params.toString();
+  return jsonFetch<ProjectPlanLaunchPreviewResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/launch${query ? `?${query}` : ''}`,
+  );
 }
 
 export function executeProjectPlanAction(

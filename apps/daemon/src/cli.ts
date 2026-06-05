@@ -4644,7 +4644,11 @@ async function runPlan(args) {
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
   od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
   od plan proof <id> [--json]                    Show launch proof gates and missing evidence.
-  od plan launch-preview <id> [--json]           Show launch sequence inputs before execution.
+  od plan launch-preview <id>
+                 [--target-dir <path>] [--scaffold-parent-dir <path>]
+                 [--delivery-target <target>] [--project-management-target <target>]
+                 [--validate-providers] [--json]
+                                                 Show launch sequence inputs before execution.
   od plan launch <id> --confirmed
                  [--target-dir <path>] [--scaffold-parent-dir <path>]
                  [--delivery-target <target>] [--project-management-target <target>]
@@ -4966,10 +4970,17 @@ Common options:
     case 'launch-preview': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
-        console.error('Usage: od plan launch-preview <id> [--json]');
+        console.error('Usage: od plan launch-preview <id> [--target-dir <path>] [--scaffold-parent-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--validate-providers] [--json]');
         process.exit(2);
       }
-      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch`);
+      const params = new URLSearchParams();
+      if (typeof flags['target-dir'] === 'string') params.set('targetDir', flags['target-dir']);
+      if (typeof flags['scaffold-parent-dir'] === 'string') params.set('scaffoldParentDir', flags['scaffold-parent-dir']);
+      if (typeof flags['delivery-target'] === 'string') params.set('deliveryTarget', flags['delivery-target']);
+      if (typeof flags['project-management-target'] === 'string') params.set('projectManagementTarget', flags['project-management-target']);
+      if (flags['validate-providers'] === true) params.set('validateProviders', 'true');
+      const query = params.toString();
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch${query ? `?${query}` : ''}`);
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
       const launch = data.launch ?? {};

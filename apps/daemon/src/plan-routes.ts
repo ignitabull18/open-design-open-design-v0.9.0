@@ -1468,8 +1468,13 @@ function normalizeActionExecutionBody(
 }
 
 function normalizeLaunchExecutionBody(body: Record<string, unknown>): ExecuteProjectPlanLaunchRequest {
-  const actionIds = Array.isArray(body.actionIds)
-    ? body.actionIds.map((item) => {
+  const rawActionIds = Array.isArray(body.actionIds)
+    ? body.actionIds
+    : typeof body.actionIds === 'string'
+      ? body.actionIds.split(',').map((item) => item.trim()).filter(Boolean)
+      : undefined;
+  const actionIds = rawActionIds
+    ? rawActionIds.map((item) => {
       const actionId = cleanRequiredString(item, 'actionIds[]') as PlanningExecutionAction['id'];
       if (!isPlanningExecutionActionId(actionId)) {
         throw new Error('actionIds must contain only known planning execution action ids');

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+  ExecuteProjectPlanLaunchRequest,
   PlanningExecutionArtifact,
   PlanningToolOption,
   ProviderCapabilityRefreshPolicy,
@@ -76,6 +77,37 @@ const ARTIFACT_KIND_OPTIONS: PlanningExecutionArtifact['kind'][] = [
   'project-management-plan',
   'tool-check',
 ];
+
+function buildLaunchExecutionInput(
+  plan: ProjectPlan,
+  executionTargets: Record<string, string>,
+  deliveryTargets: Record<string, ProjectPlan['delivery'][number]['target'] | ''>,
+  projectManagementTargets: Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>,
+  validateProviders: boolean,
+): Partial<ExecuteProjectPlanLaunchRequest> {
+  const targetDir = executionTargets['repo-create']
+    || executionTargets['provider-setup']
+    || executionTargets['database-materialize']
+    || executionTargets['database-migrate']
+    || executionTargets['design-materialize']
+    || executionTargets['deploy-runtime']
+    || executionTargets['project-management'];
+  const projectManagementTarget = projectManagementTargets['project-management'] || plan.selectedTools
+    .map((tool) => tool.toolId)
+    .find((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
+      toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
+    );
+
+  return {
+    ...(executionTargets.scaffold?.trim() ? { scaffoldParentDir: executionTargets.scaffold.trim() } : {}),
+    ...(targetDir?.trim() ? { targetDir: targetDir.trim() } : {}),
+    ...(deliveryTargets['deploy-runtime'] || plan.delivery[0]?.target
+      ? { deliveryTarget: deliveryTargets['deploy-runtime'] || plan.delivery[0]?.target }
+      : {}),
+    ...(projectManagementTarget ? { projectManagementTarget } : {}),
+    ...(validateProviders ? { validateProviders: true } : {}),
+  };
+}
 
 export function PlanningView() {
   const [plans, setPlans] = useState<ProjectPlan[]>([]);
@@ -181,12 +213,27 @@ export function PlanningView() {
   const selectedReadiness = selectedPlan ? readinessByPlanId[selectedPlan.id] ?? null : null;
   const selectedProof = selectedPlan ? proofByPlanId[selectedPlan.id] ?? null : null;
   const selectedLaunchPreview = selectedPlan ? launchPreviewByPlanId[selectedPlan.id] ?? null : null;
+  const selectedLaunchInput = useMemo(
+    () => selectedPlan
+      ? buildLaunchExecutionInput(
+        selectedPlan,
+        executionTargets,
+        deliveryTargets,
+        projectManagementTargets,
+        validateProviderSetup,
+      )
+      : {},
+    [deliveryTargets, executionTargets, projectManagementTargets, selectedPlan, validateProviderSetup],
+  );
 
-  const refreshReadiness = useCallback(async (planId: string) => {
+  const refreshReadiness = useCallback(async (
+    planId: string,
+    launchInput: Partial<ExecuteProjectPlanLaunchRequest> = {},
+  ) => {
     const [readinessResult, proofResult, launchResult] = await Promise.all([
       getProjectPlanReadiness(planId),
       getProjectLaunchProof(planId),
-      getProjectPlanLaunchPreview(planId),
+      getProjectPlanLaunchPreview(planId, launchInput),
     ]);
     setReadinessByPlanId((curr) => ({ ...curr, [planId]: readinessResult.readiness }));
     setProofByPlanId((curr) => ({ ...curr, [planId]: proofResult.proof }));
@@ -216,7 +263,7 @@ export function PlanningView() {
     void Promise.all([
       getProjectPlanReadiness(selectedPlan.id),
       getProjectLaunchProof(selectedPlan.id),
-      getProjectPlanLaunchPreview(selectedPlan.id),
+      getProjectPlanLaunchPreview(selectedPlan.id, selectedLaunchInput),
     ])
       .then(([result, proofResult, launchResult]) => {
         if (cancelled) return;
@@ -230,7 +277,23 @@ export function PlanningView() {
     return () => {
       cancelled = true;
     };
-  }, [launchPreviewByPlanId, proofByPlanId, readinessByPlanId, selectedPlan]);
+  }, [launchPreviewByPlanId, proofByPlanId, readinessByPlanId, selectedLaunchInput, selectedPlan]);
+
+  useEffect(() => {
+    if (!selectedPlan) return;
+    let cancelled = false;
+    void getProjectPlanLaunchPreview(selectedPlan.id, selectedLaunchInput)
+      .then((result) => {
+        if (cancelled) return;
+        setLaunchPreviewByPlanId((curr) => ({ ...curr, [selectedPlan.id]: result.launch }));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLaunchInput, selectedPlan]);
 
   async function handleCreatePlan() {
     setSaving(true);
@@ -361,7 +424,7 @@ export function PlanningView() {
         ...(validateProviders ? { validateProviders: true } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
-      await refreshReadiness(result.plan.id);
+      await refreshReadiness(result.plan.id, selectedLaunchInput);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -376,25 +439,12 @@ export function PlanningView() {
     try {
       const result = await executeProjectPlanLaunch(selectedPlan.id, {
         confirmed: true,
-        scaffoldParentDir: executionTargets.scaffold,
-        targetDir: executionTargets['repo-create']
-          || executionTargets['provider-setup']
-          || executionTargets['database-materialize']
-          || executionTargets['design-materialize']
-          || executionTargets['deploy-runtime']
-          || executionTargets['project-management'],
-        deliveryTarget: deliveryTargets['deploy-runtime'] || selectedPlan.delivery[0]?.target,
-        projectManagementTarget: projectManagementTargets['project-management'] || selectedPlan.selectedTools
-          .map((tool) => tool.toolId)
-          .find((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
-            toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
-          ),
-        validateProviders: validateProviderSetup,
+        ...selectedLaunchInput,
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       setProofByPlanId((curr) => ({ ...curr, [result.plan.id]: result.proof }));
       if (result.launch) setLaunchPreviewByPlanId((curr) => ({ ...curr, [result.plan.id]: result.launch! }));
-      await refreshReadiness(result.plan.id);
+      await refreshReadiness(result.plan.id, selectedLaunchInput);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
