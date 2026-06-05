@@ -1650,7 +1650,7 @@ describe('planning routes', () => {
       actionId: 'database-materialize',
       status: 'completed',
       mode: 'external',
-      summary: expect.stringContaining('Wrote 3 database design file'),
+      summary: expect.stringContaining('Wrote 4 database design file'),
     });
     expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'database-materialize', status: 'completed' }),
@@ -1663,9 +1663,38 @@ describe('planning routes', () => {
     ]));
     const databasePlan = readFileSync(path.join(sourceDir, 'docs', 'database-plan.md'), 'utf8');
     const readme = readFileSync(path.join(sourceDir, 'db', 'README.md'), 'utf8');
+    const review = JSON.parse(readFileSync(path.join(sourceDir, 'db', 'design-review.json'), 'utf8')) as {
+      entities: Array<{ name: string; accessPolicy: string; indexes: string[] }>;
+      seedData: Array<{ table: string; scenario: string }>;
+      validationSteps: string[];
+      openQuestions: string[];
+    };
     const migration = readFileSync(path.join(sourceDir, 'db', 'migrations', '0001_planning_schema.sql'), 'utf8');
     expect(databasePlan).toContain('Primary store: supabase');
+    expect(readme).toContain('db/design-review.json');
     expect(readme).toContain('Supabase/Postgres supports RLS');
+    expect(review.entities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'integration_connections',
+        accessPolicy: expect.stringContaining('Never store raw provider secrets'),
+        indexes: expect.arrayContaining(['integration_connections_project_id_provider_idx']),
+      }),
+      expect.objectContaining({
+        name: 'audit_events',
+        accessPolicy: expect.stringContaining('Append-only service writes'),
+      }),
+    ]));
+    expect(review.seedData).toEqual(expect.arrayContaining([
+      expect.objectContaining({ table: 'plans', scenario: 'accepted stack decision' }),
+      expect.objectContaining({ table: 'audit_events', scenario: 'planning artifact creation' }),
+    ]));
+    expect(review.validationSteps).toEqual(expect.arrayContaining([
+      expect.stringContaining('disposable Supabase branch'),
+      expect.stringContaining('RLS policies'),
+    ]));
+    expect(review.openQuestions).toEqual(expect.arrayContaining([
+      expect.stringContaining('production user identity'),
+    ]));
     expect(migration).toContain('create table if not exists organizations');
     expect(migration).toContain('alter table plans enable row level security');
 
@@ -2108,15 +2137,25 @@ describe('planning routes', () => {
       actionId: 'database-materialize',
       status: 'completed',
       mode: 'external',
-      summary: expect.stringContaining('Wrote 5 database design file'),
+      summary: expect.stringContaining('Wrote 6 database design file'),
     });
     expect(materialized.body.run.evidence).toEqual(expect.arrayContaining([
+      'wrote db/design-review.json',
       'wrote db/schema-notes.md',
       'wrote convex/schema.ts',
       'wrote convex/planning.ts',
     ]));
+    const review = JSON.parse(readFileSync(path.join(sourceDir, 'db', 'design-review.json'), 'utf8')) as {
+      provider: { primaryStore: string };
+      validationSteps: string[];
+    };
     const schema = readFileSync(path.join(sourceDir, 'convex', 'schema.ts'), 'utf8');
     const functions = readFileSync(path.join(sourceDir, 'convex', 'planning.ts'), 'utf8');
+    expect(review.provider.primaryStore).toBe('convex');
+    expect(review.validationSteps).toEqual(expect.arrayContaining([
+      expect.stringContaining('Convex codegen'),
+      expect.stringContaining('function-level authorization'),
+    ]));
     expect(schema).toContain('defineSchema');
     expect(schema).toContain('integrationConnections');
     expect(schema).toContain('workflowRuns');

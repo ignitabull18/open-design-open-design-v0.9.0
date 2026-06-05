@@ -3579,6 +3579,7 @@ async function writeDatabaseDesignFiles(plan: ProjectPlan, sourceDir: string): P
   const writes: ProjectMaterializedWrite[] = [];
   await writeProjectFile(sourceDir, 'docs/database-plan.md', buildDatabasePlanMarkdown(plan), writes);
   await writeProjectFile(sourceDir, 'db/README.md', buildDatabaseReadme(plan), writes);
+  await writeProjectFile(sourceDir, 'db/design-review.json', buildDatabaseDesignReviewJson(plan), writes);
   if (isSqlDatabase(plan.databaseDesign.primaryStore)) {
     await writeProjectFile(sourceDir, 'db/migrations/0001_planning_schema.sql', buildDatabaseMigrationSql(plan), writes);
   } else if (plan.databaseDesign.primaryStore === 'convex') {
@@ -4351,6 +4352,7 @@ function buildDatabaseReadme(plan: ProjectPlan): string {
     '',
     '## Files',
     '- docs/database-plan.md: accepted database planning artifact.',
+    '- db/design-review.json: structured review packet with entities, relationships, policies, indexes, seed data, and validation steps.',
     isSqlDatabase(primaryStore)
       ? '- db/migrations/0001_planning_schema.sql: first SQL-compatible planning migration.'
       : '- db/schema-notes.md: non-SQL schema implementation notes.',
@@ -4360,6 +4362,182 @@ function buildDatabaseReadme(plan: ProjectPlan): string {
     '- Apply migrations only after connecting the real provider project.',
     '- Store provider secrets in the selected secret manager, not in repository files.',
   ].join('\n');
+}
+
+function buildDatabaseDesignReviewJson(plan: ProjectPlan): string {
+  return JSON.stringify(buildDatabaseDesignReview(plan), null, 2);
+}
+
+function buildDatabaseDesignReview(plan: ProjectPlan) {
+  const primaryStore = plan.databaseDesign.primaryStore;
+  const timestampType = primaryStore === 'convex' || primaryStore === 'cloudflare-d1' ? 'number' : 'timestamptz';
+  const idType = primaryStore === 'convex' ? 'Id' : primaryStore === 'cloudflare-d1' ? 'text' : 'uuid';
+  const jsonType = primaryStore === 'cloudflare-d1' ? 'text_json' : primaryStore === 'convex' ? 'any' : 'jsonb';
+  return {
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      purpose: plan.intent.purpose,
+    },
+    provider: {
+      primaryStore,
+      mode: plan.databaseDesign.mode,
+      auth: plan.stack.auth ?? 'none',
+      runtime: plan.stack.runtime ?? 'none',
+    },
+    entities: [
+      {
+        name: 'organizations',
+        purpose: 'Tenant boundary for projects, plans, provider connections, workflows, and audit events.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'name', type: 'text', required: true },
+          { name: 'created_at', type: timestampType, required: true },
+        ],
+        indexes: ['organizations_name_idx'],
+        accessPolicy: 'Organization reads require membership; creation is limited to authenticated owners or service-role setup flows.',
+      },
+      {
+        name: 'organization_memberships',
+        purpose: 'Maps users to organizations and roles.',
+        columns: [
+          { name: 'organization_id', type: idType, required: true, references: 'organizations.id' },
+          { name: 'user_id', type: idType, required: true },
+          { name: 'role', type: 'text', required: true },
+          { name: 'created_at', type: timestampType, required: true },
+        ],
+        indexes: ['organization_memberships_organization_id_idx', 'organization_memberships_user_id_idx'],
+        accessPolicy: 'Owners manage memberships; members can read their own organization membership row.',
+      },
+      {
+        name: 'projects',
+        purpose: 'Application or product workspace being planned and shipped.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'organization_id', type: idType, required: true, references: 'organizations.id' },
+          { name: 'name', type: 'text', required: true },
+          { name: 'purpose', type: 'text', required: true },
+          { name: 'created_at', type: timestampType, required: true },
+        ],
+        indexes: ['projects_organization_id_idx', 'projects_organization_id_name_idx'],
+        accessPolicy: 'Project access is inherited from organization membership.',
+      },
+      {
+        name: 'plans',
+        purpose: 'Accepted planning decisions, selected stack, and section state.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'project_id', type: idType, required: true, references: 'projects.id' },
+          { name: 'status', type: 'text', required: true },
+          { name: 'stack', type: jsonType, required: true },
+          { name: 'sections', type: jsonType, required: true },
+          { name: 'updated_at', type: timestampType, required: true },
+        ],
+        indexes: ['plans_project_id_status_idx'],
+        accessPolicy: 'Members can read plans; editors can update accepted planning decisions.',
+      },
+      {
+        name: 'workflow_runs',
+        purpose: 'Trigger.dev, agent, deployment, migration, and long-running workflow proof.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'project_id', type: idType, required: true, references: 'projects.id' },
+          { name: 'provider', type: 'text', required: true },
+          { name: 'status', type: 'text', required: true },
+          { name: 'external_run_id', type: 'text', required: false },
+          { name: 'evidence', type: jsonType, required: true },
+          { name: 'updated_at', type: timestampType, required: true },
+        ],
+        indexes: ['workflow_runs_project_id_status_idx', 'workflow_runs_provider_idx'],
+        accessPolicy: 'Workflow writes require workflow executor or service-role identity; project members can read scoped evidence.',
+      },
+      {
+        name: 'integration_connections',
+        purpose: 'Connection health and external account references for provider integrations.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'project_id', type: idType, required: true, references: 'projects.id' },
+          { name: 'provider', type: 'text', required: true },
+          { name: 'status', type: 'text', required: true },
+          { name: 'external_ref', type: 'text', required: false },
+          { name: 'updated_at', type: timestampType, required: true },
+        ],
+        indexes: ['integration_connections_project_id_provider_idx', 'integration_connections_status_idx'],
+        accessPolicy: 'Never store raw provider secrets; only store external account references and health state.',
+      },
+      {
+        name: 'audit_events',
+        purpose: 'Append-only proof for scaffold, repo, provider, database, workflow, and deploy actions.',
+        columns: [
+          { name: 'id', type: idType, required: true, primaryKey: true },
+          { name: 'project_id', type: idType, required: false, references: 'projects.id' },
+          { name: 'actor_id', type: idType, required: false },
+          { name: 'event_type', type: 'text', required: true },
+          { name: 'payload', type: jsonType, required: true },
+          { name: 'created_at', type: timestampType, required: true },
+        ],
+        indexes: ['audit_events_project_id_created_at_idx', 'audit_events_event_type_idx'],
+        accessPolicy: 'Append-only service writes; project members can read scoped audit history.',
+      },
+    ],
+    relationships: plan.databaseDesign.relationships,
+    accessPatterns: plan.databaseDesign.accessPatterns,
+    migrationOrder: [
+      ...plan.databaseDesign.migrations,
+      'create tenant, project, planning, workflow, integration, and audit tables',
+      'add project/status/provider indexes before wiring API routes',
+      'enable provider-specific authorization or RLS before production writes',
+      'seed a sample organization, project, accepted plan, provider connection, and audit event in local/dev only',
+    ],
+    seedData: [
+      { table: 'organizations', scenario: 'demo tenant', fields: ['name'] },
+      { table: 'projects', scenario: 'first planned app', fields: ['organization_id', 'name', 'purpose'] },
+      { table: 'plans', scenario: 'accepted stack decision', fields: ['project_id', 'status', 'stack', 'sections'] },
+      { table: 'integration_connections', scenario: 'provider health placeholder', fields: ['project_id', 'provider', 'status', 'external_ref'] },
+      { table: 'audit_events', scenario: 'planning artifact creation', fields: ['project_id', 'event_type', 'payload'] },
+    ],
+    validationSteps: buildDatabaseValidationSteps(plan),
+    openQuestions: [
+      'Which provider owns production user identity and organization membership?',
+      'Which workflow events must be idempotent before external provider webhooks are enabled?',
+      'Which audit events must be immutable for launch readiness and compliance?',
+      'Which provider connection states should block deployment versus remain warnings?',
+    ],
+  };
+}
+
+function buildDatabaseValidationSteps(plan: ProjectPlan): string[] {
+  switch (plan.databaseDesign.primaryStore) {
+    case 'supabase':
+      return [
+        'Run the generated SQL migration against a disposable Supabase branch or local database.',
+        'Review RLS policies for every tenant-scoped table before exposing API routes.',
+        'Run a read/write smoke for project membership, provider connection, workflow run, and audit event records.',
+      ];
+    case 'postgres-coolify':
+      return [
+        'Apply the generated SQL migration to the Coolify Postgres service.',
+        'Verify backups, restore path, and database connection pooling before production deployment.',
+        'Run tenant-scoped read/write smoke tests through the app API, not only direct SQL.',
+      ];
+    case 'cloudflare-d1':
+      return [
+        'Apply the generated D1 migration to a preview database first.',
+        'Verify authorization in API handlers because D1 does not provide Postgres-style RLS.',
+        'Run a Worker-bound read/write smoke for project, provider connection, workflow run, and audit event records.',
+      ];
+    case 'convex':
+      return [
+        'Run Convex codegen and deploy against a development Convex project.',
+        'Replace placeholder identity checks in generated functions before production use.',
+        'Run function-level authorization tests for project plans, provider connections, workflow runs, and audit events.',
+      ];
+    default:
+      return [
+        'Select a primary database provider before applying migrations.',
+        'Keep this review packet as the logical schema source until a provider is chosen.',
+      ];
+  }
 }
 
 function buildDatabaseSchemaNotes(plan: ProjectPlan): string {
@@ -4854,6 +5032,7 @@ function buildDatabaseMaterializeArtifact(
       ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
       '',
       'Review notes:',
+      '- Review db/design-review.json before applying migrations; it is the structured database designer handoff.',
       '- Confirm tenant ownership and auth assumptions before applying migrations.',
       '- Keep provider secrets in the selected secret manager, not in generated files.',
     ].join('\n'),
