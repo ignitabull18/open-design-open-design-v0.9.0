@@ -330,8 +330,14 @@ describe('planning routes', () => {
       status: 'completed',
     });
     expect(sectionRun.body.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'database-draft', content: expect.stringContaining('Database draft') }),
+      expect.objectContaining({
+        kind: 'database-draft',
+        content: expect.stringContaining('Logical schema:'),
+      }),
     ]));
+    expect(sectionRun.body.artifacts[0].content).toContain('plans');
+    expect(sectionRun.body.artifacts[0].content).toContain('Access policy draft:');
+    expect(sectionRun.body.artifacts[0].content).toContain('Supabase/Postgres path');
 
     const toolCheck = await jsonFetch(`${baseUrl}/api/plans/${planId}/tools/cloudflare-hosting/check`, {
       method: 'POST',

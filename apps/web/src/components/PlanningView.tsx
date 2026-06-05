@@ -63,6 +63,7 @@ export function PlanningView() {
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [executionSaving, setExecutionSaving] = useState<string | null>(null);
+  const [executionTargets, setExecutionTargets] = useState<Record<string, string>>({});
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -255,7 +256,7 @@ export function PlanningView() {
     }
   }
 
-  async function handleExecuteAction(actionId: ProjectPlan['executionActions'][number]['id']) {
+  async function handleExecuteAction(actionId: ProjectPlan['executionActions'][number]['id'], targetDir?: string) {
     if (!selectedPlan) return;
     setExecutionSaving(`action:${actionId}`);
     setError(null);
@@ -263,6 +264,7 @@ export function PlanningView() {
       const result = await executeProjectPlanAction(selectedPlan.id, {
         actionId,
         confirmed: true,
+        ...(targetDir?.trim() ? { targetDir: targetDir.trim() } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
     } catch (err) {
@@ -533,6 +535,10 @@ export function PlanningView() {
               onSaveSectionAnswer={handleSaveSectionAnswer}
               onAcceptAction={handleAcceptAction}
               onExecuteAction={handleExecuteAction}
+              executionTargets={executionTargets}
+              onExecutionTargetChange={(actionId, targetDir) => {
+                setExecutionTargets((curr) => ({ ...curr, [actionId]: targetDir }));
+              }}
               onRunSection={handleRunSection}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
@@ -583,6 +589,8 @@ function PlanDetail({
   onSaveSectionAnswer,
   onAcceptAction,
   onExecuteAction,
+  executionTargets,
+  onExecutionTargetChange,
   onRunSection,
   onCheckTool,
   onRefreshCapabilities,
@@ -600,7 +608,9 @@ function PlanDetail({
   onBrainstorm: () => void;
   onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
   onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
-  onExecuteAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
+  onExecuteAction: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir?: string) => void;
+  executionTargets: Record<string, string>;
+  onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
@@ -713,6 +723,16 @@ function PlanDetail({
               <span>{action.status} · {action.requiresConfirmation ? 'confirmation required' : 'open'}</span>
             </div>
             {action.command ? <code>{action.command}</code> : null}
+            {action.id === 'scaffold' || action.id === 'repo-create' ? (
+              <label className="planning-view__execution-target">
+                <span>{action.id === 'scaffold' ? 'Scaffold parent directory' : 'Scaffold source directory'}</span>
+                <input
+                  value={executionTargets[action.id] ?? ''}
+                  placeholder={action.id === 'scaffold' ? 'workspace' : 'workspace/my-project'}
+                  onChange={(event) => onExecutionTargetChange(action.id, event.target.value)}
+                />
+              </label>
+            ) : null}
             <button
               type="button"
               className="planning-view__secondary"
@@ -725,7 +745,7 @@ function PlanDetail({
               type="button"
               className="planning-view__secondary"
               disabled={executionSaving === `action:${action.id}`}
-              onClick={() => onExecuteAction(action.id)}
+              onClick={() => onExecuteAction(action.id, executionTargets[action.id])}
             >
               {executionSaving === `action:${action.id}` ? 'Recording...' : 'Execute'}
             </button>

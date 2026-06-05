@@ -1414,6 +1414,7 @@ function runPlanningSection(
   const lanes = plan.agentLanes.filter((lane) => lane.sectionId === section.id || laneIds.has(lane.id));
   const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
   const answer = plan.sectionAnswers[section.id];
+  const databaseDraft = section.id === 'database' ? buildDatabaseDraftArtifactContent(plan) : '';
   const artifact: PlanningExecutionArtifact = {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
@@ -1433,9 +1434,7 @@ function runPlanningSection(
       '',
       'Pointed questions:',
       ...questions.map((question) => `- ${question.question}`),
-      section.id === 'database'
-        ? `\nDatabase draft:\nEntities: ${plan.databaseDesign.entities.join(', ')}\nRelationships: ${plan.databaseDesign.relationships.join(' | ')}\nMigrations: ${plan.databaseDesign.migrations.join(' | ')}`
-        : '',
+      databaseDraft,
     ].filter(Boolean).join('\n'),
     createdAt: now,
   };
@@ -1458,6 +1457,133 @@ function runPlanningSection(
     ],
   };
   return { run, artifacts: [artifact] };
+}
+
+function buildDatabaseDraftArtifactContent(plan: ProjectPlan): string {
+  const db = plan.databaseDesign;
+  const projectIdType = db.primaryStore === 'convex' ? 'Id<"projects">' : 'uuid';
+  const timestampType = db.primaryStore === 'convex' ? 'number' : 'timestamptz';
+  const providerColumnType = db.primaryStore === 'convex' ? 'string' : 'text';
+  const rows = [
+    {
+      table: 'organizations',
+      columns: [
+        ['id', projectIdType],
+        ['name', providerColumnType],
+        ['created_at', timestampType],
+      ],
+      policy: 'Only organization members can read organization records.',
+    },
+    {
+      table: 'organization_memberships',
+      columns: [
+        ['organization_id', projectIdType],
+        ['user_id', projectIdType],
+        ['role', providerColumnType],
+        ['created_at', timestampType],
+      ],
+      policy: 'Only owners can manage memberships; members can read their own membership.',
+    },
+    {
+      table: 'projects',
+      columns: [
+        ['id', projectIdType],
+        ['organization_id', projectIdType],
+        ['name', providerColumnType],
+        ['purpose', providerColumnType],
+        ['created_at', timestampType],
+      ],
+      policy: 'Project access is inherited from organization membership.',
+    },
+    {
+      table: 'plans',
+      columns: [
+        ['id', projectIdType],
+        ['project_id', projectIdType],
+        ['status', providerColumnType],
+        ['stack_json', db.primaryStore === 'convex' ? 'object' : 'jsonb'],
+        ['updated_at', timestampType],
+      ],
+      policy: 'Members can read plans; editors can update accepted planning decisions.',
+    },
+    {
+      table: 'workflow_runs',
+      columns: [
+        ['id', projectIdType],
+        ['project_id', projectIdType],
+        ['provider', providerColumnType],
+        ['status', providerColumnType],
+        ['external_run_id', providerColumnType],
+        ['updated_at', timestampType],
+      ],
+      policy: 'Workflow run reads require project membership; writes require service-role or workflow executor identity.',
+    },
+    {
+      table: 'integration_connections',
+      columns: [
+        ['id', projectIdType],
+        ['project_id', projectIdType],
+        ['provider', providerColumnType],
+        ['account_ref', providerColumnType],
+        ['status', providerColumnType],
+        ['updated_at', timestampType],
+      ],
+      policy: 'Never store provider secrets here; store only account references and health status.',
+    },
+    {
+      table: 'audit_events',
+      columns: [
+        ['id', projectIdType],
+        ['project_id', projectIdType],
+        ['actor_id', projectIdType],
+        ['event_type', providerColumnType],
+        ['payload', db.primaryStore === 'convex' ? 'object' : 'jsonb'],
+        ['created_at', timestampType],
+      ],
+      policy: 'Append-only service writes; project members can read scoped audit history.',
+    },
+  ];
+  return [
+    '',
+    'Database draft:',
+    `Mode: ${db.mode}`,
+    `Primary store: ${db.primaryStore}`,
+    '',
+    'Logical schema:',
+    ...rows.map((row) => [
+      `- ${row.table}`,
+      ...row.columns.map(([name, type]) => `  - ${name}: ${type}`),
+    ].join('\n')),
+    '',
+    'Relationships:',
+    ...db.relationships.map((item) => `- ${item}`),
+    '',
+    'Access patterns:',
+    ...db.accessPatterns.map((item) => `- ${item}`),
+    '',
+    'Migration order:',
+    ...db.migrations.map((item, index) => `${index + 1}. ${item}`),
+    `${db.migrations.length + 1}. create organizations, memberships, projects, plans, workflow_runs, integration_connections, and audit_events`,
+    `${db.migrations.length + 2}. add indexes for project status, workflow status, integration provider, and audit created_at`,
+    `${db.migrations.length + 3}. add provider webhook idempotency keys before enabling external workflow writes`,
+    '',
+    'Access policy draft:',
+    ...rows.map((row) => `- ${row.table}: ${row.policy}`),
+    '',
+    'Provider-specific notes:',
+    db.primaryStore === 'supabase'
+      ? '- Supabase/Postgres path: generate SQL migrations with RLS enabled before exposing API routes.'
+      : db.primaryStore === 'cloudflare-d1'
+        ? '- Cloudflare D1 path: convert uuid/jsonb/timestamptz columns to D1-compatible text/json/integer shapes and enforce authorization in API handlers.'
+        : db.primaryStore === 'convex'
+          ? '- Convex path: model this as Convex tables with function-level authorization and explicit indexes.'
+          : db.primaryStore === 'postgres-coolify'
+            ? '- Coolify Postgres path: run migrations against the managed service and keep backups/restore proof in delivery artifacts.'
+            : '- No primary database selected; keep this as a logical model until a store is chosen.',
+    '',
+    'Risk notes:',
+    ...db.riskNotes.map((item) => `- ${item}`),
+  ].join('\n');
 }
 
 function checkPlanningTool(
