@@ -5,6 +5,7 @@ import type {
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
+  ProjectPlanReadinessReport,
   ProjectToolConnection,
   ProjectWorkspaceSection,
   ProjectStackDecision,
@@ -18,6 +19,7 @@ import {
   createProjectIdeationSession,
   createProjectPlan,
   executeProjectPlanAction,
+  getProjectPlanReadiness,
   isPlanningAuthError,
   listProviderCapabilitySnapshots,
   listProjectIdeationSessions,
@@ -78,6 +80,7 @@ export function PlanningView() {
   const [authSaving, setAuthSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
+  const [readinessByPlanId, setReadinessByPlanId] = useState<Record<string, ProjectPlanReadinessReport>>({});
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
@@ -159,6 +162,13 @@ export function PlanningView() {
     return Array.from(groups.entries());
   }, [tools]);
   const selectedIdeation = selectedPlan ? ideationByPlanId[selectedPlan.id] ?? [] : [];
+  const selectedReadiness = selectedPlan ? readinessByPlanId[selectedPlan.id] ?? null : null;
+
+  const refreshReadiness = useCallback(async (planId: string) => {
+    const result = await getProjectPlanReadiness(planId);
+    setReadinessByPlanId((curr) => ({ ...curr, [planId]: result.readiness }));
+    setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+  }, []);
 
   useEffect(() => {
     if (!selectedPlan || ideationByPlanId[selectedPlan.id]) return;
@@ -175,6 +185,22 @@ export function PlanningView() {
       cancelled = true;
     };
   }, [ideationByPlanId, selectedPlan]);
+
+  useEffect(() => {
+    if (!selectedPlan || readinessByPlanId[selectedPlan.id]) return;
+    let cancelled = false;
+    void getProjectPlanReadiness(selectedPlan.id)
+      .then((result) => {
+        if (cancelled) return;
+        setReadinessByPlanId((curr) => ({ ...curr, [selectedPlan.id]: result.readiness }));
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readinessByPlanId, selectedPlan]);
 
   async function handleCreatePlan() {
     setSaving(true);
@@ -199,6 +225,7 @@ export function PlanningView() {
       });
       setPlans((curr) => [result.plan, ...curr.filter((plan) => plan.id !== result.plan.id)]);
       setSelectedId(result.plan.id);
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -258,6 +285,7 @@ export function PlanningView() {
         ...(notes.trim() ? { notes: notes.trim() } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -275,6 +303,7 @@ export function PlanningView() {
         confirmed: true,
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -300,6 +329,7 @@ export function PlanningView() {
         ...(projectManagementTarget ? { projectManagementTarget } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -314,6 +344,7 @@ export function PlanningView() {
     try {
       const result = await runProjectPlanSection(selectedPlan.id, { sectionId });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -328,6 +359,7 @@ export function PlanningView() {
     try {
       const result = await runProjectPlanSections(selectedPlan.id, { onlyReady: true, mode: 'parallel' });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -342,6 +374,7 @@ export function PlanningView() {
     try {
       const result = await checkProjectPlanTool(selectedPlan.id, { toolId });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -360,6 +393,7 @@ export function PlanningView() {
         content: artifactContent.trim(),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
       setArtifactTitle('');
       setArtifactContent('');
     } catch (err) {
@@ -378,6 +412,7 @@ export function PlanningView() {
       setCapabilities(result.capabilities);
       setPlans(plansResult.plans);
       setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
+      if (selectedPlan) await refreshReadiness(selectedPlan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -593,6 +628,7 @@ export function PlanningView() {
           {selectedPlan ? (
             <PlanDetail
               plan={selectedPlan}
+              readiness={selectedReadiness}
               ideationPrompt={ideationPrompt}
               ideationSessions={selectedIdeation}
               brainstorming={brainstorming}
@@ -661,8 +697,53 @@ function SelectField({
   );
 }
 
+function ReadinessPanel({ readiness }: { readiness: ProjectPlanReadinessReport | null }) {
+  if (!readiness) {
+    return (
+      <section className="planning-view__readiness" aria-label="Plan readiness">
+        <div className="planning-view__readiness-head">
+          <h3>Readiness</h3>
+          <span>loading</span>
+        </div>
+      </section>
+    );
+  }
+  const incomplete = readiness.items
+    .filter((item) => item.status !== 'ready')
+    .slice(0, 5);
+  return (
+    <section className="planning-view__readiness" aria-label="Plan readiness">
+      <div className="planning-view__readiness-head">
+        <div>
+          <h3>Readiness</h3>
+          <p>{readiness.nextSummary}</p>
+        </div>
+        <span>{readiness.overallStatus}</span>
+      </div>
+      <div className="planning-view__readiness-meter">
+        <strong>{readiness.completedCount}/{readiness.totalCount}</strong>
+        <span>{readiness.blockedCount} blocked</span>
+      </div>
+      {incomplete.length > 0 ? (
+        <ul className="planning-view__readiness-list">
+          {incomplete.map((item) => (
+            <li key={item.id}>
+              <strong>{item.label}</strong>
+              <span>{item.status}</span>
+              <small>{item.nextSteps[0] ?? item.summary}</small>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="planning-view__muted">All readiness checks are complete.</p>
+      )}
+    </section>
+  );
+}
+
 function PlanDetail({
   plan,
+  readiness,
   ideationPrompt,
   ideationSessions,
   brainstorming,
@@ -696,6 +777,7 @@ function PlanDetail({
   onCreateArtifact,
 }: {
   plan: ProjectPlan;
+  readiness: ProjectPlanReadinessReport | null;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
   brainstorming: boolean;
@@ -764,6 +846,7 @@ function PlanDetail({
         <h2 id="selected-plan-title">{plan.name}</h2>
         <p>{plan.intent.purpose}</p>
       </div>
+      <ReadinessPanel readiness={readiness} />
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
       <div className="planning-view__connected-tools">
         <h3>Tool connections</h3>

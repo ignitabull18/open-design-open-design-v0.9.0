@@ -736,6 +736,77 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('reports plan readiness and next execution work from current state', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Readiness Studio',
+        intent: { purpose: 'Expose the next concrete planning step.' },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+          { toolId: 'supabase-database', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+        },
+      }),
+    });
+
+    const initial = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/readiness`);
+
+    expect(initial.status).toBe(200);
+    expect(initial.body.readiness).toMatchObject({
+      planId: created.body.plan.id,
+      overallStatus: 'in_progress',
+      totalCount: expect.any(Number),
+      completedCount: expect.any(Number),
+      blockedCount: expect.any(Number),
+      nextSummary: expect.stringContaining('Selected tool checks'),
+    });
+    expect(initial.body.readiness.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'tools:selected',
+        status: 'in_progress',
+        nextSteps: expect.arrayContaining([
+          expect.stringContaining('github'),
+        ]),
+      }),
+      expect.objectContaining({
+        id: 'action:scaffold',
+        actionId: 'scaffold',
+        status: 'not_started',
+      }),
+      expect.objectContaining({
+        id: 'action:deploy-runtime',
+        status: 'not_started',
+      }),
+    ]));
+
+    const artifact = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'project-management-plan',
+        title: 'Issue handoff',
+        content: 'Created implementation issues.',
+      }),
+    });
+    const updated = await jsonFetch(`${baseUrl}/api/plans/${artifact.body.plan.id}/readiness`);
+
+    expect(updated.body.readiness.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'action:project-management',
+        status: 'ready',
+        summary: expect.stringContaining('handoff artifact exists'),
+      }),
+    ]));
+  });
+
   it('rejects unknown standalone artifact kinds', async () => {
     const baseUrl = await startPlanServer();
     const created = await jsonFetch(`${baseUrl}/api/plans`, {

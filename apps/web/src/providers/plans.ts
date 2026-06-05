@@ -10,6 +10,7 @@ import type {
   ProjectPlanExecutionRunResponse,
   ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
+  ProjectPlanReadinessResponse,
   ProjectSectionWorkflowResponse,
   ProjectIdeationSessionResponse,
   ProjectIdeationSessionsResponse,
@@ -185,6 +186,10 @@ export function acceptProjectPlanAction(
 
 export function getProjectPlanExecution(planId: string): Promise<ProjectPlanExecutionResponse> {
   return jsonFetch<ProjectPlanExecutionResponse>(`/api/plans/${encodeURIComponent(planId)}/execution`);
+}
+
+export function getProjectPlanReadiness(planId: string): Promise<ProjectPlanReadinessResponse> {
+  return jsonFetch<ProjectPlanReadinessResponse>(`/api/plans/${encodeURIComponent(planId)}/readiness`);
 }
 
 export function executeProjectPlanAction(

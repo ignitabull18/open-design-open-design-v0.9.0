@@ -4641,6 +4641,7 @@ async function runPlan(args) {
   od plan action <id> --action <name> --confirmed
                                                  Accept a gated execution action.
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
+  od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
   od plan execute <id> --action <name> --confirmed
                  [--target-dir <path>] [--delivery-target <target>]
                  [--project-management-target <target>] [--json]
@@ -4874,6 +4875,25 @@ Common options:
       console.log(`Runs: ${(data.runs ?? []).length}\tArtifacts: ${(data.artifacts ?? []).length}\tTool checks: ${(data.toolChecks ?? []).length}`);
       for (const run of data.runs ?? []) {
         console.log(`${run.id}\t${run.status}\t${run.kind}\t${run.title}`);
+      }
+      return;
+    }
+    case 'readiness': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan readiness <id> [--json]');
+        process.exit(2);
+      }
+      const data = await fetchPlanReadiness(base, id);
+      const readiness = data.readiness ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] readiness ${id}: ${readiness.overallStatus ?? '-'}`);
+      console.log(`Complete: ${readiness.completedCount ?? 0}/${readiness.totalCount ?? 0}\tBlocked: ${readiness.blockedCount ?? 0}`);
+      console.log(`Next: ${readiness.nextSummary ?? '-'}`);
+      for (const item of readiness.items ?? []) {
+        console.log(`${item.status}\t${item.id}\t${item.label}`);
+        const nextStep = item.nextSteps?.[0];
+        if (nextStep) console.log(`  next: ${nextStep}`);
       }
       return;
     }
@@ -5156,6 +5176,12 @@ async function fetchPlan(base, id) {
 
 async function fetchPlanExecution(base, id) {
   const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/execution`);
+  if (!resp.ok) return structuredHttpFailure(resp);
+  return resp.json();
+}
+
+async function fetchPlanReadiness(base, id) {
+  const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/readiness`);
   if (!resp.ok) return structuredHttpFailure(resp);
   return resp.json();
 }

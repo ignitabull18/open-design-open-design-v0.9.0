@@ -337,6 +337,31 @@ export interface CreateProjectPlanArtifactRequest {
   content: string;
 }
 
+export type ProjectPlanReadinessStatus = 'ready' | 'in_progress' | 'blocked' | 'not_started';
+
+export interface ProjectPlanReadinessItem {
+  id: string;
+  label: string;
+  sectionId?: ProjectWorkspaceSection['id'];
+  actionId?: PlanningExecutionAction['id'];
+  status: ProjectPlanReadinessStatus;
+  summary: string;
+  evidence: string[];
+  nextSteps: string[];
+}
+
+export interface ProjectPlanReadinessReport {
+  planId: string;
+  generatedAt: number;
+  overallStatus: ProjectPlanReadinessStatus;
+  completedCount: number;
+  totalCount: number;
+  blockedCount: number;
+  nextActionId?: PlanningExecutionAction['id'];
+  nextSummary: string;
+  items: ProjectPlanReadinessItem[];
+}
+
 export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
@@ -360,6 +385,11 @@ export interface ProjectPlanExecutionResponse {
   artifacts: PlanningExecutionArtifact[];
   toolChecks: PlanningToolCheck[];
   scaffoldExecution: ScaffoldExecutionPlan;
+}
+
+export interface ProjectPlanReadinessResponse {
+  plan: ProjectPlan;
+  readiness: ProjectPlanReadinessReport;
 }
 
 export interface ProjectPlanExecutionRunResponse {

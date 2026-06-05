@@ -17,6 +17,9 @@ import type {
   PlanningRuntimePlan,
   PlanningExecutionArtifact,
   PlanningExecutionRun,
+  ProjectPlanReadinessItem,
+  ProjectPlanReadinessReport,
+  ProjectPlanReadinessStatus,
   PlanningToolOption,
   PlanningToolCheck,
   ProjectIdeaOption,
@@ -858,6 +861,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.get('/api/plans/:id/readiness', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan, readiness: buildPlanReadinessReport(plan) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.get('/api/plans/:id/sections/:sectionId', (req, res) => {
     try {
       const plan = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1269,6 +1282,328 @@ function buildExecutionResponse(plan: ProjectPlan) {
     toolChecks: plan.toolChecks ?? [],
     scaffoldExecution: plan.scaffoldExecution ?? { status: 'not_started' as const },
   };
+}
+
+function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport {
+  const items: ProjectPlanReadinessItem[] = [
+    ...buildSectionReadinessItems(plan),
+    buildToolReadinessItem(plan),
+    buildScaffoldReadinessItem(plan),
+    buildRepoReadinessItem(plan),
+    buildProviderSetupReadinessItem(plan),
+    buildDatabaseReadinessItem(plan),
+    buildDesignReadinessItem(plan),
+    buildDeploymentReadinessItem(plan),
+    buildProjectManagementReadinessItem(plan),
+  ];
+  const completedCount = items.filter((item) => item.status === 'ready').length;
+  const blockedCount = items.filter((item) => item.status === 'blocked').length;
+  const inProgressCount = items.filter((item) => item.status === 'in_progress').length;
+  const next = items.find((item) => item.status === 'blocked')
+    ?? items.find((item) => item.status === 'in_progress')
+    ?? items.find((item) => item.status === 'not_started');
+  const overallStatus: ProjectPlanReadinessStatus = completedCount === items.length
+    ? 'ready'
+    : blockedCount > 0
+      ? 'blocked'
+      : inProgressCount > 0
+        ? 'in_progress'
+        : 'not_started';
+  return {
+    planId: plan.id,
+    generatedAt: Date.now(),
+    overallStatus,
+    completedCount,
+    totalCount: items.length,
+    blockedCount,
+    ...(next?.actionId ? { nextActionId: next.actionId } : {}),
+    nextSummary: next ? `${next.label}: ${next.nextSteps[0] ?? next.summary}` : 'All readiness items are complete.',
+    items,
+  };
+}
+
+function buildSectionReadinessItems(plan: ProjectPlan): ProjectPlanReadinessItem[] {
+  return plan.workspaceSections.map((section) => {
+    const answer = plan.sectionAnswers[section.id];
+    const run = findLatestRun(plan, (item) => item.kind === 'section-agent' && item.sectionId === section.id);
+    const status: ProjectPlanReadinessStatus = answer?.status === 'answered'
+      ? 'ready'
+      : run?.status === 'completed'
+        ? 'in_progress'
+        : answer?.status === 'blocked' || run?.status === 'blocked' || run?.status === 'failed'
+          ? 'blocked'
+          : 'not_started';
+    return {
+      id: `section:${section.id}`,
+      label: `${section.label} section`,
+      sectionId: section.id,
+      status,
+      summary: status === 'ready'
+        ? `${section.label} has accepted answers.`
+        : status === 'in_progress'
+          ? `${section.label} has agent output but still needs accepted answers.`
+          : status === 'blocked'
+            ? `${section.label} needs blocker resolution before implementation.`
+            : `${section.label} has not been answered yet.`,
+      evidence: [
+        `answerStatus: ${answer?.status ?? 'not_started'}`,
+        ...(run ? [`latestRun: ${run.status}`] : []),
+      ],
+      nextSteps: status === 'ready'
+        ? []
+        : [
+          `Answer the ${section.label} section questions.`,
+          `Run the ${section.label} section agent if the section needs a draft.`,
+        ],
+    };
+  });
+}
+
+function buildToolReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  const selected = plan.selectedTools ?? [];
+  const blocked = selected.filter((tool) => tool.status === 'blocked');
+  const connected = selected.filter((tool) => tool.status === 'connected');
+  const checkedIds = new Set((plan.toolChecks ?? []).map((check) => check.toolId));
+  const unchecked = selected.filter((tool) => !checkedIds.has(tool.toolId) && tool.status !== 'deferred');
+  const status: ProjectPlanReadinessStatus = selected.length === 0
+    ? 'blocked'
+    : blocked.length > 0
+      ? 'blocked'
+      : unchecked.length > 0
+        ? 'in_progress'
+        : connected.length > 0 || selected.every((tool) => tool.status === 'deferred')
+          ? 'ready'
+          : 'not_started';
+  return {
+    id: 'tools:selected',
+    label: 'Selected tool checks',
+    status,
+    summary: status === 'ready'
+      ? 'Selected tools have provider check evidence or are explicitly deferred.'
+      : status === 'blocked'
+        ? 'One or more selected tools are blocked or no tools are selected.'
+        : 'Selected tools still need live checks or explicit deferral.',
+    evidence: [
+      `selected: ${selected.map((tool) => `${tool.toolId}:${tool.status}`).join(', ') || 'none'}`,
+      `checks: ${(plan.toolChecks ?? []).map((check) => `${check.toolId}:${check.status}`).join(', ') || 'none'}`,
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : unchecked.length > 0
+        ? unchecked.slice(0, 4).map((tool) => `Run a provider check for ${tool.toolId}.`)
+        : ['Select at least one source-control, hosting, database, auth, and runtime tool.'],
+  };
+}
+
+function buildScaffoldReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  const scaffold = plan.scaffoldExecution ?? { status: 'not_started' as const };
+  const status: ProjectPlanReadinessStatus = scaffold.status === 'completed'
+    ? 'ready'
+    : scaffold.status === 'blocked'
+      ? 'blocked'
+      : scaffold.status === 'planned'
+        ? 'in_progress'
+        : 'not_started';
+  return {
+    id: 'action:scaffold',
+    label: 'Better-T-Stack scaffold',
+    actionId: 'scaffold',
+    status,
+    summary: status === 'ready'
+      ? 'Scaffold execution completed and generated the project handoff files.'
+      : status === 'blocked'
+        ? 'Scaffold execution is blocked or failed.'
+        : 'Scaffold command has not completed yet.',
+    evidence: [
+      `scaffoldStatus: ${scaffold.status}`,
+      ...(scaffold.targetDir ? [`targetDir: ${scaffold.targetDir}`] : []),
+      ...(scaffold.lastRunId ? [`lastRunId: ${scaffold.lastRunId}`] : []),
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : ['Execute the scaffold action with a reviewed target directory.'],
+  };
+}
+
+function buildRepoReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  const status: ProjectPlanReadinessStatus = plan.repo.status === 'created'
+    ? 'ready'
+    : plan.repo.status === 'blocked'
+      ? 'blocked'
+      : plan.repo.status === 'planned'
+        ? 'in_progress'
+        : 'not_started';
+  return {
+    id: 'action:repo-create',
+    label: 'GitHub repository',
+    actionId: 'repo-create',
+    status,
+    summary: status === 'ready'
+      ? `GitHub repository is recorded${plan.repo.url ? ` at ${plan.repo.url}` : ''}.`
+      : status === 'blocked'
+        ? 'GitHub repository creation is blocked.'
+        : 'GitHub repository has not been created yet.',
+    evidence: [
+      `repoStatus: ${plan.repo.status}`,
+      ...(plan.repo.owner ? [`owner: ${plan.repo.owner}`] : []),
+      ...(plan.repo.name ? [`name: ${plan.repo.name}`] : []),
+      ...(plan.repo.url ? [`url: ${plan.repo.url}`] : []),
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : ['Set the GitHub owner/name and execute repo creation from the scaffolded source directory.'],
+  };
+}
+
+function buildProviderSetupReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  return buildArtifactBackedReadinessItem(plan, {
+    id: 'action:provider-setup',
+    label: 'Provider setup materialization',
+    actionId: 'provider-setup',
+    artifactKind: 'provider-setup',
+    readySummary: 'Provider setup docs, checklist, manifest, and env example are materialized.',
+    pendingSummary: 'Provider setup files have not been materialized into the scaffold.',
+    nextSteps: ['Execute provider setup materialization after scaffold completion.'],
+  });
+}
+
+function buildDatabaseReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  const materialized = hasArtifactKind(plan, 'database-materialization');
+  const migrated = hasArtifactKind(plan, 'database-migration')
+    && findLatestRun(plan, (run) => run.actionId === 'database-migrate')?.status === 'completed';
+  const actionId: PlanningExecutionAction['id'] = materialized ? 'database-migrate' : 'database-materialize';
+  const status: ProjectPlanReadinessStatus = migrated
+    ? 'ready'
+    : materialized
+      ? 'in_progress'
+      : 'not_started';
+  return {
+    id: 'action:database',
+    label: 'Database design and migration',
+    actionId,
+    status,
+    summary: status === 'ready'
+      ? 'Database migration execution has completed.'
+      : status === 'in_progress'
+        ? 'Database files are materialized; migration execution still needs proof.'
+        : 'Database design has not been materialized into project files yet.',
+    evidence: [
+      `primaryStore: ${plan.databaseDesign.primaryStore}`,
+      `materialized: ${materialized ? 'yes' : 'no'}`,
+      `migrated: ${migrated ? 'yes' : 'no'}`,
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : materialized
+        ? ['Execute database migration against the selected provider and record proof.']
+        : ['Materialize database design files into the scaffolded source directory.'],
+  };
+}
+
+function buildDesignReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  return buildArtifactBackedReadinessItem(plan, {
+    id: 'action:design-materialize',
+    label: 'Design planning materialization',
+    actionId: 'design-materialize',
+    artifactKind: 'design-materialization',
+    readySummary: 'Design plan, user flows, and design acceptance files are materialized.',
+    pendingSummary: 'Design planning files have not been materialized into the scaffold.',
+    nextSteps: ['Execute design materialization after the design section has enough accepted decisions.'],
+  });
+}
+
+function buildDeploymentReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  const deployed = plan.delivery.filter((delivery) => delivery.status === 'deployed');
+  const blocked = plan.delivery.filter((delivery) => delivery.status === 'blocked');
+  const status: ProjectPlanReadinessStatus = plan.delivery.length === 0
+    ? 'blocked'
+    : deployed.length === plan.delivery.length
+      ? 'ready'
+      : blocked.length > 0
+        ? 'blocked'
+        : deployed.length > 0
+          ? 'in_progress'
+          : 'not_started';
+  return {
+    id: 'action:deploy-runtime',
+    label: 'Deployment proof',
+    actionId: 'deploy-runtime',
+    status,
+    summary: status === 'ready'
+      ? 'All selected delivery targets are deployed.'
+      : status === 'blocked'
+        ? 'One or more delivery targets are blocked, or no delivery target is selected.'
+        : 'Deployment proof is not complete for the selected delivery targets.',
+    evidence: [
+      `delivery: ${plan.delivery.map((delivery) => `${delivery.target}:${delivery.status}`).join(', ') || 'none'}`,
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : ['Execute deployment for each selected target and record live URL or health-check proof.'],
+  };
+}
+
+function buildProjectManagementReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
+  return buildArtifactBackedReadinessItem(plan, {
+    id: 'action:project-management',
+    label: 'Project-management handoff',
+    actionId: 'project-management',
+    artifactKind: 'project-management-plan',
+    readySummary: 'Project-management handoff artifact exists.',
+    pendingSummary: 'Project-management issues or document handoff have not been created yet.',
+    nextSteps: ['Execute project-management handoff for GitHub Issues, Linear, or Google Docs.'],
+  });
+}
+
+function buildArtifactBackedReadinessItem(
+  plan: ProjectPlan,
+  input: {
+    id: string;
+    label: string;
+    actionId: PlanningExecutionAction['id'];
+    artifactKind: PlanningExecutionArtifact['kind'];
+    readySummary: string;
+    pendingSummary: string;
+    nextSteps: string[];
+  },
+): ProjectPlanReadinessItem {
+  const latestRun = findLatestRun(plan, (run) => run.actionId === input.actionId);
+  const hasArtifact = hasArtifactKind(plan, input.artifactKind);
+  const status: ProjectPlanReadinessStatus = hasArtifact && latestRun?.status !== 'failed' && latestRun?.status !== 'blocked'
+    ? 'ready'
+    : latestRun?.status === 'failed' || latestRun?.status === 'blocked'
+      ? 'blocked'
+      : latestRun?.status === 'running' || latestRun?.status === 'queued'
+        ? 'in_progress'
+        : 'not_started';
+  return {
+    id: input.id,
+    label: input.label,
+    actionId: input.actionId,
+    status,
+    summary: status === 'ready'
+      ? input.readySummary
+      : status === 'blocked'
+        ? `${input.label} is blocked; inspect the latest execution artifact.`
+        : input.pendingSummary,
+    evidence: [
+      `artifactKind: ${input.artifactKind}`,
+      `artifactPresent: ${hasArtifact ? 'yes' : 'no'}`,
+      ...(latestRun ? [`latestRun: ${latestRun.status}`] : []),
+    ],
+    nextSteps: status === 'ready' ? [] : input.nextSteps,
+  };
+}
+
+function hasArtifactKind(plan: ProjectPlan, kind: PlanningExecutionArtifact['kind']): boolean {
+  return (plan.executionArtifacts ?? []).some((artifact) => artifact.kind === kind);
+}
+
+function findLatestRun(
+  plan: ProjectPlan,
+  predicate: (run: PlanningExecutionRun) => boolean,
+): PlanningExecutionRun | undefined {
+  return [...(plan.executionRuns ?? [])].reverse().find(predicate);
 }
 
 function normalizeCreateBody(body: Record<string, unknown>): CreateProjectPlanRequest {

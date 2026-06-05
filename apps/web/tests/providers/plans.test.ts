@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact } from '../../src/providers/plans';
+import { createProjectPlanArtifact, getProjectPlanReadiness } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -16,6 +16,31 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('plans provider', () => {
+  it('fetches plan readiness through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: { id: 'plan-1' },
+      readiness: {
+        planId: 'plan-1',
+        generatedAt: 1,
+        overallStatus: 'in_progress',
+        completedCount: 1,
+        totalCount: 3,
+        blockedCount: 0,
+        nextSummary: 'Selected tool checks: Run a provider check for github.',
+        items: [],
+      },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await getProjectPlanReadiness('plan-1');
+
+    expect(result.readiness.nextSummary).toContain('Selected tool checks');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/readiness');
+    expect(init.credentials).toBe('include');
+  });
+
   it('creates plan execution artifacts through the daemon API', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
       plan: { id: 'plan-1' },

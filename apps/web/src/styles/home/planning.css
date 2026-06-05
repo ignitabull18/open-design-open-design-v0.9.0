@@ -872,6 +872,86 @@
   font-size: 12px;
 }
 
+.planning-view__readiness {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.planning-view__readiness-head,
+.planning-view__readiness-meter {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.planning-view__readiness-head h3 {
+  margin: 0 0 4px;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.planning-view__readiness-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.planning-view__readiness-head > span,
+.planning-view__readiness-meter span {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.planning-view__readiness-meter strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.planning-view__readiness-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-view__readiness-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__readiness-list strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.planning-view__readiness-list span,
+.planning-view__readiness-list small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.planning-view__readiness-list small {
+  grid-column: 1 / -1;
+  line-height: 1.4;
+}
+
 .planning-view__action,
 .planning-view__capability {
   display: grid;
