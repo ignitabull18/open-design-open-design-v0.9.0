@@ -624,6 +624,87 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('executes a confirmed Cloudflare deployment from a configured scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'cloudflare-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"cloudflare-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'Uploaded cloudflare-studio\nhttps://cloudflare-studio.ignitabull.workers.dev',
+          stderr: '',
+          durationMs: 45,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Cloudflare Studio',
+        intent: { purpose: 'Deploy a scaffolded project to Cloudflare Workers.' },
+        delivery: [{ target: 'cloudflare', status: 'planned' }],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'cloudflare-d1',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+          packageManager: 'pnpm',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/cloudflare-studio',
+        deliveryTarget: 'cloudflare',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'pnpm',
+      args: ['wrangler', 'deploy'],
+      cwd: sourceDir,
+    });
+    expect(executed.body.run).toMatchObject({
+      actionId: 'deploy-runtime',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('https://cloudflare-studio.ignitabull.workers.dev'),
+      command: 'pnpm wrangler deploy',
+    });
+    expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'cloudflare',
+        status: 'deployed',
+        notes: expect.stringContaining('https://cloudflare-studio.ignitabull.workers.dev'),
+      }),
+    ]));
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deploy-runtime', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'deployment-plan',
+        content: expect.stringContaining('Command: pnpm wrangler deploy'),
+      }),
+    ]));
+  });
+
   it('materializes database planning files into a scaffold source', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'database-studio');

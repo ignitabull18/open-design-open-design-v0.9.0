@@ -1224,8 +1224,8 @@ async function executeDeployRuntimeAction(
   const runId = `plan-run-${randomUUID()}`;
   const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
   const target = resolveDeliveryTarget(plan, body.deliveryTarget);
-  const unsupported = target !== 'vercel';
-  const invocation = unsupported ? null : buildDeployInvocation(target);
+  const invocation = buildDeployInvocation(plan, target);
+  const unsupported = !invocation;
   let result: DeployCommandResult = {
     exitCode: unsupported ? 1 : 0,
     stdout: '',
@@ -1252,7 +1252,7 @@ async function executeDeployRuntimeAction(
       status = 'failed';
     }
   }
-  const previewUrl = status === 'completed' ? extractFirstUrl(result.stdout) : undefined;
+  const previewUrl = status === 'completed' ? extractFirstUrl([result.stdout, result.stderr].join('\n')) : undefined;
   const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, result, status, previewUrl);
   const run: PlanningExecutionRun = {
     id: runId,
@@ -1590,12 +1590,31 @@ function resolveDeliveryTarget(plan: ProjectPlan, requested?: DeliveryPlan['targ
   return target;
 }
 
-function buildDeployInvocation(target: DeliveryPlan['target']): { command: string; args: string[] } {
-  if (target !== 'vercel') throw new Error(`${target} deployment execution is not implemented yet`);
-  return {
-    command: 'vercel',
-    args: ['deploy', '--yes'],
-  };
+function buildDeployInvocation(plan: ProjectPlan, target: DeliveryPlan['target']): { command: string; args: string[] } | null {
+  if (target === 'vercel') {
+    return {
+      command: 'vercel',
+      args: ['deploy', '--yes'],
+    };
+  }
+  if (target === 'cloudflare') {
+    return buildCloudflareDeployInvocation(plan.stack.packageManager);
+  }
+  return null;
+}
+
+function buildCloudflareDeployInvocation(packageManager: ProjectStackDecision['packageManager']): { command: string; args: string[] } {
+  switch (packageManager ?? 'pnpm') {
+    case 'npm':
+      return { command: 'npx', args: ['wrangler', 'deploy'] };
+    case 'yarn':
+      return { command: 'yarn', args: ['wrangler', 'deploy'] };
+    case 'bun':
+      return { command: 'bunx', args: ['wrangler', 'deploy'] };
+    case 'pnpm':
+    default:
+      return { command: 'pnpm', args: ['wrangler', 'deploy'] };
+  }
 }
 
 function resolveProjectManagementTarget(plan: ProjectPlan, requested?: ProjectManagementTarget): ProjectManagementTarget {
