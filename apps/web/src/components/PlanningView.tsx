@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   PlanningExecutionArtifact,
   PlanningToolOption,
+  ProviderCapabilityRefreshPolicy,
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
@@ -72,6 +73,7 @@ export function PlanningView() {
   const [plans, setPlans] = useState<ProjectPlan[]>([]);
   const [tools, setTools] = useState<PlanningToolOption[]>([]);
   const [capabilities, setCapabilities] = useState<ProviderCapabilitySnapshot[]>([]);
+  const [capabilityRefreshPolicy, setCapabilityRefreshPolicy] = useState<ProviderCapabilityRefreshPolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +127,7 @@ export function PlanningView() {
         setPlans(plansResult.plans);
         setTools(toolsResult.tools);
         setCapabilities(capabilitiesResult.capabilities);
+        setCapabilityRefreshPolicy(capabilitiesResult.refreshPolicy ?? null);
         setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
         setAuthRequired(false);
       } catch (err) {
@@ -413,6 +416,7 @@ export function PlanningView() {
       const result = await refreshProviderCapabilitySnapshots({ persist: true });
       const plansResult = await listProjectPlans();
       setCapabilities(result.capabilities);
+      setCapabilityRefreshPolicy(result.refreshPolicy ?? null);
       setPlans(plansResult.plans);
       setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
       if (selectedPlan) await refreshReadiness(selectedPlan.id);
@@ -639,6 +643,7 @@ export function PlanningView() {
               actionSaving={actionSaving}
               executionSaving={executionSaving}
               capabilities={capabilities}
+              capabilityRefreshPolicy={capabilityRefreshPolicy}
               onIdeationPromptChange={setIdeationPrompt}
               onBrainstorm={handleBrainstorm}
               onSaveSectionAnswer={handleSaveSectionAnswer}
@@ -756,6 +761,7 @@ function PlanDetail({
   actionSaving,
   executionSaving,
   capabilities,
+  capabilityRefreshPolicy,
   refreshingCapabilities,
   onIdeationPromptChange,
   onBrainstorm,
@@ -792,6 +798,7 @@ function PlanDetail({
   actionSaving: string | null;
   executionSaving: string | null;
   capabilities: ProviderCapabilitySnapshot[];
+  capabilityRefreshPolicy: ProviderCapabilityRefreshPolicy | null;
   refreshingCapabilities: boolean;
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
@@ -1154,7 +1161,14 @@ function PlanDetail({
       </div>
       <div className="planning-view__capabilities">
         <div className="planning-view__capability-header">
-          <h3>Provider snapshots</h3>
+          <div>
+            <h3>Provider snapshots</h3>
+            {capabilityRefreshPolicy ? (
+              <span>
+                {capabilityRefreshPolicy.cadence} refresh · stale after {capabilityRefreshPolicy.staleAfterDays} day(s) · {capabilityRefreshPolicy.staleCount} stale
+              </span>
+            ) : null}
+          </div>
           <button
             type="button"
             className="planning-view__secondary"

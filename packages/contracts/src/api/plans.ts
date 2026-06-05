@@ -367,6 +367,15 @@ export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
 
+export interface ProviderCapabilityRefreshPolicy {
+  cadence: 'manual' | 'daily' | 'weekly';
+  staleAfterDays: number;
+  generatedAt: number;
+  nextRecommendedRefreshAt: number;
+  staleCount: number;
+  staleToolIds: PlanningToolId[];
+}
+
 export interface ProjectPlansResponse {
   plans: ProjectPlan[];
 }
@@ -418,6 +427,7 @@ export interface PlanningToolOptionsResponse {
 export interface ProviderCapabilitySnapshotsResponse {
   capabilities: ProviderCapabilitySnapshot[];
   sourceUrls?: string[];
+  refreshPolicy?: ProviderCapabilityRefreshPolicy;
   refreshedAt?: number;
   refreshEvidence?: string[];
   plansUpdated?: number;

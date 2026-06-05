@@ -4715,6 +4715,9 @@ Common options:
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       if (typeof data?.plansUpdated === 'number') console.log(`Plans updated: ${data.plansUpdated}`);
+      if (data?.refreshPolicy) {
+        console.log(`Refresh: ${data.refreshPolicy.cadence} cadence, stale after ${data.refreshPolicy.staleAfterDays} day(s), stale snapshots ${data.refreshPolicy.staleCount}`);
+      }
       for (const snapshot of data?.capabilities ?? []) {
         console.log(`${snapshot.toolId}\t${snapshot.label}\tchecked ${snapshot.checkedAt}`);
         for (const item of snapshot.planningImplications ?? []) console.log(`  - ${item}`);

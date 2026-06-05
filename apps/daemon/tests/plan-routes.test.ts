@@ -78,6 +78,14 @@ describe('planning routes', () => {
     for (const id of ids) {
       expect(capabilityIds).toContain(id);
     }
+    expect(capabilities.body.refreshPolicy).toMatchObject({
+      cadence: 'weekly',
+      staleAfterDays: 7,
+      staleCount: 0,
+      staleToolIds: [],
+      nextRecommendedRefreshAt: expect.any(Number),
+    });
+    expect(capabilities.body.refreshPolicy.nextRecommendedRefreshAt).toBeGreaterThan(capabilities.body.refreshPolicy.generatedAt);
     expect(capabilities.body.capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({
         toolId: 'cloudflare-hosting',
@@ -144,6 +152,12 @@ describe('planning routes', () => {
       'https://www.better-t-stack.dev/docs',
       'https://trigger.dev/changelog/',
     ]));
+    expect(response.body.refreshPolicy).toMatchObject({
+      cadence: 'weekly',
+      staleAfterDays: 7,
+      staleCount: 0,
+      staleToolIds: [],
+    });
     expect(response.body.refreshedAt).toEqual(expect.any(Number));
     expect(response.body.refreshEvidence).toEqual(expect.arrayContaining([
       expect.stringContaining('ok 200 https://supabase.com/changelog'),

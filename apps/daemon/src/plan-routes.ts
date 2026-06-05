@@ -20,6 +20,7 @@ import type {
   ProjectPlanReadinessItem,
   ProjectPlanReadinessReport,
   ProjectPlanReadinessStatus,
+  ProviderCapabilityRefreshPolicy,
   PlanningToolOption,
   PlanningToolCheck,
   PlanningToolId,
@@ -338,6 +339,8 @@ const SOURCE_URLS = [
 ];
 
 const CHECKED_AT = '2026-06-05';
+const PROVIDER_REFRESH_CADENCE: ProviderCapabilityRefreshPolicy['cadence'] = 'weekly';
+const PROVIDER_REFRESH_STALE_AFTER_DAYS = 7;
 
 const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
   {
@@ -814,7 +817,11 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   });
 
   app.get('/api/planning/capabilities', (_req, res) => {
-    res.json({ capabilities: PROVIDER_CAPABILITIES });
+    res.json({
+      capabilities: PROVIDER_CAPABILITIES,
+      sourceUrls: SOURCE_URLS,
+      refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES),
+    });
   });
 
   app.post('/api/planning/capabilities/refresh', async (req, res) => {
@@ -826,6 +833,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const plansUpdated = body.persist ? persistRefreshedProviderCapabilities(db, refreshed.capabilities) : 0;
       res.json({
         ...refreshed,
+        refreshPolicy: buildProviderCapabilityRefreshPolicy(refreshed.capabilities, refreshed.refreshedAt),
         ...(body.persist ? { plansUpdated } : {}),
       });
     } catch (err: any) {
@@ -1884,6 +1892,32 @@ function buildProviderCapabilityRefreshRun(
     ],
   };
   return { run, artifact };
+}
+
+function buildProviderCapabilityRefreshPolicy(
+  capabilities: ProviderCapabilitySnapshot[],
+  generatedAt = Date.now(),
+): ProviderCapabilityRefreshPolicy {
+  const staleAfterMs = PROVIDER_REFRESH_STALE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+  const checkedTimes = capabilities
+    .map((snapshot) => Date.parse(`${snapshot.checkedAt}T00:00:00.000Z`))
+    .filter((time) => Number.isFinite(time));
+  const oldestCheckedAt = checkedTimes.length > 0 ? Math.min(...checkedTimes) : generatedAt;
+  const staleToolIds = capabilities
+    .filter((snapshot) => {
+      const checkedAt = Date.parse(`${snapshot.checkedAt}T00:00:00.000Z`);
+      if (!Number.isFinite(checkedAt)) return true;
+      return generatedAt - checkedAt >= staleAfterMs;
+    })
+    .map((snapshot) => snapshot.toolId);
+  return {
+    cadence: PROVIDER_REFRESH_CADENCE,
+    staleAfterDays: PROVIDER_REFRESH_STALE_AFTER_DAYS,
+    generatedAt,
+    nextRecommendedRefreshAt: oldestCheckedAt + staleAfterMs,
+    staleCount: staleToolIds.length,
+    staleToolIds,
+  };
 }
 
 async function refreshProviderCapabilities(
