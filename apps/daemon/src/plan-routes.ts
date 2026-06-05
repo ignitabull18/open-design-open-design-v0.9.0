@@ -2924,6 +2924,7 @@ async function writeProviderSetupFiles(plan: ProjectPlan, sourceDir: string): Pr
   const writes: ProjectMaterializedWrite[] = [];
   await writeProjectFile(sourceDir, 'docs/provider-setup.md', buildProviderSetupMarkdown(plan), writes);
   await writeProjectFile(sourceDir, 'docs/provider-checklist.md', buildProviderChecklistMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'docs/provider-connections.json', buildProviderConnectionManifestJson(plan), writes);
   await writeProjectFile(sourceDir, 'env/planning.providers.env.example', buildProviderEnvExample(plan), writes);
   return writes;
 }
@@ -3066,6 +3067,33 @@ interface ProviderSetupSpec {
   blockerNotes: string[];
 }
 
+interface ProviderConnectionManifest {
+  generatedAt: string;
+  plan: {
+    id: string;
+    name: string;
+    purpose: string;
+  };
+  tools: Array<{
+    toolId: ProjectToolConnection['toolId'];
+    label: string;
+    category: PlanningToolOption['kind'];
+    desiredStatus: ProjectToolConnection['status'];
+    notes?: string;
+    envVars: string[];
+    checkCommand?: string;
+    setupSteps: string[];
+    verification: string[];
+    blockers: string[];
+    capabilitySourceUrl?: string;
+    lastCheck?: {
+      status: PlanningToolCheck['status'];
+      checkedAt: number;
+      summary: string;
+    };
+  }>;
+}
+
 function buildProviderSetupMarkdown(plan: ProjectPlan): string {
   const specs = buildProviderSetupSpecs(plan);
   return [
@@ -3155,6 +3183,46 @@ function buildProviderEnvExample(plan: ProjectPlan): string {
     '',
     ...envVars.map((name) => `${name}=`),
   ].join('\n');
+}
+
+function buildProviderConnectionManifestJson(plan: ProjectPlan): string {
+  const specs = buildProviderSetupSpecs(plan);
+  const manifest: ProviderConnectionManifest = {
+    generatedAt: new Date().toISOString(),
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      purpose: plan.intent.purpose,
+    },
+    tools: specs.map((spec) => {
+      const invocation = buildToolCheckInvocation(plan, spec.toolId);
+      const snapshot = plan.providerCapabilities.find((item) => item.toolId === spec.toolId);
+      const lastCheck = (plan.toolChecks ?? []).find((item) => item.toolId === spec.toolId);
+      return {
+        toolId: spec.toolId,
+        label: spec.label,
+        category: spec.kind,
+        desiredStatus: spec.status,
+        ...(spec.notes ? { notes: spec.notes } : {}),
+        envVars: spec.envVars,
+        ...(invocation ? { checkCommand: [invocation.command, ...invocation.args].join(' ') } : {}),
+        setupSteps: spec.setupSteps,
+        verification: spec.verification,
+        blockers: spec.blockerNotes,
+        ...(snapshot ? { capabilitySourceUrl: snapshot.sourceUrl } : {}),
+        ...(lastCheck
+          ? {
+            lastCheck: {
+              status: lastCheck.status,
+              checkedAt: lastCheck.checkedAt,
+              summary: lastCheck.summary,
+            },
+          }
+          : {}),
+      };
+    }),
+  };
+  return JSON.stringify(manifest, null, 2);
 }
 
 function buildProviderSetupSpecs(plan: ProjectPlan): ProviderSetupSpec[] {

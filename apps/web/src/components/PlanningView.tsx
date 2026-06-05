@@ -688,6 +688,7 @@ function PlanDetail({
     .filter((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
       toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
     );
+  const toolChecksById = new Map(plan.toolChecks.map((check) => [check.toolId, check]));
 
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
@@ -701,9 +702,25 @@ function PlanDetail({
         <h3>Tool connections</h3>
         {plan.selectedTools.length === 0 ? <p>No tools selected yet.</p> : null}
         <div>
-          {plan.selectedTools.map((tool) => (
-            <span key={tool.toolId}>{tool.toolId}: {tool.status}</span>
-          ))}
+          {plan.selectedTools.map((tool) => {
+            const check = toolChecksById.get(tool.toolId);
+            return (
+              <article key={tool.toolId} className="planning-view__tool-connection">
+                <div>
+                  <strong>{tool.toolId}</strong>
+                  <span>{tool.status}{check ? ` · last check ${check.status}` : ''}</span>
+                </div>
+                <button
+                  type="button"
+                  className="planning-view__secondary"
+                  disabled={executionSaving === `tool:${tool.toolId}`}
+                  onClick={() => onCheckTool(tool.toolId)}
+                >
+                  {executionSaving === `tool:${tool.toolId}` ? 'Checking...' : 'Check'}
+                </button>
+              </article>
+            );
+          })}
         </div>
       </div>
       <div className="planning-view__decision-grid">

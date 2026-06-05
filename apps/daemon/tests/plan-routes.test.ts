@@ -1503,11 +1503,12 @@ describe('planning routes', () => {
       actionId: 'provider-setup',
       status: 'completed',
       mode: 'external',
-      summary: expect.stringContaining('Wrote 3 provider setup file'),
+      summary: expect.stringContaining('Wrote 4 provider setup file'),
     });
     expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
       'wrote docs/provider-setup.md',
       'wrote docs/provider-checklist.md',
+      'wrote docs/provider-connections.json',
       'wrote env/planning.providers.env.example',
     ]));
     expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
@@ -1521,6 +1522,10 @@ describe('planning routes', () => {
     ]));
     const setup = readFileSync(path.join(sourceDir, 'docs', 'provider-setup.md'), 'utf8');
     const checklist = readFileSync(path.join(sourceDir, 'docs', 'provider-checklist.md'), 'utf8');
+    const manifest = JSON.parse(readFileSync(path.join(sourceDir, 'docs', 'provider-connections.json'), 'utf8')) as {
+      plan: { name: string };
+      tools: Array<{ toolId: string; checkCommand?: string; envVars: string[]; blockers: string[] }>;
+    };
     const envExample = readFileSync(path.join(sourceDir, 'env', 'planning.providers.env.example'), 'utf8');
     expect(setup).toContain('Keep Cloudflare hosting, Cloudflare data, and Cloudflare Access as separate setup tracks.');
     expect(setup).toContain('Secret source of truth');
@@ -1529,6 +1534,23 @@ describe('planning routes', () => {
     expect(setup).toContain('SUPERMEMORY_API_KEY');
     expect(checklist).toContain('Workflow Automation');
     expect(checklist).toContain('Verify: Run a dev task or list project environments.');
+    expect(manifest.plan.name).toBe('Provider Studio');
+    expect(manifest.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'cloudflare-hosting',
+        checkCommand: 'pnpm wrangler whoami',
+        envVars: expect.arrayContaining(['CLOUDFLARE_ACCOUNT_ID']),
+      }),
+      expect.objectContaining({
+        toolId: 'onepassword',
+        checkCommand: 'op whoami',
+        blockers: expect.arrayContaining(['Provider setup is blocked until secrets have a durable source of truth.']),
+      }),
+      expect.objectContaining({
+        toolId: 'composio',
+        envVars: expect.arrayContaining(['COMPOSIO_API_KEY']),
+      }),
+    ]));
     expect(envExample).toContain('CLOUDFLARE_AI_GATEWAY_ID=');
     expect(envExample).toContain('OP_SERVICE_ACCOUNT_TOKEN=');
     expect(envExample).toContain('STRIPE_WEBHOOK_SECRET=');
