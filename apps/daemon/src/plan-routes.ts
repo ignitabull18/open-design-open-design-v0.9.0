@@ -280,26 +280,121 @@ const SOURCE_URLS = [
   'https://trigger.dev/changelog/',
 ];
 
-const CHECKED_AT = '2026-06-04';
+const CHECKED_AT = '2026-06-05';
 
 const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
   {
     toolId: 'cloudflare-hosting',
-    label: 'Cloudflare Workers, Pages, Agents, Workflows, and AI Gateway',
-    sourceUrl: 'https://developers.cloudflare.com/changelog/product-group/ai/',
+    label: 'Cloudflare Hosting and Workers Runtime',
+    sourceUrl: 'https://developers.cloudflare.com/workers/platform/changelog/',
     checkedAt: CHECKED_AT,
     capabilities: [
-      'AI Gateway REST API supports unified model calls through /ai/run and OpenAI/Anthropic-compatible endpoints.',
-      'Agents SDK now emphasizes skills, messengers, scheduled tasks, Workflows, and durable chat recovery.',
+      'Workers supports framework deployments, service bindings, preview URLs, static assets, and Node.js compatibility surfaces.',
+      'Workers changelog and docs expose product-specific runtime changes, compatibility flags, and deployment behavior.',
       'Workers and Pages billing sidebars can show current usage and budget alerts for several developer products.',
     ],
     planningImplications: [
-      'Keep Cloudflare AI routing explicit with account id, gateway id, and provider model ids.',
-      'Plan durable agent steps separately from normal request handlers when work needs recovery or scheduling.',
+      'Keep Cloudflare hosting separate from Cloudflare data, Access, Workflows, and AI Gateway setup.',
+      'Choose Workers, Pages, or OpenNext before scaffold execution because deploy commands and bindings differ.',
       'Track spend and budget-alert setup as a delivery task when Cloudflare is selected.',
     ],
     riskNotes: [
       'The current Open Design daemon is Express/SQLite; a Cloudflare-only production runtime still needs either a Workers refactor or a separate Node daemon.',
+    ],
+  },
+  {
+    toolId: 'cloudflare-data',
+    label: 'Cloudflare Data: D1, R2, KV, Queues, Durable Objects, Vectorize',
+    sourceUrl: 'https://developers.cloudflare.com/changelog/product/d1/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Cloudflare data choices split across D1, R2, KV, Queues, Durable Objects, Hyperdrive, and Vectorize bindings.',
+      'D1 uses SQLite-compatible migrations and account/database-specific wrangler commands.',
+      'Workers bindings require explicit config before runtime code can access data resources.',
+    ],
+    planningImplications: [
+      'Treat Cloudflare data as its own database lane instead of assuming hosting setup proves data setup.',
+      'For D1, generate SQLite-compatible migrations and require a database name before applying migrations.',
+      'For R2, Vectorize, Queues, or Durable Objects, write provider setup tasks even when no SQL migration exists.',
+    ],
+    riskNotes: [
+      'D1, R2, Queues, and Vectorize have different limits, consistency models, and pricing surfaces; do not collapse them into one generic database status.',
+    ],
+  },
+  {
+    toolId: 'cloudflare-access',
+    label: 'Cloudflare Access and Zero Trust',
+    sourceUrl: 'https://developers.cloudflare.com/changelog/product/access/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Access supports app policies, service tokens, browser and non-browser auth flows, and Zero Trust admin controls.',
+      'Recent Access changelog entries include managed OAuth for non-browser clients and granular API token permission changes.',
+      'Access can protect private apps independently from app-level user identity providers.',
+    ],
+    planningImplications: [
+      'Keep Access as an authentication gate, not as the product user/session database.',
+      'Record team name, application audience, allowed identities, and service-token needs during provider setup.',
+      'For internal tools or admin routes, decide whether Access protects the route before Better Auth or Supabase Auth loads.',
+    ],
+    riskNotes: [
+      'Access policy proof is route-specific; a dashboard login does not prove every private route is protected.',
+    ],
+  },
+  {
+    toolId: 'vercel',
+    label: 'Vercel Hosting and Preview Deploys',
+    sourceUrl: 'https://vercel.com/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Vercel remains a Next.js-first preview and production deploy target.',
+      'Project, team, and environment identity are required before automated deploys can be treated as connected.',
+      'Vercel changelog is the source for platform behavior changes that affect routing, builds, functions, and framework support.',
+    ],
+    planningImplications: [
+      'Keep Vercel env mapping separate for local, preview, and production.',
+      'Prefer Vercel when Next.js fidelity matters more than Cloudflare edge-native bindings.',
+      'Record preview URL and deployment status as execution evidence.',
+    ],
+    riskNotes: [
+      'Vercel proof does not satisfy Cloudflare, Coolify, or Hostinger delivery targets selected in the same plan.',
+    ],
+  },
+  {
+    toolId: 'coolify',
+    label: 'Coolify Self-Hosted Deployment',
+    sourceUrl: 'https://coolify.io/changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Coolify can own self-hosted app, worker, database, and service deployment resources.',
+      'Coolify API/resource identity is required before deployment automation can run safely.',
+      'Coolify changelog and releases are relevant for API behavior, service creation, and MCP controls.',
+    ],
+    planningImplications: [
+      'Separate Coolify app deployment from Postgres-on-Coolify database ownership.',
+      'Record Coolify URL, token, project UUID, and resource UUID in setup artifacts before deploy execution.',
+      'Use Coolify when the project needs VPS/container control rather than managed serverless previews.',
+    ],
+    riskNotes: [
+      'Coolify writes are environment-specific; a local generated command is not proof without API/resource output.',
+    ],
+  },
+  {
+    toolId: 'hostinger',
+    label: 'Hostinger VPS and Managed Hosting',
+    sourceUrl: 'https://developers.hostinger.com/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Hostinger exposes API surfaces for VPS and hosting account operations.',
+      'Hostinger VPS deployments usually require explicit SSH host, user, port, deploy path, and post-deploy command decisions.',
+      'Hostinger can be a parent VPS host for Coolify or a direct deployment target.',
+    ],
+    planningImplications: [
+      'Decide whether Hostinger runs Coolify, direct Docker, or a static/app hosting workflow.',
+      'Treat SSH proof, deploy path, and public URL as delivery evidence.',
+      'Keep Hostinger infrastructure setup separate from Coolify resource setup.',
+    ],
+    riskNotes: [
+      'Hostinger deployment is blocked until the target runtime and SSH/account access are explicit.',
     ],
   },
   {
@@ -319,6 +414,63 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
     ],
     riskNotes: [
       'Do not store workflow payloads or provider webhooks in core product tables without retention limits.',
+    ],
+  },
+  {
+    toolId: 'supabase-auth',
+    label: 'Supabase Auth',
+    sourceUrl: 'https://supabase.com/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Supabase Auth owns managed user sessions, providers, redirects, email settings, and auth-related SDK behavior.',
+      'Recent Supabase updates include Auth, SDK, dashboard, database, and breaking-change notes.',
+      'Supabase Auth can be selected independently from using Supabase Postgres as the primary database.',
+    ],
+    planningImplications: [
+      'Choose Supabase Auth versus Better Auth before scaffold execution.',
+      'Record redirect URLs for local, preview, and production before treating auth as connected.',
+      'Keep service-role keys server-only and out of generated docs or client env files.',
+    ],
+    riskNotes: [
+      'Auth provider setup proof is not the same as database migration proof.',
+    ],
+  },
+  {
+    toolId: 'convex',
+    label: 'Convex Realtime Backend and Database',
+    sourceUrl: 'https://ship.convex.dev/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Convex provides a reactive TypeScript backend with schema, functions, realtime state, and deployment-specific generated types.',
+      'Convex plans need schema/function files instead of SQL migrations.',
+      'Convex changelog is the source for runtime, deploy, and platform behavior changes.',
+    ],
+    planningImplications: [
+      'Use Convex when collaborative/realtime product state is core to the workflow.',
+      'Materialize convex/schema.ts and functions before running convex deploy.',
+      'Keep long-running side effects in Trigger.dev or another workflow runner unless Convex functions are explicitly chosen for them.',
+    ],
+    riskNotes: [
+      'Convex schema deployment requires project linkage and CLI/auth proof before production use.',
+    ],
+  },
+  {
+    toolId: 'postgres-coolify',
+    label: 'Postgres on Coolify',
+    sourceUrl: 'https://www.postgresql.org/docs/release/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Self-hosted Postgres uses SQL migrations, connection strings, backups, restore drills, and extension/version decisions.',
+      'Coolify can host Postgres, but database readiness depends on the Postgres service and backup policy, not app deployment alone.',
+      'Postgres release notes are relevant for version pinning and compatibility decisions.',
+    ],
+    planningImplications: [
+      'Record DATABASE_URL source, backup policy, restore command, and extension requirements before migration execution.',
+      'Keep Coolify service setup and Postgres migration proof as separate artifacts.',
+      'Prefer RLS/access-policy review before exposing tenant data through generated APIs.',
+    ],
+    riskNotes: [
+      'Self-hosted database ownership adds backup, restore, patching, and secret-rotation duties.',
     ],
   },
   {
@@ -378,6 +530,25 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
     ],
   },
   {
+    toolId: 'linear',
+    label: 'Linear Project Management',
+    sourceUrl: 'https://linear.app/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Linear owns teams, projects, issues, labels, status workflows, and product planning handoffs.',
+      'Linear changelog is the source for issue/project workflow and agent-facing feature changes.',
+      'Planning output can create implementation issues when team and project identity are explicit.',
+    ],
+    planningImplications: [
+      'Record Linear team, project, labels, and handoff style before executing issue creation.',
+      'Use Linear for product/project execution when GitHub Issues is too repo-local.',
+      'Keep Google Docs or GitHub Issues as fallback surfaces when Linear write access is missing.',
+    ],
+    riskNotes: [
+      'Linear writes should stay blocked until team/project ids and API scope are explicit.',
+    ],
+  },
+  {
     toolId: 'github',
     label: 'GitHub Source Control',
     sourceUrl: 'https://github.blog/changelog/',
@@ -392,6 +563,177 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
     ],
     riskNotes: [
       'Repo creation should never invent an owner; use gh-authenticated owner or a user-provided org.',
+    ],
+  },
+  {
+    toolId: 'github-issues',
+    label: 'GitHub Issues Project Management',
+    sourceUrl: 'https://github.blog/changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'GitHub Issues owns repo-native work items, labels, milestones, and project-board handoffs.',
+      'Issue creation can run through gh after repo owner/name and auth scope are explicit.',
+      'GitHub changelog is the source for repo, issue, workflow, and project behavior changes.',
+    ],
+    planningImplications: [
+      'Use GitHub Issues as the default project-management fallback when Linear is deferred.',
+      'Generate issue bodies from accepted planning, design, database, integrations, AI, workflows, and delivery sections.',
+      'Keep repo creation and issue creation as separately confirmed actions.',
+    ],
+    riskNotes: [
+      'Issue writes are blocked until the repo exists or repo identity is explicit.',
+    ],
+  },
+  {
+    toolId: 'google-docs',
+    label: 'Google Docs Planning Handoffs',
+    sourceUrl: 'https://developers.google.com/workspace/docs/release-notes',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Google Docs can store PRDs, specs, planning handoffs, and external collaboration documents.',
+      'Docs writes depend on folder, auth scope, title, and sharing policy.',
+      'Google Workspace release notes are the source for Docs API behavior and workspace platform changes.',
+    ],
+    planningImplications: [
+      'Use Google Docs when the planning artifact must be shared outside the repo/project tracker.',
+      'Record destination folder and sharing policy before document creation.',
+      'Keep generated docs as handoffs, not as the source of truth for executable plan state.',
+    ],
+    riskNotes: [
+      'Docs write proof requires the created document URL and sharing state, not just a local markdown draft.',
+    ],
+  },
+  {
+    toolId: 'codex',
+    label: 'Codex Coding Runtime',
+    sourceUrl: 'https://help.openai.com/en/articles/11428266-codex-changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Codex can operate on local workspaces, run validation, and make code changes through approved tooling.',
+      'Codex setup depends on workspace path, tool access, and repo-specific agent instructions.',
+      'The Codex changelog is the source for runtime/product behavior changes.',
+    ],
+    planningImplications: [
+      'Keep Codex as an execution/runtime provider, not as a substitute for stored plan state.',
+      'Record workspace path, validation commands, and allowed external actions before autonomous execution.',
+      'Every new capability still needs API/UI/CLI parity in this repo.',
+    ],
+    riskNotes: [
+      'Codex execution proof must be command output, tests, artifacts, commits, or pushed branches, not intent.',
+    ],
+  },
+  {
+    toolId: 'cloudflare-ai-gateway',
+    label: 'Cloudflare AI Gateway',
+    sourceUrl: 'https://developers.cloudflare.com/ai-gateway/changelog/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'AI Gateway supports provider routing, observability, caching, rate limiting, and OpenAI-compatible gateway endpoints.',
+      'Recent AI Gateway changelog entries include unified billing, custom providers, model playground, and broader provider support.',
+      'Gateway setup requires account id, gateway id, provider/model choices, and budget/logging decisions.',
+    ],
+    planningImplications: [
+      'Keep AI Gateway routing explicit with account id, gateway id, provider, model, and fallback policy.',
+      'Use Gateway when observability, spend controls, cache policy, or multi-provider routing matters.',
+      'Treat Cloudflare AI Gateway setup separately from Cloudflare hosting and Workers deploy proof.',
+    ],
+    riskNotes: [
+      'AI Gateway can route model calls but does not choose safe prompts, memory retention, or evaluation policy by itself.',
+    ],
+  },
+  {
+    toolId: 'ollama-cloud',
+    label: 'Ollama Cloud',
+    sourceUrl: 'https://registry.ollama.com/cloud',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Ollama Cloud provides hosted model access while retaining Ollama-oriented API/library workflows.',
+      'Ollama setup needs base URL, model id, auth, and fallback behavior for local versus cloud model use.',
+      'Ollama Cloud docs are the source for supported cloud behavior and API compatibility.',
+    ],
+    planningImplications: [
+      'Use Ollama Cloud when hosted Ollama models are preferred over OpenRouter or direct provider APIs.',
+      'Record model id, base URL, and local development fallback before agent runtime execution.',
+      'Keep latency/cost validation in the AI section acceptance checklist.',
+    ],
+    riskNotes: [
+      'Ollama Cloud assumptions can drift quickly; refresh provider evidence before hardcoding model behavior.',
+    ],
+  },
+  {
+    toolId: 'openrouter',
+    label: 'OpenRouter Model Routing',
+    sourceUrl: 'https://openrouter.ai/docs/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'OpenRouter provides model routing across many upstream model providers.',
+      'OpenRouter setup needs API key, default model, fallback models, app attribution, and budget policy.',
+      'OpenRouter changelog is the source for model/provider routing and API behavior changes.',
+    ],
+    planningImplications: [
+      'Use OpenRouter when model fallback or broad provider access is more important than Cloudflare-native observability.',
+      'Record default and fallback models before scaffold/runtime wiring.',
+      'Keep spend policy and provider-specific model limitations visible in the AI section.',
+    ],
+    riskNotes: [
+      'OpenRouter availability and model routing can vary by provider; check live model metadata before production use.',
+    ],
+  },
+  {
+    toolId: 'onepassword',
+    label: '1Password Secrets and Developer Tools',
+    sourceUrl: 'https://releases.1password.com/developers/',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      '1Password Developer tools include CLI, SDKs, Connect, vault/item operations, and shell/plugin workflows.',
+      'Developer release notes are the source for CLI, SDK, and Connect changes.',
+      'Secrets setup can map generated env variable names to vault/item fields without committing values.',
+    ],
+    planningImplications: [
+      'Use 1Password as the default source of truth for provider secrets.',
+      'Generate env names and item-field mappings, but never write secret values into repository files.',
+      'Run op-based checks before marking secret-backed provider setup connected.',
+    ],
+    riskNotes: [
+      'A missing vault/item path blocks downstream provider setup even when the provider account itself exists.',
+    ],
+  },
+  {
+    toolId: 'supermemory',
+    label: 'Supermemory.ai Memory',
+    sourceUrl: 'https://supermemory.ai/docs/changelog/developer-platform',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Supermemory.ai can act as an external memory layer for project and agent context.',
+      'Memory setup needs API key, project/account id, retention policy, and sensitive-data exclusions.',
+      'Developer-platform changelog is the source for memory API and platform behavior changes.',
+    ],
+    planningImplications: [
+      'Use memory only after deciding what project context may persist and what must be excluded.',
+      'Write retention/deletion policy into AI acceptance criteria before agent workflows use memory.',
+      'Keep memory provider health separate from model-provider health.',
+    ],
+    riskNotes: [
+      'Memory can leak sensitive planning or customer context if retention and exclusion rules are vague.',
+    ],
+  },
+  {
+    toolId: 'better-auth',
+    label: 'Better Auth',
+    sourceUrl: 'https://better-auth.com/changelog',
+    checkedAt: CHECKED_AT,
+    capabilities: [
+      'Better Auth is a TypeScript auth framework and a native Better-T-Stack auth option.',
+      'Better Auth setup needs secret, base URL, adapter/session decisions, providers, and callback URLs.',
+      'Better Auth changelog is the source for auth API, adapter, and provider behavior changes.',
+    ],
+    planningImplications: [
+      'Choose Better Auth versus Supabase Auth or Cloudflare Access before scaffold execution.',
+      'Align auth adapter with database/runtime choices before materializing database and provider setup docs.',
+      'Record local, preview, and production callback URLs before treating auth as ready.',
+    ],
+    riskNotes: [
+      'Auth changes affect database tables, screen states, route protection, and deployment envs at once.',
     ],
   },
 ];
@@ -969,12 +1311,7 @@ function buildProviderCapabilitiesFromCatalog(
   catalog: ProviderCapabilitySnapshot[],
 ): ProviderCapabilitySnapshot[] {
   const selected = new Set(selectedTools.map((tool) => tool.toolId));
-  return catalog.filter((snapshot) =>
-    selected.has(snapshot.toolId)
-      || (snapshot.toolId === 'cloudflare-hosting' && (selected.has('cloudflare-ai-gateway') || selected.has('cloudflare-data') || selected.has('cloudflare-access')))
-      || (snapshot.toolId === 'github' && selected.has('github-issues'))
-      || (snapshot.toolId === 'supabase-database' && selected.has('supabase-auth')),
-  );
+  return catalog.filter((snapshot) => selected.has(snapshot.toolId));
 }
 
 function persistRefreshedProviderCapabilities(

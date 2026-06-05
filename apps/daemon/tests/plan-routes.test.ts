@@ -74,13 +74,32 @@ describe('planning routes', () => {
     expect(ids.filter((id: string) => id === 'cloudflare')).toHaveLength(0);
     expect(ids.filter((id: string) => id === 'supabase')).toHaveLength(0);
     expect(capabilities.status).toBe(200);
+    const capabilityIds = capabilities.body.capabilities.map((snapshot: { toolId: string }) => snapshot.toolId);
+    for (const id of ids) {
+      expect(capabilityIds).toContain(id);
+    }
     expect(capabilities.body.capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({
         toolId: 'cloudflare-hosting',
-        checkedAt: '2026-06-04',
+        checkedAt: '2026-06-05',
         planningImplications: expect.arrayContaining([
-          expect.stringContaining('Cloudflare AI routing explicit'),
+          expect.stringContaining('Cloudflare hosting separate'),
         ]),
+      }),
+      expect.objectContaining({
+        toolId: 'cloudflare-ai-gateway',
+        sourceUrl: 'https://developers.cloudflare.com/ai-gateway/changelog/',
+        planningImplications: expect.arrayContaining([
+          expect.stringContaining('Gateway routing explicit'),
+        ]),
+      }),
+      expect.objectContaining({
+        toolId: 'cloudflare-data',
+        sourceUrl: 'https://developers.cloudflare.com/changelog/product/d1/',
+      }),
+      expect.objectContaining({
+        toolId: 'cloudflare-access',
+        sourceUrl: 'https://developers.cloudflare.com/changelog/product/access/',
       }),
       expect.objectContaining({
         toolId: 'trigger-dev',
@@ -114,7 +133,10 @@ describe('planning routes', () => {
 
     expect(response.status).toBe(200);
     expect(fetchCalls).toEqual(expect.arrayContaining([
-      'https://developers.cloudflare.com/changelog/product-group/ai/',
+      'https://developers.cloudflare.com/workers/platform/changelog/',
+      'https://developers.cloudflare.com/ai-gateway/changelog/',
+      'https://developers.cloudflare.com/changelog/product/d1/',
+      'https://developers.cloudflare.com/changelog/product/access/',
       'https://supabase.com/changelog',
       'https://trigger.dev/changelog/',
     ]));
