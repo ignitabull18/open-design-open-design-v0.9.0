@@ -87,6 +87,7 @@ interface DeployCommandRequest {
   args: string[];
   cwd: string;
   timeoutMs: number;
+  env?: Record<string, string>;
 }
 
 interface DeployCommandResult {
@@ -97,6 +98,13 @@ interface DeployCommandResult {
 }
 
 type DeployCommandRunner = (request: DeployCommandRequest) => Promise<DeployCommandResult>;
+
+interface DeployCommandInvocation {
+  command: string;
+  args: string[];
+  displayCommand: string;
+  env?: Record<string, string>;
+}
 
 interface DeploymentHealthCheck {
   url: string;
@@ -1539,7 +1547,7 @@ async function executeDeployRuntimeAction(
   let result: DeployCommandResult = {
     exitCode: unsupported ? 1 : 0,
     stdout: '',
-    stderr: unsupported ? `${target} deployment execution is not implemented yet.` : '',
+    stderr: unsupported ? buildDeployBlockedReason(target) : '',
     durationMs: 0,
   };
   let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
@@ -1550,6 +1558,7 @@ async function executeDeployRuntimeAction(
         args: invocation.args,
         cwd: sourceDir,
         timeoutMs: 300_000,
+        ...(invocation.env ? { env: invocation.env } : {}),
       });
       if (result.exitCode !== 0) status = 'failed';
     } catch (err: any) {
@@ -1577,11 +1586,11 @@ async function executeDeployRuntimeAction(
     summary: status === 'completed'
       ? `${target} deployment completed${previewUrl ? ` at ${previewUrl}` : ''}${healthCheck ? ` and health check returned ${healthCheck.statusCode ?? 'unknown'}` : ''}.`
       : unsupported
-        ? `${target} deployment executor is not implemented yet; recorded the blocked target and required source directory.`
+        ? `${target} deployment executor is missing required provider configuration.`
         : healthCheck && !healthCheck.ok
           ? `${target} deployment completed but health check failed for ${previewUrl}.`
           : `${target} deployment failed; inspect the attached artifact for stdout and stderr.`,
-    ...(invocation ? { command: [invocation.command, ...invocation.args].join(' ') } : {}),
+    ...(invocation ? { command: invocation.displayCommand } : {}),
     startedAt: now,
     completedAt: Date.now(),
     artifactIds: [artifact.id],
@@ -1914,31 +1923,107 @@ function resolveDeliveryTarget(plan: ProjectPlan, requested?: DeliveryPlan['targ
   return target;
 }
 
-function buildDeployInvocation(plan: ProjectPlan, target: DeliveryPlan['target']): { command: string; args: string[] } | null {
+function buildDeployInvocation(plan: ProjectPlan, target: DeliveryPlan['target']): DeployCommandInvocation | null {
   if (target === 'vercel') {
     return {
       command: 'vercel',
       args: ['deploy', '--yes'],
+      displayCommand: 'vercel deploy --yes',
     };
   }
   if (target === 'cloudflare') {
     return buildCloudflareDeployInvocation(plan.stack.packageManager);
   }
+  if (target === 'coolify') {
+    return buildCoolifyDeployInvocation();
+  }
+  if (target === 'hostinger') {
+    return buildHostingerDeployInvocation();
+  }
   return null;
 }
 
-function buildCloudflareDeployInvocation(packageManager: ProjectStackDecision['packageManager']): { command: string; args: string[] } {
+function buildCloudflareDeployInvocation(packageManager: ProjectStackDecision['packageManager']): DeployCommandInvocation {
   switch (packageManager ?? 'pnpm') {
     case 'npm':
-      return { command: 'npx', args: ['wrangler', 'deploy'] };
+      return { command: 'npx', args: ['wrangler', 'deploy'], displayCommand: 'npx wrangler deploy' };
     case 'yarn':
-      return { command: 'yarn', args: ['wrangler', 'deploy'] };
+      return { command: 'yarn', args: ['wrangler', 'deploy'], displayCommand: 'yarn wrangler deploy' };
     case 'bun':
-      return { command: 'bunx', args: ['wrangler', 'deploy'] };
+      return { command: 'bunx', args: ['wrangler', 'deploy'], displayCommand: 'bunx wrangler deploy' };
     case 'pnpm':
     default:
-      return { command: 'pnpm', args: ['wrangler', 'deploy'] };
+      return { command: 'pnpm', args: ['wrangler', 'deploy'], displayCommand: 'pnpm wrangler deploy' };
   }
+}
+
+function buildCoolifyDeployInvocation(): DeployCommandInvocation | null {
+  const baseUrl = process.env.COOLIFY_URL?.trim().replace(/\/+$/, '');
+  const apiToken = process.env.COOLIFY_API_TOKEN?.trim();
+  const resourceUuid = process.env.COOLIFY_RESOURCE_UUID?.trim();
+  if (!baseUrl || !apiToken || !resourceUuid) return null;
+  const forceDeploy = process.env.COOLIFY_FORCE_DEPLOY?.trim() === '1' ? 'true' : 'false';
+  const deployUrl = `${baseUrl}/api/v1/deploy?uuid=${encodeURIComponent(resourceUuid)}&force=${forceDeploy}`;
+  return {
+    command: 'bash',
+    args: [
+      '-lc',
+      [
+        'set -euo pipefail',
+        'response="$(curl -sS -X POST "$COOLIFY_DEPLOY_URL" -H "Authorization: Bearer $COOLIFY_API_TOKEN" -H "Content-Type: application/json")"',
+        'printf "%s\\n" "$response"',
+        'if [ -n "${COOLIFY_PUBLIC_URL:-}" ]; then printf "Preview: %s\\n" "$COOLIFY_PUBLIC_URL"; fi',
+      ].join('\n'),
+    ],
+    displayCommand: 'coolify deploy --resource "$COOLIFY_RESOURCE_UUID"',
+    env: {
+      COOLIFY_URL: baseUrl,
+      COOLIFY_API_TOKEN: apiToken,
+      COOLIFY_RESOURCE_UUID: resourceUuid,
+      COOLIFY_DEPLOY_URL: deployUrl,
+      ...(process.env.COOLIFY_PUBLIC_URL?.trim() ? { COOLIFY_PUBLIC_URL: process.env.COOLIFY_PUBLIC_URL.trim() } : {}),
+    },
+  };
+}
+
+function buildHostingerDeployInvocation(): DeployCommandInvocation | null {
+  const sshHost = process.env.HOSTINGER_SSH_HOST?.trim();
+  const sshUser = process.env.HOSTINGER_SSH_USER?.trim();
+  const deployPath = process.env.HOSTINGER_DEPLOY_PATH?.trim();
+  if (!sshHost || !sshUser || !deployPath) return null;
+  const sshPort = process.env.HOSTINGER_SSH_PORT?.trim() || '22';
+  const postDeployCommand = process.env.HOSTINGER_POST_DEPLOY_COMMAND?.trim();
+  return {
+    command: 'bash',
+    args: [
+      '-lc',
+      [
+        'set -euo pipefail',
+        'rsync -az --delete -e "ssh -p $HOSTINGER_SSH_PORT" ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"',
+        'if [ -n "${HOSTINGER_POST_DEPLOY_COMMAND:-}" ]; then ssh -p "$HOSTINGER_SSH_PORT" "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST" "cd $HOSTINGER_DEPLOY_PATH && $HOSTINGER_POST_DEPLOY_COMMAND"; fi',
+        'if [ -n "${HOSTINGER_PUBLIC_URL:-}" ]; then printf "Preview: %s\\n" "$HOSTINGER_PUBLIC_URL"; fi',
+      ].join('\n'),
+    ],
+    displayCommand: 'rsync ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"',
+    env: {
+      HOSTINGER_SSH_HOST: sshHost,
+      HOSTINGER_SSH_USER: sshUser,
+      HOSTINGER_SSH_PORT: sshPort,
+      HOSTINGER_DEPLOY_PATH: deployPath,
+      ...(postDeployCommand ? { HOSTINGER_POST_DEPLOY_COMMAND: postDeployCommand } : {}),
+      ...(process.env.HOSTINGER_PUBLIC_URL?.trim() ? { HOSTINGER_PUBLIC_URL: process.env.HOSTINGER_PUBLIC_URL.trim() } : {}),
+    },
+  };
+}
+
+function buildDeployBlockedReason(target: DeliveryPlan['target']): string {
+  if (target === 'coolify') {
+    return 'COOLIFY_URL, COOLIFY_API_TOKEN, and COOLIFY_RESOURCE_UUID are required before Coolify deployment execution.';
+  }
+  if (target === 'hostinger') {
+    return 'HOSTINGER_SSH_HOST, HOSTINGER_SSH_USER, and HOSTINGER_DEPLOY_PATH are required before Hostinger VPS deployment execution.';
+  }
+  return `${target} deployment execution is not implemented yet.`;
 }
 
 function buildDatabaseMigrationCommandPreview(stack: ProjectStackDecision): string {
@@ -2670,7 +2755,7 @@ function buildDeployArtifact(
   runId: string,
   sourceDir: string,
   target: DeliveryPlan['target'],
-  invocation: { command: string; args: string[] } | null,
+  invocation: DeployCommandInvocation | null,
   result: DeployCommandResult,
   status: PlanningExecutionRun['status'],
   previewUrl?: string,
@@ -2686,7 +2771,7 @@ function buildDeployArtifact(
       `Plan: ${plan.name}`,
       `Status: ${status}`,
       `Delivery target: ${target}`,
-      invocation ? `Command: ${[invocation.command, ...invocation.args].join(' ')}` : 'Command: not available for this delivery target yet',
+      invocation ? `Command: ${invocation.displayCommand}` : 'Command: not available for this delivery target yet',
       `Source directory: ${sourceDir}`,
       previewUrl ? `Preview URL: ${previewUrl}` : '',
       healthCheck ? `Health check: ${healthCheck.ok ? 'ok' : 'failed'}` : '',
@@ -2880,7 +2965,7 @@ function runDeployCommand(request: DeployCommandRequest): Promise<DeployCommandR
       cwd: request.cwd,
       timeout: request.timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
-      env: process.env,
+      env: { ...process.env, ...(request.env ?? {}) },
     }, (error: any, stdout, stderr) => {
       resolve({
         exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,

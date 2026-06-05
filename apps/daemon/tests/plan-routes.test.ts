@@ -938,6 +938,234 @@ describe('planning routes', () => {
     expect(executed.body.artifacts[0].content).toContain('Health status: 204');
   });
 
+  it('executes a confirmed Coolify deployment from provider configuration', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'coolify-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"coolify-studio"}\n');
+    const previousUrl = process.env.COOLIFY_URL;
+    const previousToken = process.env.COOLIFY_API_TOKEN;
+    const previousResourceUuid = process.env.COOLIFY_RESOURCE_UUID;
+    const previousPublicUrl = process.env.COOLIFY_PUBLIC_URL;
+    process.env.COOLIFY_URL = 'https://coolify.example.test/';
+    process.env.COOLIFY_API_TOKEN = 'coolify_test_token';
+    process.env.COOLIFY_RESOURCE_UUID = 'resource-123';
+    process.env.COOLIFY_PUBLIC_URL = 'https://coolify-studio.example.test';
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string; env?: Record<string, string> }> = [];
+    const healthCalls: string[] = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          ...(request.env ? { env: request.env } : {}),
+        });
+        return {
+          exitCode: 0,
+          stdout: '{"message":"Deployment queued"}\nPreview: https://coolify-studio.example.test',
+          stderr: '',
+          durationMs: 55,
+        };
+      },
+      deployHealthChecker: async (url) => {
+        healthCalls.push(url);
+        return {
+          url,
+          finalUrl: url,
+          statusCode: 200,
+          ok: true,
+          durationMs: 11,
+        };
+      },
+    });
+
+    try {
+      const created = await jsonFetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Coolify Studio',
+          intent: { purpose: 'Deploy a scaffolded project through Coolify.' },
+          delivery: [{ target: 'coolify', status: 'planned' }],
+          stack: {
+            frontend: 'next',
+            backend: 'hono',
+            runtime: 'node',
+            database: 'postgres-coolify',
+            auth: 'better-auth',
+            hosting: ['coolify'],
+          },
+        }),
+      });
+
+      const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmed: true,
+          targetDir: 'workspace/coolify-studio',
+          deliveryTarget: 'coolify',
+        }),
+      });
+
+      expect(executed.status).toBe(201);
+      expect(runnerCalls).toHaveLength(1);
+      expect(runnerCalls[0]).toMatchObject({
+        command: 'bash',
+        cwd: sourceDir,
+      });
+      expect(runnerCalls[0]?.args.join('\n')).toContain('curl -sS -X POST "$COOLIFY_DEPLOY_URL"');
+      expect(runnerCalls[0]?.env?.COOLIFY_URL).toBe('https://coolify.example.test');
+      expect(runnerCalls[0]?.env?.COOLIFY_API_TOKEN).toBe('coolify_test_token');
+      expect(runnerCalls[0]?.env?.COOLIFY_RESOURCE_UUID).toBe('resource-123');
+      expect(runnerCalls[0]?.env?.COOLIFY_DEPLOY_URL).toBe('https://coolify.example.test/api/v1/deploy?uuid=resource-123&force=false');
+      expect(healthCalls).toEqual(['https://coolify-studio.example.test']);
+      expect(executed.body.run).toMatchObject({
+        actionId: 'deploy-runtime',
+        status: 'completed',
+        mode: 'external',
+        command: 'coolify deploy --resource "$COOLIFY_RESOURCE_UUID"',
+        summary: expect.stringContaining('https://coolify-studio.example.test'),
+      });
+      expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          target: 'coolify',
+          status: 'deployed',
+          notes: expect.stringContaining('https://coolify-studio.example.test'),
+        }),
+      ]));
+      expect(executed.body.artifacts[0].content).toContain('Command: coolify deploy --resource "$COOLIFY_RESOURCE_UUID"');
+      expect(executed.body.artifacts[0].content).not.toContain('coolify_test_token');
+    } finally {
+      if (previousUrl === undefined) delete process.env.COOLIFY_URL;
+      else process.env.COOLIFY_URL = previousUrl;
+      if (previousToken === undefined) delete process.env.COOLIFY_API_TOKEN;
+      else process.env.COOLIFY_API_TOKEN = previousToken;
+      if (previousResourceUuid === undefined) delete process.env.COOLIFY_RESOURCE_UUID;
+      else process.env.COOLIFY_RESOURCE_UUID = previousResourceUuid;
+      if (previousPublicUrl === undefined) delete process.env.COOLIFY_PUBLIC_URL;
+      else process.env.COOLIFY_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
+  it('executes a confirmed Hostinger VPS deployment from provider configuration', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'hostinger-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"hostinger-studio"}\n');
+    const previousHost = process.env.HOSTINGER_SSH_HOST;
+    const previousUser = process.env.HOSTINGER_SSH_USER;
+    const previousPath = process.env.HOSTINGER_DEPLOY_PATH;
+    const previousPort = process.env.HOSTINGER_SSH_PORT;
+    const previousCommand = process.env.HOSTINGER_POST_DEPLOY_COMMAND;
+    const previousPublicUrl = process.env.HOSTINGER_PUBLIC_URL;
+    process.env.HOSTINGER_SSH_HOST = 'vps.example.test';
+    process.env.HOSTINGER_SSH_USER = 'deploy';
+    process.env.HOSTINGER_DEPLOY_PATH = '/var/www/hostinger-studio';
+    process.env.HOSTINGER_SSH_PORT = '2222';
+    process.env.HOSTINGER_POST_DEPLOY_COMMAND = 'pnpm install --prod && pnpm start';
+    process.env.HOSTINGER_PUBLIC_URL = 'https://hostinger-studio.example.test';
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string; env?: Record<string, string> }> = [];
+    const healthCalls: string[] = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          ...(request.env ? { env: request.env } : {}),
+        });
+        return {
+          exitCode: 0,
+          stdout: 'Preview: https://hostinger-studio.example.test',
+          stderr: '',
+          durationMs: 75,
+        };
+      },
+      deployHealthChecker: async (url) => {
+        healthCalls.push(url);
+        return {
+          url,
+          finalUrl: url,
+          statusCode: 200,
+          ok: true,
+          durationMs: 13,
+        };
+      },
+    });
+
+    try {
+      const created = await jsonFetch(`${baseUrl}/api/plans`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: 'Hostinger Studio',
+          intent: { purpose: 'Deploy a scaffolded project to Hostinger VPS.' },
+          delivery: [{ target: 'hostinger', status: 'planned' }],
+          stack: {
+            frontend: 'next',
+            backend: 'hono',
+            runtime: 'node',
+            database: 'postgres-coolify',
+            auth: 'better-auth',
+            hosting: ['hostinger'],
+          },
+        }),
+      });
+
+      const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmed: true,
+          targetDir: 'workspace/hostinger-studio',
+          deliveryTarget: 'hostinger',
+        }),
+      });
+
+      expect(executed.status).toBe(201);
+      expect(runnerCalls).toHaveLength(1);
+      expect(runnerCalls[0]).toMatchObject({
+        command: 'bash',
+        cwd: sourceDir,
+      });
+      expect(runnerCalls[0]?.args.join('\n')).toContain('rsync -az --delete');
+      expect(runnerCalls[0]?.args.join('\n')).toContain('HOSTINGER_POST_DEPLOY_COMMAND');
+      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_HOST).toBe('vps.example.test');
+      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_USER).toBe('deploy');
+      expect(runnerCalls[0]?.env?.HOSTINGER_SSH_PORT).toBe('2222');
+      expect(runnerCalls[0]?.env?.HOSTINGER_DEPLOY_PATH).toBe('/var/www/hostinger-studio');
+      expect(healthCalls).toEqual(['https://hostinger-studio.example.test']);
+      expect(executed.body.run).toMatchObject({
+        actionId: 'deploy-runtime',
+        status: 'completed',
+        mode: 'external',
+        command: 'rsync ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"',
+        summary: expect.stringContaining('https://hostinger-studio.example.test'),
+      });
+      expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          target: 'hostinger',
+          status: 'deployed',
+          notes: expect.stringContaining('https://hostinger-studio.example.test'),
+        }),
+      ]));
+      expect(executed.body.artifacts[0].content).toContain('Command: rsync ./ "$HOSTINGER_SSH_USER@$HOSTINGER_SSH_HOST:$HOSTINGER_DEPLOY_PATH/"');
+    } finally {
+      if (previousHost === undefined) delete process.env.HOSTINGER_SSH_HOST;
+      else process.env.HOSTINGER_SSH_HOST = previousHost;
+      if (previousUser === undefined) delete process.env.HOSTINGER_SSH_USER;
+      else process.env.HOSTINGER_SSH_USER = previousUser;
+      if (previousPath === undefined) delete process.env.HOSTINGER_DEPLOY_PATH;
+      else process.env.HOSTINGER_DEPLOY_PATH = previousPath;
+      if (previousPort === undefined) delete process.env.HOSTINGER_SSH_PORT;
+      else process.env.HOSTINGER_SSH_PORT = previousPort;
+      if (previousCommand === undefined) delete process.env.HOSTINGER_POST_DEPLOY_COMMAND;
+      else process.env.HOSTINGER_POST_DEPLOY_COMMAND = previousCommand;
+      if (previousPublicUrl === undefined) delete process.env.HOSTINGER_PUBLIC_URL;
+      else process.env.HOSTINGER_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
   it('blocks a deployment when the post-deploy health check fails', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'unhealthy-studio');
