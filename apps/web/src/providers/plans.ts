@@ -21,6 +21,7 @@ import type {
   PlanningToolOptionsResponse,
   ProjectPlanResponse,
   ProjectPlansResponse,
+  RefreshProviderCapabilitySnapshotsRequest,
   ProjectStackDecision,
 } from '@open-design/contracts';
 
@@ -81,9 +82,14 @@ export function listProviderCapabilitySnapshots(): Promise<ProviderCapabilitySna
   return jsonFetch<ProviderCapabilitySnapshotsResponse>('/api/planning/capabilities');
 }
 
-export function refreshProviderCapabilitySnapshots(): Promise<ProviderCapabilitySnapshotsResponse> {
+export function refreshProviderCapabilitySnapshots(
+  input: RefreshProviderCapabilitySnapshotsRequest = {},
+): Promise<ProviderCapabilitySnapshotsResponse> {
   return jsonFetch<ProviderCapabilitySnapshotsResponse>('/api/planning/capabilities/refresh', {
     method: 'POST',
+    body: JSON.stringify({
+      persist: input.persist === true,
+    }),
   });
 }
 

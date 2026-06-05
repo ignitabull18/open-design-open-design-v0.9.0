@@ -330,8 +330,11 @@ export function PlanningView() {
     setRefreshingCapabilities(true);
     setError(null);
     try {
-      const result = await refreshProviderCapabilitySnapshots();
+      const result = await refreshProviderCapabilitySnapshots({ persist: true });
+      const plansResult = await listProjectPlans();
       setCapabilities(result.capabilities);
+      setPlans(plansResult.plans);
+      setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

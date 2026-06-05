@@ -138,6 +138,60 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('persists refreshed provider capability snapshots into stored plans when requested', async () => {
+    const baseUrl = await startPlanServer({
+      providerSourceFetcher: async (url) => ({
+        url,
+        statusCode: 200,
+        ok: true,
+        title: url.includes('supabase') ? 'Supabase Changelog Persisted' : 'Provider Changelog Persisted',
+        excerpt: `Persisted provider details from ${url}`,
+        durationMs: 5,
+      }),
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Persisted Capability Studio',
+        intent: { purpose: 'Keep saved plans current with provider capability refreshes.' },
+        selectedTools: [
+          { toolId: 'supabase-database', status: 'wanted' },
+          { toolId: 'trigger-dev', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const refreshed = await jsonFetch(`${baseUrl}/api/planning/capabilities/refresh`, {
+      method: 'POST',
+      body: JSON.stringify({ persist: true }),
+    });
+    const stored = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}`);
+
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.plansUpdated).toBe(1);
+    expect(stored.body.plan.providerCapabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'supabase-database',
+        refreshEvidence: expect.arrayContaining([
+          expect.stringContaining('Title: Supabase Changelog Persisted'),
+        ]),
+      }),
+      expect.objectContaining({
+        toolId: 'trigger-dev',
+        refreshEvidence: expect.arrayContaining([
+          expect.stringContaining('Persisted provider details'),
+        ]),
+      }),
+    ]));
+  });
+
   it('creates a persisted Better-T-Stack scaffold plan from a project brief', async () => {
     const baseUrl = await startPlanServer();
 

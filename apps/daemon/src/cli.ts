@@ -188,7 +188,7 @@ const PLAN_STRING_FLAGS = new Set([
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4622,7 +4622,8 @@ async function runPlan(args) {
   od plan tools [--json]                         List approved planning tools.
   od plan session [--token <token>|--token-file <path|->] [--json]
                                                  Inspect or create a hosted planning session.
-  od plan capabilities [--refresh] [--json]      List provider capability snapshots.
+  od plan capabilities [--refresh] [--persist] [--json]
+                                                 List provider capability snapshots.
   od plan list [--json]                          List stored plans.
   od plan info <id> [--json]                     Print one stored plan.
   od plan create --name <title> --intent-json <path|->
@@ -4701,10 +4702,15 @@ Common options:
     case 'capabilities': {
       const resp = await fetch(`${base}/api/planning/capabilities${flags.refresh ? '/refresh' : ''}`, {
         method: flags.refresh ? 'POST' : 'GET',
+        ...(flags.refresh ? {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ persist: flags.persist === true }),
+        } : {}),
       });
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      if (typeof data?.plansUpdated === 'number') console.log(`Plans updated: ${data.plansUpdated}`);
       for (const snapshot of data?.capabilities ?? []) {
         console.log(`${snapshot.toolId}\t${snapshot.label}\tchecked ${snapshot.checkedAt}`);
         for (const item of snapshot.planningImplications ?? []) console.log(`  - ${item}`);

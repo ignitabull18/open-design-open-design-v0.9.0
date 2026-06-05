@@ -29,6 +29,7 @@ import type {
   ProjectStackDecision,
   ProjectToolConnection,
   ProjectWorkspaceSection,
+  RefreshProviderCapabilitySnapshotsRequest,
   RepoPlan,
   RunProjectPlanSectionRequest,
   RunProjectPlanSectionsRequest,
@@ -398,12 +399,17 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     res.json({ capabilities: PROVIDER_CAPABILITIES });
   });
 
-  app.post('/api/planning/capabilities/refresh', async (_req, res) => {
+  app.post('/api/planning/capabilities/refresh', async (req, res) => {
     try {
+      const body = normalizeCapabilityRefreshBody(req.body || {});
       const refreshed = await refreshProviderCapabilities({
         providerSourceFetcher,
       });
-      res.json(refreshed);
+      const plansUpdated = body.persist ? persistRefreshedProviderCapabilities(db, refreshed.capabilities) : 0;
+      res.json({
+        ...refreshed,
+        ...(body.persist ? { plansUpdated } : {}),
+      });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
     }
@@ -783,6 +789,10 @@ function isPlanningExecutionActionId(value: string): value is PlanningExecutionA
   return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize', 'database-migrate'].includes(value);
 }
 
+function normalizeCapabilityRefreshBody(body: Record<string, unknown>): RefreshProviderCapabilitySnapshotsRequest {
+  return { persist: body.persist === true };
+}
+
 function normalizeSectionRunBody(sectionIdParam: string): RunProjectPlanSectionRequest {
   return { sectionId: normalizeSectionId(sectionIdParam) };
 }
@@ -934,13 +944,40 @@ function buildScaffoldPlan(
 }
 
 function buildProviderCapabilities(selectedTools: ProjectToolConnection[]): ProviderCapabilitySnapshot[] {
+  return buildProviderCapabilitiesFromCatalog(selectedTools, PROVIDER_CAPABILITIES);
+}
+
+function buildProviderCapabilitiesFromCatalog(
+  selectedTools: ProjectToolConnection[],
+  catalog: ProviderCapabilitySnapshot[],
+): ProviderCapabilitySnapshot[] {
   const selected = new Set(selectedTools.map((tool) => tool.toolId));
-  return PROVIDER_CAPABILITIES.filter((snapshot) =>
+  return catalog.filter((snapshot) =>
     selected.has(snapshot.toolId)
       || (snapshot.toolId === 'cloudflare-hosting' && (selected.has('cloudflare-ai-gateway') || selected.has('cloudflare-data') || selected.has('cloudflare-access')))
       || (snapshot.toolId === 'github' && selected.has('github-issues'))
       || (snapshot.toolId === 'supabase-database' && selected.has('supabase-auth')),
   );
+}
+
+function persistRefreshedProviderCapabilities(
+  db: Parameters<typeof listPlans>[0],
+  capabilities: ProviderCapabilitySnapshot[],
+): number {
+  let updated = 0;
+  for (const plan of listPlans(db) as ProjectPlan[]) {
+    const nextProviderCapabilities = buildProviderCapabilitiesFromCatalog(plan.selectedTools, capabilities);
+    const previous = JSON.stringify(plan.providerCapabilities ?? []);
+    const next = JSON.stringify(nextProviderCapabilities);
+    if (previous === next) continue;
+    const saved = updatePlan(db, plan.id, {
+      ...plan,
+      providerCapabilities: nextProviderCapabilities,
+      updatedAt: Date.now(),
+    });
+    if (saved) updated += 1;
+  }
+  return updated;
 }
 
 async function refreshProviderCapabilities(

@@ -330,6 +330,10 @@ export interface CheckProjectPlanToolRequest {
   toolId: PlanningToolId;
 }
 
+export interface RefreshProviderCapabilitySnapshotsRequest {
+  persist?: boolean;
+}
+
 export interface ProjectPlansResponse {
   plans: ProjectPlan[];
 }
@@ -373,6 +377,7 @@ export interface ProviderCapabilitySnapshotsResponse {
   sourceUrls?: string[];
   refreshedAt?: number;
   refreshEvidence?: string[];
+  plansUpdated?: number;
 }
 
 export interface PlanningSessionResponse {
