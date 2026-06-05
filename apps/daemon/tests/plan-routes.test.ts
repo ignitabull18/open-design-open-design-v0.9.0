@@ -260,7 +260,22 @@ describe('planning routes', () => {
   });
 
   it('records plan execution runs, artifacts, tool checks, and section-agent outputs', async () => {
-    const baseUrl = await startPlanServer();
+    const toolCheckCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      toolCheckRunner: async (request) => {
+        toolCheckCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'You are logged in with an API Token',
+          stderr: '',
+          durationMs: 11,
+        };
+      },
+    });
     const created = await jsonFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       body: JSON.stringify({
@@ -347,11 +362,21 @@ describe('planning routes', () => {
     expect(toolCheck.body.toolCheck).toMatchObject({
       toolId: 'cloudflare-hosting',
       status: 'connected',
+      summary: expect.stringContaining('live provider check'),
     });
     expect(toolCheck.body.run).toMatchObject({
       kind: 'tool-check',
       status: 'completed',
+      mode: 'external',
+      command: 'pnpm wrangler whoami',
     });
+    expect(toolCheckCalls).toEqual([
+      expect.objectContaining({
+        command: 'pnpm',
+        args: ['wrangler', 'whoami'],
+      }),
+    ]);
+    expect(toolCheck.body.artifacts[0].content).toContain('Mode: live provider check');
     expect(toolCheck.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'connected' }),
     ]));
@@ -369,6 +394,66 @@ describe('planning routes', () => {
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'connected' }),
     ]));
     expect(execution.body.scaffoldExecution).toMatchObject({ status: 'planned' });
+  });
+
+  it('blocks selected tools when a live provider check fails', async () => {
+    const toolCheckCalls: Array<{ command: string; args: string[] }> = [];
+    const baseUrl = await startPlanServer({
+      toolCheckRunner: async (request) => {
+        toolCheckCalls.push({
+          command: request.command,
+          args: request.args,
+        });
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'gh: not logged in',
+          durationMs: 8,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Auth Check Studio',
+        intent: { purpose: 'Verify real provider auth before execution.' },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const checked = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/tools/github/check`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(checked.status).toBe(201);
+    expect(toolCheckCalls).toEqual([
+      { command: 'gh', args: ['auth', 'status'] },
+    ]);
+    expect(checked.body.toolCheck).toMatchObject({
+      toolId: 'github',
+      status: 'blocked',
+      summary: expect.stringContaining('live provider check failed'),
+    });
+    expect(checked.body.run).toMatchObject({
+      kind: 'tool-check',
+      status: 'blocked',
+      mode: 'external',
+      command: 'gh auth status',
+    });
+    expect(checked.body.plan.selectedTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'github', status: 'blocked' }),
+    ]));
+    expect(checked.body.artifacts[0].content).toContain('stderr: gh: not logged in');
   });
 
   it('executes a confirmed scaffold inside the configured scaffold root', async () => {

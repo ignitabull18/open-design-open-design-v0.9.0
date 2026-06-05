@@ -107,6 +107,22 @@ interface DeploymentHealthCheck {
 
 type DeploymentHealthChecker = (url: string) => Promise<DeploymentHealthCheck>;
 
+interface ToolCheckCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
+interface ToolCheckCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type ToolCheckCommandRunner = (request: ToolCheckCommandRequest) => Promise<ToolCheckCommandResult>;
+
 interface ProjectManagementCommandRequest {
   command: string;
   args: string[];
@@ -135,6 +151,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   repoRunner?: RepoCommandRunner;
   deployRunner?: DeployCommandRunner;
   deployHealthChecker?: DeploymentHealthChecker;
+  toolCheckRunner?: ToolCheckCommandRunner;
   projectManagementRunner?: ProjectManagementCommandRunner;
 }
 
@@ -328,6 +345,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const repoRunner = ctx.repoRunner ?? runRepoCommand;
   const deployRunner = ctx.deployRunner ?? runDeployCommand;
   const deployHealthChecker = ctx.deployHealthChecker ?? runDeploymentHealthCheck;
+  const toolCheckRunner = ctx.toolCheckRunner ?? runToolCheckCommand;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
@@ -550,14 +568,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
-  app.post('/api/plans/:id/tools/:toolId/check', (req, res) => {
+  app.post('/api/plans/:id/tools/:toolId/check', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
       if (!existing) return res.status(404).json({ error: 'plan not found' });
       const body = normalizeToolCheckBody(req.params.toolId);
       const tool = APPROVED_TOOLS.find((item) => item.id === body.toolId);
       if (!tool) return res.status(404).json({ error: 'planning tool not found' });
-      const { run, toolCheck, artifacts, selectedTools } = checkPlanningTool(existing, body.toolId);
+      const { run, toolCheck, artifacts, selectedTools } = await checkPlanningTool(existing, body.toolId, {
+        toolCheckRunner,
+      });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         selectedTools,
@@ -2376,6 +2396,25 @@ async function runDeploymentHealthCheck(url: string): Promise<DeploymentHealthCh
   }
 }
 
+function runToolCheckCommand(request: ToolCheckCommandRequest): Promise<ToolCheckCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
 function runProjectManagementCommand(request: ProjectManagementCommandRequest): Promise<ProjectManagementCommandResult> {
   const startedAt = Date.now();
   return new Promise((resolve) => {
@@ -2577,38 +2616,68 @@ function buildDatabaseDraftArtifactContent(plan: ProjectPlan): string {
   ].join('\n');
 }
 
-function checkPlanningTool(
+async function checkPlanningTool(
   plan: ProjectPlan,
   toolId: PlanningToolCheck['toolId'],
-): {
+  options: { toolCheckRunner: ToolCheckCommandRunner },
+): Promise<{
   run: PlanningExecutionRun;
   toolCheck: PlanningToolCheck;
   artifacts: PlanningExecutionArtifact[];
   selectedTools: ProjectToolConnection[];
-} {
+}> {
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
   const snapshot = plan.providerCapabilities.find((item) => item.toolId === toolId);
   const tool = APPROVED_TOOLS.find((item) => item.id === toolId);
-  const status: PlanningToolCheck['status'] = snapshot ? 'connected' : 'blocked';
-  const evidence = snapshot
-    ? [
-      `Provider snapshot available: ${snapshot.sourceUrl}`,
-      `Checked at ${snapshot.checkedAt}`,
-      ...snapshot.planningImplications.slice(0, 2),
-    ]
-    : [
-      'No provider snapshot is attached to this plan for the requested tool.',
-      'Select the tool or refresh provider capabilities before relying on this provider.',
+  const liveInvocation = buildToolCheckInvocation(plan, toolId);
+  let status: PlanningToolCheck['status'];
+  let evidence: string[];
+  let mode: PlanningExecutionRun['mode'] = 'record-only';
+  let command: string | undefined;
+  if (liveInvocation) {
+    const result = await options.toolCheckRunner({
+      command: liveInvocation.command,
+      args: liveInvocation.args,
+      cwd: process.cwd(),
+      timeoutMs: 60_000,
+    });
+    status = result.exitCode === 0 ? 'connected' : 'blocked';
+    command = [liveInvocation.command, ...liveInvocation.args].join(' ');
+    mode = 'external';
+    evidence = [
+      `Command: ${command}`,
+      `Exit code: ${result.exitCode}`,
+      result.stdout ? `stdout: ${result.stdout.slice(0, 500)}` : 'stdout: (empty)',
+      result.stderr ? `stderr: ${result.stderr.slice(0, 500)}` : 'stderr: (empty)',
+      `Duration ms: ${result.durationMs}`,
     ];
+    if (snapshot) evidence.push(`Provider snapshot: ${snapshot.sourceUrl}`);
+  } else {
+    status = snapshot ? 'connected' : 'blocked';
+    evidence = snapshot
+      ? [
+        `Provider snapshot available: ${snapshot.sourceUrl}`,
+        `Checked at ${snapshot.checkedAt}`,
+        ...snapshot.planningImplications.slice(0, 2),
+      ]
+      : [
+        'No provider snapshot is attached to this plan for the requested tool.',
+        'Select the tool or refresh provider capabilities before relying on this provider.',
+      ];
+  }
   const toolCheck: PlanningToolCheck = {
     id: `tool-check-${randomUUID()}`,
     planId: plan.id,
     toolId,
     status,
     summary: status === 'connected'
-      ? `${tool?.label ?? toolId} has planning evidence attached to this plan.`
-      : `${tool?.label ?? toolId} is not yet backed by plan-specific capability evidence.`,
+      ? liveInvocation
+        ? `${tool?.label ?? toolId} responded to a live provider check.`
+        : `${tool?.label ?? toolId} has planning evidence attached to this plan.`
+      : liveInvocation
+        ? `${tool?.label ?? toolId} live provider check failed.`
+        : `${tool?.label ?? toolId} is not yet backed by plan-specific capability evidence.`,
     evidence,
     checkedAt: now,
   };
@@ -2618,7 +2687,14 @@ function checkPlanningTool(
     runId,
     kind: 'tool-check',
     title: `${tool?.label ?? toolId} tool check`,
-    content: [`Tool: ${tool?.label ?? toolId}`, `Status: ${status}`, '', ...evidence.map((item) => `- ${item}`)].join('\n'),
+    content: [
+      `Tool: ${tool?.label ?? toolId}`,
+      `Status: ${status}`,
+      liveInvocation ? 'Mode: live provider check' : 'Mode: planning evidence fallback',
+      ...(command ? [`Command: ${command}`] : []),
+      '',
+      ...evidence.map((item) => `- ${item}`),
+    ].join('\n'),
     createdAt: now,
   };
   const run: PlanningExecutionRun = {
@@ -2628,8 +2704,9 @@ function checkPlanningTool(
     toolId,
     status: status === 'connected' ? 'completed' : 'blocked',
     title: `${tool?.label ?? toolId} tool check`,
-    mode: 'record-only',
+    mode,
     summary: toolCheck.summary,
+    ...(command ? { command } : {}),
     startedAt: now,
     completedAt: now,
     artifactIds: [artifact.id],
@@ -2639,6 +2716,47 @@ function checkPlanningTool(
     item.toolId === toolId ? { ...item, status } : item,
   );
   return { run, toolCheck, artifacts: [artifact], selectedTools };
+}
+
+function buildToolCheckInvocation(
+  plan: ProjectPlan,
+  toolId: PlanningToolCheck['toolId'],
+): { command: string; args: string[] } | null {
+  switch (toolId) {
+    case 'github':
+    case 'github-issues':
+      return { command: 'gh', args: ['auth', 'status'] };
+    case 'cloudflare-hosting':
+    case 'cloudflare-data':
+    case 'cloudflare-access':
+    case 'cloudflare-ai-gateway':
+      return buildCloudflareToolCheckInvocation(plan.stack.packageManager);
+    case 'vercel':
+      return { command: 'vercel', args: ['whoami'] };
+    case 'onepassword':
+      return { command: 'op', args: ['whoami'] };
+    case 'supabase-database':
+    case 'supabase-auth':
+      return { command: 'supabase', args: ['projects', 'list'] };
+    case 'trigger-dev':
+      return { command: 'npx', args: ['trigger.dev@latest', 'whoami'] };
+    default:
+      return null;
+  }
+}
+
+function buildCloudflareToolCheckInvocation(packageManager: ProjectStackDecision['packageManager']): { command: string; args: string[] } {
+  switch (packageManager ?? 'pnpm') {
+    case 'npm':
+      return { command: 'npx', args: ['wrangler', 'whoami'] };
+    case 'yarn':
+      return { command: 'yarn', args: ['wrangler', 'whoami'] };
+    case 'bun':
+      return { command: 'bunx', args: ['wrangler', 'whoami'] };
+    case 'pnpm':
+    default:
+      return { command: 'pnpm', args: ['wrangler', 'whoami'] };
+  }
 }
 
 function buildIdeationSession(plan: ProjectPlan, prompt: string): ProjectIdeationSession {
