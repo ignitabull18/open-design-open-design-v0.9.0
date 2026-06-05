@@ -128,7 +128,7 @@ Add Coolify/Vercel/Cloudflare/Hostinger execution paths with verification eviden
 
 ### Phase F: section-agent runs
 
-Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling. The current implementation supports injected or env-backed specialist runners, stores external runner output/evidence, and executes multi-section requests in parallel unless the request mode is `sequential`; remaining work is to wire the runner to the product's native agent runtime and stream progress into the Planning UI.
+Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling. The current implementation supports injected or env-backed specialist runners, opt-in native Open Design agent runs through `OD_PLAN_SECTION_AGENT_RUNTIME=native`, durable running records while external/native specialists are in flight, stored runner output/evidence, and multi-section requests in parallel unless the request mode is `sequential`; remaining work is to stream native agent SSE progress directly into the Planning UI.
 
 ## Acceptance criteria
 

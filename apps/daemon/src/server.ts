@@ -5859,7 +5859,20 @@ export async function startServer({
     research: researchDeps,
   });
 
-  registerPlanRoutes(app, { db, scaffoldRoot: path.join(RUNTIME_DATA_DIR, 'scaffolds') });
+  registerPlanRoutes(app, {
+    db,
+    scaffoldRoot: path.join(RUNTIME_DATA_DIR, 'scaffolds'),
+    ...(process.env.OD_PLAN_SECTION_AGENT_RUNTIME === 'native'
+      ? {
+          sectionAgentRunner: buildNativePlanningSectionAgentRunner({
+            db,
+            design,
+            runtimeDataDir: RUNTIME_DATA_DIR,
+            startChatRun: (meta, run) => startChatRun(meta, run),
+          }),
+        }
+      : {}),
+  });
 
   app.delete('/api/projects/:id', async (req, res) => {
     try {
@@ -14001,6 +14014,155 @@ export async function startServer({
 
 function randomId() {
   return randomUUID();
+}
+
+function buildNativePlanningSectionAgentRunner(deps) {
+  return async (request) => {
+    const startedAt = Date.now();
+    const agentId = await resolvePlanningSectionAgentId(deps.runtimeDataDir);
+    if (!agentId) {
+      return {
+        status: 'blocked',
+        summary: 'Native planning section agent could not start because no available agent is configured.',
+        output: '',
+        evidence: ['No configured or available agent was found for native planning section runtime.'],
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    const { projectId, conversationId } = ensurePlanningSectionAgentProject(deps.db, request.plan);
+    const assistantMessageId = `planning-section-assistant-${randomUUID()}`;
+    const message = buildNativePlanningSectionPrompt(request);
+    upsertMessage(deps.db, conversationId, {
+      id: `planning-section-user-${randomUUID()}`,
+      role: 'user',
+      content: message,
+      startedAt,
+      endedAt: startedAt,
+    });
+    const meta = {
+      projectId,
+      conversationId,
+      assistantMessageId,
+      agentId,
+      message,
+      currentPrompt: message,
+      context: {
+        projectPlanId: request.plan.id,
+        planningSectionId: request.section.id,
+      },
+    };
+    const run = deps.design.runs.create(meta);
+    try {
+      pinAssistantMessageOnRunCreate(deps.db, run);
+    } catch (err) {
+      console.warn('[planning] native section assistant pin failed', err);
+    }
+    reconcileAssistantMessageOnRunEnd(deps.db, deps.design.runs, run);
+    deps.design.runs.start(run, () => deps.startChatRun(meta, run));
+    const finalStatus = await deps.design.runs.wait(run);
+    const output = summarizePlanningSectionNativeRunEvents(run.events);
+    const completed = finalStatus.status === 'succeeded';
+    return {
+      status: completed ? 'completed' : 'failed',
+      summary: completed
+        ? `${request.section.label} specialist completed through the native Open Design agent runtime.`
+        : `${request.section.label} specialist native agent run ${finalStatus.status}.`,
+      output,
+      evidence: [
+        `nativeRunId: ${run.id}`,
+        `nativeProjectId: ${projectId}`,
+        `nativeConversationId: ${conversationId}`,
+        `nativeAgentId: ${agentId}`,
+        `nativeStatus: ${finalStatus.status}`,
+        ...(finalStatus.eventsLogPath ? [`nativeEventsLog: ${finalStatus.eventsLogPath}`] : []),
+      ],
+      durationMs: Date.now() - startedAt,
+      command: `od native agent ${agentId}`,
+    };
+  };
+}
+
+async function resolvePlanningSectionAgentId(runtimeDataDir) {
+  const configured = process.env.OD_PLAN_SECTION_AGENT_ID?.trim();
+  if (configured) return configured;
+  try {
+    const appCfg = await readAppConfig(runtimeDataDir);
+    if (typeof appCfg.agentId === 'string' && appCfg.agentId) return appCfg.agentId;
+    const agents = await detectAgents(appCfg.agentCliEnv ?? {}).catch(() => []);
+    return agents.find((agent) => agent.available)?.id ?? null;
+  } catch (err) {
+    console.warn('[planning] native section agent id resolution failed', err);
+    return null;
+  }
+}
+
+function ensurePlanningSectionAgentProject(db, plan) {
+  const now = Date.now();
+  const projectId = `planning-agent-${plan.id}`;
+  let project = getProject(db, projectId);
+  if (!project) {
+    project = insertProject(db, {
+      id: projectId,
+      name: `Planning agents: ${plan.name}`,
+      skillId: null,
+      designSystemId: null,
+      pendingPrompt: null,
+      customInstructions: null,
+      metadata: {
+        kind: 'planning-section-agent',
+        planId: plan.id,
+        skipDiscoveryBrief: true,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  const conversations = listConversations(db, projectId);
+  const conversationId = conversations[0]?.id ?? `planning-section-conversation-${randomUUID()}`;
+  if (!conversations[0]) {
+    insertConversation(db, {
+      id: conversationId,
+      projectId,
+      title: 'Planning section agents',
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  return { projectId, conversationId };
+}
+
+function buildNativePlanningSectionPrompt(request) {
+  return [
+    request.prompt,
+    '',
+    'Open Design planning section runtime contract:',
+    '- Work only on this planning section and respect the section boundary.',
+    '- Return concise decisions, blockers, files/artifacts to create, validation steps, and dependencies.',
+    '- Do not write provider secrets or perform external writes unless explicitly instructed by the plan manifest.',
+    '',
+    'Specialist manifest JSON:',
+    JSON.stringify(request.manifest, null, 2),
+  ].join('\n');
+}
+
+function summarizePlanningSectionNativeRunEvents(events) {
+  const chunks = [];
+  for (const record of events ?? []) {
+    const data = record?.data;
+    if (!data || typeof data !== 'object') continue;
+    for (const key of ['text', 'delta', 'content', 'message']) {
+      if (typeof data[key] === 'string' && data[key].trim()) {
+        chunks.push(data[key].trim());
+        break;
+      }
+    }
+  }
+  const text = chunks.join('').trim();
+  if (text) return text.slice(0, 8_000);
+  return (events ?? [])
+    .slice(-20)
+    .map((record) => `${record.event}: ${JSON.stringify(record.data ?? {}).slice(0, 300)}`)
+    .join('\n');
 }
 
 function sanitizeSlug(text) {
