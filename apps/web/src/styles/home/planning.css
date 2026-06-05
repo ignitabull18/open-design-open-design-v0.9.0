@@ -1115,6 +1115,43 @@
   white-space: pre;
 }
 
+.planning-view__run-evidence {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.planning-view__run-evidence div {
+  display: grid;
+  gap: 4px;
+}
+
+.planning-view__run-evidence strong {
+  font-size: 11px;
+}
+
+.planning-view__run-evidence ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.planning-view__run-evidence a,
+.planning-view__run-evidence small {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.planning-view__run-evidence a:hover {
+  color: var(--text-strong);
+}
+
 .planning-view__ideation {
   display: grid;
   gap: 8px;

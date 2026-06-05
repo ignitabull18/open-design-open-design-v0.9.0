@@ -1339,6 +1339,7 @@ function PlanDetail({
               <span>{run.status} · {run.kind} · {run.mode}</span>
             </div>
             <span>{run.summary}</span>
+            <RunEvidence evidence={run.evidence} />
           </article>
         ))}
         {(plan.executionArtifacts ?? []).length > 0 ? (
@@ -1516,6 +1517,35 @@ function PlanDetail({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function RunEvidence({ evidence }: { evidence: string[] }) {
+  const externalUrls = evidence
+    .map((item) => item.startsWith('externalUrl: ') ? item.slice('externalUrl: '.length).trim() : '')
+    .filter(Boolean);
+  const context = evidence
+    .filter((item) => !item.startsWith('externalUrl: '))
+    .slice(0, 3);
+  if (externalUrls.length === 0 && context.length === 0) return null;
+  return (
+    <div className="planning-view__run-evidence">
+      {externalUrls.length > 0 ? (
+        <div>
+          <strong>External proof</strong>
+          <ul>
+            {externalUrls.slice(0, 4).map((url) => (
+              <li key={url}>
+                <a href={url} target="_blank" rel="noreferrer">{url}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {context.length > 0 ? (
+        <small>{context.join(' · ')}</small>
+      ) : null}
+    </div>
   );
 }
 
