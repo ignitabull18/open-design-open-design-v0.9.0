@@ -1,10 +1,13 @@
 import type {
+  CreatePlanningSessionRequest,
   CreateProjectPlanRequest,
   ExecuteProjectPlanActionRequest,
   CreateProjectIdeationRequest,
+  PlanningSessionResponse,
   ProjectIdeationSessionResponse,
   ProjectIdeationSessionsResponse,
   ProjectSectionAnswers,
+  ProjectToolConnection,
   ProviderCapabilitySnapshotsResponse,
   PlanningToolOptionsResponse,
   ProjectPlanResponse,
@@ -15,6 +18,7 @@ import type {
 async function jsonFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(planningApiUrl(url), {
     ...options,
+    credentials: 'include',
     headers: {
       'content-type': 'application/json',
       ...(options.headers ?? {}),
@@ -25,10 +29,16 @@ async function jsonFetch<T>(url: string, options: RequestInit = {}): Promise<T> 
     const message =
       typeof body?.error === 'string'
         ? body.error
+        : typeof body?.error?.code === 'string'
+          ? `${body.error.code}: ${body.error.message ?? ''}`.trim()
         : `Request failed with ${response.status}`;
     throw new Error(message);
   }
   return body as T;
+}
+
+export function isPlanningAuthError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('API_TOKEN_REQUIRED');
 }
 
 function planningApiUrl(path: string): string {
@@ -37,12 +47,35 @@ function planningApiUrl(path: string): string {
   return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+export function getPlanningSession(): Promise<PlanningSessionResponse> {
+  return jsonFetch<PlanningSessionResponse>('/api/planning/session');
+}
+
+export function createPlanningSession(input: CreatePlanningSessionRequest): Promise<PlanningSessionResponse> {
+  return jsonFetch<PlanningSessionResponse>('/api/planning/session', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deletePlanningSession(): Promise<PlanningSessionResponse> {
+  return jsonFetch<PlanningSessionResponse>('/api/planning/session', {
+    method: 'DELETE',
+  });
+}
+
 export function listPlanningTools(): Promise<PlanningToolOptionsResponse> {
   return jsonFetch<PlanningToolOptionsResponse>('/api/planning/tools');
 }
 
 export function listProviderCapabilitySnapshots(): Promise<ProviderCapabilitySnapshotsResponse> {
   return jsonFetch<ProviderCapabilitySnapshotsResponse>('/api/planning/capabilities');
+}
+
+export function refreshProviderCapabilitySnapshots(): Promise<ProviderCapabilitySnapshotsResponse> {
+  return jsonFetch<ProviderCapabilitySnapshotsResponse>('/api/planning/capabilities/refresh', {
+    method: 'POST',
+  });
 }
 
 export function listProjectPlans(): Promise<ProjectPlansResponse> {
@@ -63,6 +96,16 @@ export function updateProjectPlanStack(
   return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ stack }),
+  });
+}
+
+export function updateProjectPlanTools(
+  id: string,
+  selectedTools: ProjectToolConnection[],
+): Promise<ProjectPlanResponse> {
+  return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ selectedTools }),
   });
 }
 

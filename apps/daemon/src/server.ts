@@ -4,7 +4,7 @@ import express from 'express';
 import multer from 'multer';
 import JSZip from 'jszip';
 import { execFile, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -481,6 +481,66 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const DAEMON_CLI_PATH_ENV = 'OD_DAEMON_CLI_PATH';
+const PLANNING_SESSION_COOKIE = 'od_planning_session';
+const PLANNING_SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
+
+function signPlanningSession(apiToken: string, now = Date.now()): string {
+  const payload = Buffer.from(JSON.stringify({
+    iat: now,
+    exp: now + PLANNING_SESSION_MAX_AGE_SECONDS * 1000,
+    nonce: randomUUID(),
+  })).toString('base64url');
+  const signature = createHmac('sha256', apiToken).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyPlanningSession(value: unknown, apiToken: string, now = Date.now()): boolean {
+  const raw = String(value || '');
+  const [payload, signature] = raw.split('.');
+  if (!payload || !signature) return false;
+  const expected = createHmac('sha256', apiToken).update(payload).digest('base64url');
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return false;
+  if (!timingSafeEqual(actualBuffer, expectedBuffer)) return false;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return typeof decoded.exp === 'number' && decoded.exp > now;
+  } catch {
+    return false;
+  }
+}
+
+function cookieValue(req: express.Request, name: string): string | undefined {
+  const raw = req.get('cookie') || '';
+  for (const part of raw.split(';')) {
+    const [key, ...valueParts] = part.trim().split('=');
+    if (key === name) return decodeURIComponent(valueParts.join('='));
+  }
+  return undefined;
+}
+
+function hasValidPlanningSession(req: express.Request, apiToken: string): boolean {
+  return verifyPlanningSession(cookieValue(req, PLANNING_SESSION_COOKIE), apiToken);
+}
+
+function setPlanningSessionCookie(req: express.Request, res: express.Response, apiToken: string): void {
+  const secure = req.secure || String(req.get('x-forwarded-proto') || '').split(',')[0]?.trim() === 'https';
+  const cookieParts = [
+    `${PLANNING_SESSION_COOKIE}=${encodeURIComponent(signPlanningSession(apiToken))}`,
+    'Path=/api',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${PLANNING_SESSION_MAX_AGE_SECONDS}`,
+  ];
+  if (secure) cookieParts.push('Secure');
+  res.setHeader('Set-Cookie', cookieParts.join('; '));
+}
+
+function clearPlanningSessionCookie(res: express.Response): void {
+  res.setHeader('Set-Cookie', `${PLANNING_SESSION_COOKIE}=; Path=/api; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
 export function resolveProjectRoot(moduleDir: string): string {
   const base = path.basename(moduleDir);
   const daemonDir =
@@ -3843,7 +3903,35 @@ export async function startServer({
   // value matching `OD_API_TOKEN`. Health / version / status remain
   // open so monitoring probes don't need the token.
   if (apiToken.length > 0) {
-    const openProbePaths = new Set(['/api/health', '/api/version', '/api/daemon/status']);
+    app.get('/api/planning/session', (req, res) => {
+      res.json({
+        authenticated: hasValidPlanningSession(req, apiToken),
+        maxAgeSeconds: PLANNING_SESSION_MAX_AGE_SECONDS,
+      });
+    });
+    app.post('/api/planning/session', (req, res) => {
+      const auth = req.get('authorization') ?? '';
+      const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
+      const token = match?.[1] || String(req.body?.token || '');
+      if (token !== apiToken) {
+        return res.status(401).json({
+          error: { code: 'API_TOKEN_REQUIRED', message: 'Authorization: Bearer <OD_API_TOKEN> required' },
+        });
+      }
+      setPlanningSessionCookie(req, res, apiToken);
+      return res.json({ authenticated: true, maxAgeSeconds: PLANNING_SESSION_MAX_AGE_SECONDS });
+    });
+    app.delete('/api/planning/session', (_req, res) => {
+      clearPlanningSessionCookie(res);
+      res.json({ authenticated: false });
+    });
+
+    const openProbePaths = new Set([
+      '/health',
+      '/version',
+      '/daemon/status',
+      '/planning/session',
+    ]);
     app.use('/api', (req, res, next) => {
       if (openProbePaths.has(req.path)) return next();
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
@@ -3853,7 +3941,7 @@ export async function startServer({
       if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
       const auth = req.get('authorization') ?? '';
       const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
-      if (!match || match[1] !== apiToken) {
+      if ((!match || match[1] !== apiToken) && !hasValidPlanningSession(req, apiToken)) {
         return res.status(401).json({
           error: { code: 'API_TOKEN_REQUIRED', message: 'Authorization: Bearer <OD_API_TOKEN> required' },
         });

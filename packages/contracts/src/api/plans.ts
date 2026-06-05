@@ -262,6 +262,15 @@ export interface ProviderCapabilitySnapshotsResponse {
   capabilities: ProviderCapabilitySnapshot[];
 }
 
+export interface PlanningSessionResponse {
+  authenticated: boolean;
+  maxAgeSeconds?: number;
+}
+
+export interface CreatePlanningSessionRequest {
+  token: string;
+}
+
 export interface ProjectIdeationSessionsResponse {
   sessions: ProjectIdeationSession[];
 }

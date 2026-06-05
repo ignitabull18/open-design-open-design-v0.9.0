@@ -229,6 +229,15 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     res.json({ capabilities: PROVIDER_CAPABILITIES });
   });
 
+  app.post('/api/planning/capabilities/refresh', (_req, res) => {
+    const checkedAt = new Date().toISOString().slice(0, 10);
+    res.json({
+      capabilities: PROVIDER_CAPABILITIES.map((snapshot) => ({ ...snapshot, checkedAt })),
+      sourceUrls: SOURCE_URLS,
+      refreshedAt: Date.now(),
+    });
+  });
+
   app.get('/api/plans', (_req, res) => {
     try {
       res.json({ plans: listPlans(db) });

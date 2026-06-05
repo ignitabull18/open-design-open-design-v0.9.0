@@ -185,9 +185,9 @@ const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow']);
 const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
-  'answers-json', 'action', 'prompt', 'prompt-file',
+  'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4619,7 +4619,9 @@ async function runPlan(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
   od plan tools [--json]                         List approved planning tools.
-  od plan capabilities [--json]                  List provider capability snapshots.
+  od plan session [--token <token>|--token-file <path|->] [--json]
+                                                 Inspect or create a hosted planning session.
+  od plan capabilities [--refresh] [--json]      List provider capability snapshots.
   od plan list [--json]                          List stored plans.
   od plan info <id> [--json]                     Print one stored plan.
   od plan create --name <title> --intent-json <path|->
@@ -4650,6 +4652,29 @@ Common options:
   const flags = parseFlags(rest, { string: PLAN_STRING_FLAGS, boolean: PLAN_BOOLEAN_FLAGS });
   const base = (await planDaemonUrl(flags)).replace(/\/$/, '');
   switch (sub) {
+    case 'session': {
+      const token = typeof flags.token === 'string'
+        ? flags.token
+        : flags['token-file']
+          ? readTextFlag(flags['token-file'], '--token-file').trim()
+          : '';
+      const resp = token
+        ? await fetch(`${base}/api/planning/session`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token }),
+        })
+        : await fetch(`${base}/api/planning/session`);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`planning session failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(data?.authenticated ? 'Planning session authenticated.' : 'Planning session is not authenticated.');
+      if (data?.maxAgeSeconds) console.log(`Max age: ${data.maxAgeSeconds}s`);
+      return;
+    }
     case 'tools': {
       const resp = await fetch(`${base}/api/planning/tools`);
       if (!resp.ok) return structuredHttpFailure(resp);
@@ -4661,7 +4686,9 @@ Common options:
       return;
     }
     case 'capabilities': {
-      const resp = await fetch(`${base}/api/planning/capabilities`);
+      const resp = await fetch(`${base}/api/planning/capabilities${flags.refresh ? '/refresh' : ''}`, {
+        method: flags.refresh ? 'POST' : 'GET',
+      });
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');

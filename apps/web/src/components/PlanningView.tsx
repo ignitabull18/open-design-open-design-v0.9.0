@@ -1,22 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   PlanningToolOption,
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
   ProjectSectionAnswers,
+  ProjectToolConnection,
   ProjectWorkspaceSection,
   ProjectStackDecision,
 } from '@open-design/contracts';
 import { Icon } from './Icon';
 import {
   acceptProjectPlanAction,
+  createPlanningSession,
   createProjectIdeationSession,
   createProjectPlan,
+  isPlanningAuthError,
   listProviderCapabilitySnapshots,
   listProjectIdeationSessions,
   listPlanningTools,
   listProjectPlans,
+  refreshProviderCapabilitySnapshots,
   updateProjectPlanSectionAnswers,
 } from '../providers/plans';
 
@@ -47,20 +51,34 @@ export function PlanningView() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [apiToken, setApiToken] = useState('');
+  const [authSaving, setAuthSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [actionSaving, setActionSaving] = useState<string | null>(null);
+  const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
   const [audience, setAudience] = useState('operators and product builders');
   const [stack, setStack] = useState<ProjectStackDecision>(INITIAL_STACK);
+  const [selectedToolIds, setSelectedToolIds] = useState<string[]>([
+    'github',
+    'cloudflare-hosting',
+    'coolify',
+    'supabase-database',
+    'stripe',
+    'codex',
+    'trigger-dev',
+    'composio',
+    'onepassword',
+    'better-auth',
+  ]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
+  const loadPlanningData = useCallback(async (options: { cancelled?: () => boolean } = {}) => {
       setLoading(true);
       setError(null);
       try {
@@ -69,22 +87,32 @@ export function PlanningView() {
           listPlanningTools(),
           listProviderCapabilitySnapshots(),
         ]);
-        if (cancelled) return;
+        if (options.cancelled?.()) return;
         setPlans(plansResult.plans);
         setTools(toolsResult.tools);
         setCapabilities(capabilitiesResult.capabilities);
         setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
+        setAuthRequired(false);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (options.cancelled?.()) return;
+        if (isPlanningAuthError(err)) {
+          setAuthRequired(true);
+          setError(null);
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!options.cancelled?.()) setLoading(false);
       }
-    }
-    void load();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPlanningData({ cancelled: () => cancelled });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPlanningData]);
 
   const selectedPlan = useMemo(
     () => plans.find((plan) => plan.id === selectedId) ?? plans[0] ?? null,
@@ -94,6 +122,11 @@ export function PlanningView() {
     const counts = new Map<string, number>();
     for (const tool of tools) counts.set(tool.kind, (counts.get(tool.kind) ?? 0) + 1);
     return Array.from(counts.entries());
+  }, [tools]);
+  const toolsByKind = useMemo(() => {
+    const groups = new Map<string, PlanningToolOption[]>();
+    for (const tool of tools) groups.set(tool.kind, [...(groups.get(tool.kind) ?? []), tool]);
+    return Array.from(groups.entries());
   }, [tools]);
   const selectedIdeation = selectedPlan ? ideationByPlanId[selectedPlan.id] ?? [] : [];
 
@@ -128,6 +161,10 @@ export function PlanningView() {
             'GitHub repo and delivery target planned',
           ],
         },
+        selectedTools: selectedToolIds.map((toolId) => ({
+          toolId: toolId as ProjectToolConnection['toolId'],
+          status: 'wanted',
+        })),
         stack,
       });
       setPlans((curr) => [result.plan, ...curr.filter((plan) => plan.id !== result.plan.id)]);
@@ -136,6 +173,21 @@ export function PlanningView() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleCreatePlanningSession() {
+    setAuthSaving(true);
+    setError(null);
+    try {
+      await createPlanningSession({ token: apiToken });
+      setApiToken('');
+      setAuthRequired(false);
+      await loadPlanningData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAuthSaving(false);
     }
   }
 
@@ -205,6 +257,19 @@ export function PlanningView() {
     }
   }
 
+  async function handleRefreshCapabilities() {
+    setRefreshingCapabilities(true);
+    setError(null);
+    try {
+      const result = await refreshProviderCapabilitySnapshots();
+      setCapabilities(result.capabilities);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshingCapabilities(false);
+    }
+  }
+
   return (
     <section className="planning-view" aria-labelledby="planning-title">
       <header className="planning-view__hero">
@@ -225,6 +290,33 @@ export function PlanningView() {
 
       {error ? (
         <div className="planning-view__error" role="alert">{error}</div>
+      ) : null}
+
+      {authRequired ? (
+        <form
+          className="planning-view__auth"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleCreatePlanningSession();
+          }}
+        >
+          <div>
+            <h2>Unlock hosted planner</h2>
+            <p>Enter the daemon API token once to create a same-origin httpOnly planning session.</p>
+          </div>
+          <label>
+            <span>Daemon API token</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={apiToken}
+              onChange={(event) => setApiToken(event.target.value)}
+            />
+          </label>
+          <button className="planning-view__primary" type="submit" disabled={authSaving || !apiToken.trim()}>
+            {authSaving ? 'Unlocking...' : 'Unlock'}
+          </button>
+        </form>
       ) : null}
 
       <div className="planning-view__layout">
@@ -324,6 +416,35 @@ export function PlanningView() {
             })}
           </fieldset>
 
+          <fieldset className="planning-view__tool-picker">
+            <legend>Tool stack</legend>
+            {toolsByKind.map(([kind, group]) => (
+              <div key={kind}>
+                <strong>{kind}</strong>
+                {group.map((tool) => {
+                  const checked = selectedToolIds.includes(tool.id);
+                  return (
+                    <label key={tool.id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          setSelectedToolIds((curr) => {
+                            const next = new Set(curr);
+                            if (event.target.checked) next.add(tool.id);
+                            else next.delete(tool.id);
+                            return Array.from(next);
+                          });
+                        }}
+                      />
+                      <span>{tool.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            ))}
+          </fieldset>
+
           <button className="planning-view__primary" type="submit" disabled={saving || !name.trim() || !purpose.trim()}>
             {saving ? 'Saving...' : 'Create plan'}
           </button>
@@ -367,6 +488,8 @@ export function PlanningView() {
               onBrainstorm={handleBrainstorm}
               onSaveSectionAnswer={handleSaveSectionAnswer}
               onAcceptAction={handleAcceptAction}
+              onRefreshCapabilities={handleRefreshCapabilities}
+              refreshingCapabilities={refreshingCapabilities}
             />
           ) : null}
         </aside>
@@ -406,10 +529,12 @@ function PlanDetail({
   sectionSaving,
   actionSaving,
   capabilities,
+  refreshingCapabilities,
   onIdeationPromptChange,
   onBrainstorm,
   onSaveSectionAnswer,
   onAcceptAction,
+  onRefreshCapabilities,
 }: {
   plan: ProjectPlan;
   ideationPrompt: string;
@@ -418,10 +543,12 @@ function PlanDetail({
   sectionSaving: string | null;
   actionSaving: string | null;
   capabilities: ProviderCapabilitySnapshot[];
+  refreshingCapabilities: boolean;
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
   onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
   onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
+  onRefreshCapabilities: () => void;
 }) {
   const visibleCapabilities = plan.providerCapabilities.length > 0
     ? plan.providerCapabilities
@@ -435,6 +562,15 @@ function PlanDetail({
         <p>{plan.intent.purpose}</p>
       </div>
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
+      <div className="planning-view__connected-tools">
+        <h3>Tool connections</h3>
+        {plan.selectedTools.length === 0 ? <p>No tools selected yet.</p> : null}
+        <div>
+          {plan.selectedTools.map((tool) => (
+            <span key={tool.toolId}>{tool.toolId}: {tool.status}</span>
+          ))}
+        </div>
+      </div>
       <div className="planning-view__decision-grid">
         <section>
           <h3>Pointed questions</h3>
@@ -454,11 +590,11 @@ function PlanDetail({
             <span>{plan.databaseDesign.mode}</span>
             <span>{plan.databaseDesign.primaryStore}</span>
           </div>
-          <ul>
-            {plan.databaseDesign.entities.slice(0, 6).map((entity) => (
-              <li key={entity}>{entity}</li>
-            ))}
-          </ul>
+          <DatabaseList title="Entities" items={plan.databaseDesign.entities} />
+          <DatabaseList title="Relationships" items={plan.databaseDesign.relationships} />
+          <DatabaseList title="Access patterns" items={plan.databaseDesign.accessPatterns} />
+          <DatabaseList title="Migrations" items={plan.databaseDesign.migrations} />
+          <DatabaseList title="Risks" items={plan.databaseDesign.riskNotes} />
         </section>
       </div>
       <div className="planning-view__sections">
@@ -519,7 +655,17 @@ function PlanDetail({
         ))}
       </div>
       <div className="planning-view__capabilities">
-        <h3>Provider snapshots</h3>
+        <div className="planning-view__capability-header">
+          <h3>Provider snapshots</h3>
+          <button
+            type="button"
+            className="planning-view__secondary"
+            disabled={refreshingCapabilities}
+            onClick={() => onRefreshCapabilities()}
+          >
+            {refreshingCapabilities ? 'Refreshing...' : 'Refresh snapshots'}
+          </button>
+        </div>
         {visibleCapabilities.map((snapshot) => (
           <article key={`${snapshot.toolId}-${snapshot.sourceUrl}`} className="planning-view__capability">
             <strong>{snapshot.label}</strong>
@@ -571,6 +717,19 @@ function PlanDetail({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function DatabaseList({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="planning-view__database-list">
+      <strong>{title}</strong>
+      <ul>
+        {items.slice(0, 5).map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
