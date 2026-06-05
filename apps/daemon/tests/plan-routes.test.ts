@@ -401,6 +401,23 @@ describe('planning routes', () => {
     expect(sectionRun.body.artifacts[0].content).toContain('Access policy draft:');
     expect(sectionRun.body.artifacts[0].content).toContain('Supabase/Postgres path');
 
+    const sectionBatch = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/runs`, {
+      method: 'POST',
+      body: JSON.stringify({ onlyReady: true, sectionIds: ['design', 'database', 'integrations'] }),
+    });
+    expect(sectionBatch.status).toBe(201);
+    expect(sectionBatch.body.runs).toHaveLength(3);
+    expect(sectionBatch.body.runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'section-agent', sectionId: 'design', status: 'completed' }),
+      expect.objectContaining({ kind: 'section-agent', sectionId: 'database', status: 'completed' }),
+      expect.objectContaining({ kind: 'section-agent', sectionId: 'integrations', status: 'completed' }),
+    ]));
+    expect(sectionBatch.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Design') }),
+      expect.objectContaining({ kind: 'database-draft', title: expect.stringContaining('Database') }),
+      expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Integrations') }),
+    ]));
+
     const toolCheck = await jsonFetch(`${baseUrl}/api/plans/${planId}/tools/cloudflare-hosting/check`, {
       method: 'POST',
       body: JSON.stringify({}),
@@ -430,7 +447,7 @@ describe('planning routes', () => {
 
     const execution = await jsonFetch(`${baseUrl}/api/plans/${planId}/execution`);
     expect(execution.status).toBe(200);
-    expect(execution.body.runs).toHaveLength(4);
+    expect(execution.body.runs).toHaveLength(7);
     expect(execution.body.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'provider-research' }),
       expect.objectContaining({ kind: 'scaffold-plan' }),

@@ -31,6 +31,7 @@ import type {
   ProjectWorkspaceSection,
   RepoPlan,
   RunProjectPlanSectionRequest,
+  RunProjectPlanSectionsRequest,
   ScaffoldExecutionPlan,
   ScaffoldPlan,
   UpdateProjectSectionRequest,
@@ -563,6 +564,35 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/sections/runs', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeSectionsRunBody(req.body || {});
+      const selectedSections = selectSectionsForRun(existing, body);
+      if (selectedSections.length === 0) {
+        return res.status(400).json({ error: 'no matching plan sections to run' });
+      }
+      const { runs, artifacts } = runPlanningSections(existing, selectedSections);
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        executionRuns: [...(existing.executionRuns ?? []), ...runs],
+        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({
+        plan: updated,
+        runs,
+        artifacts,
+        toolChecks: updated.toolChecks ?? [],
+        scaffoldExecution: updated.scaffoldExecution ?? { status: 'not_started' },
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/plans/:id/sections/:sectionId/runs', (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -724,6 +754,16 @@ function normalizeActionExecutionBody(
 
 function normalizeSectionRunBody(sectionIdParam: string): RunProjectPlanSectionRequest {
   return { sectionId: normalizeSectionId(sectionIdParam) };
+}
+
+function normalizeSectionsRunBody(body: Record<string, unknown>): RunProjectPlanSectionsRequest {
+  const sectionIds = Array.isArray(body.sectionIds)
+    ? body.sectionIds.map((item) => normalizeSectionId(String(item)))
+    : undefined;
+  return {
+    ...(sectionIds ? { sectionIds: Array.from(new Set(sectionIds)) } : {}),
+    onlyReady: body.onlyReady === true,
+  };
 }
 
 function normalizeToolCheckBody(toolIdParam: string): CheckProjectPlanToolRequest {
@@ -2599,6 +2639,40 @@ function runPlanningSection(
     ],
   };
   return { run, artifacts: [artifact] };
+}
+
+function selectSectionsForRun(
+  plan: ProjectPlan,
+  input: RunProjectPlanSectionsRequest,
+): ProjectWorkspaceSection[] {
+  const requestedIds = input.sectionIds ? new Set(input.sectionIds) : null;
+  const sections = requestedIds
+    ? plan.workspaceSections.filter((section) => requestedIds.has(section.id))
+    : plan.workspaceSections;
+  if (!input.onlyReady) return sections;
+  return sections.filter((section) => sectionIsReadyForParallelRun(plan, section));
+}
+
+function sectionIsReadyForParallelRun(plan: ProjectPlan, section: ProjectWorkspaceSection): boolean {
+  const sectionLaneIds = new Set(section.relatedLaneIds);
+  const lanes = plan.agentLanes.filter((lane) => lane.sectionId === section.id || sectionLaneIds.has(lane.id));
+  if (lanes.length === 0) return true;
+  const readyLaneIds = new Set(plan.agentLanes.filter((lane) => lane.status === 'ready').map((lane) => lane.id));
+  return lanes.every((lane) => {
+    if (lane.status !== 'ready') return false;
+    return lane.dependsOn.every((dependencyId) => readyLaneIds.has(dependencyId));
+  });
+}
+
+function runPlanningSections(
+  plan: ProjectPlan,
+  sections: ProjectWorkspaceSection[],
+): { runs: PlanningExecutionRun[]; artifacts: PlanningExecutionArtifact[] } {
+  const results = sections.map((section) => runPlanningSection(plan, section));
+  return {
+    runs: results.map((result) => result.run),
+    artifacts: results.flatMap((result) => result.artifacts),
+  };
 }
 
 function buildDatabaseDraftArtifactContent(plan: ProjectPlan): string {

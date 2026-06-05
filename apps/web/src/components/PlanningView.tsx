@@ -23,6 +23,7 @@ import {
   listProjectPlans,
   refreshProviderCapabilitySnapshots,
   runProjectPlanSection,
+  runProjectPlanSections,
   updateProjectSectionWorkflow,
 } from '../providers/plans';
 
@@ -297,6 +298,20 @@ export function PlanningView() {
     }
   }
 
+  async function handleRunReadySections() {
+    if (!selectedPlan) return;
+    setExecutionSaving('sections:ready');
+    setError(null);
+    try {
+      const result = await runProjectPlanSections(selectedPlan.id, { onlyReady: true });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
+    }
+  }
+
   async function handleCheckTool(toolId: ProjectToolConnection['toolId']) {
     if (!selectedPlan) return;
     setExecutionSaving(`tool:${toolId}`);
@@ -557,6 +572,7 @@ export function PlanningView() {
                 setProjectManagementTargets((curr) => ({ ...curr, [actionId]: projectManagementTarget }));
               }}
               onRunSection={handleRunSection}
+              onRunReadySections={handleRunReadySections}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
               refreshingCapabilities={refreshingCapabilities}
@@ -613,6 +629,7 @@ function PlanDetail({
   projectManagementTargets,
   onProjectManagementTargetChange,
   onRunSection,
+  onRunReadySections,
   onCheckTool,
   onRefreshCapabilities,
 }: {
@@ -645,6 +662,7 @@ function PlanDetail({
     projectManagementTarget: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
   ) => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
+  onRunReadySections: () => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
 }) {
@@ -713,8 +731,18 @@ function PlanDetail({
       </div>
       <div className="planning-view__sections">
         <div className="planning-view__section-heading">
-          <h3>Workspace sections</h3>
-          <span>{activeSection?.label ?? 'No section'} workflow</span>
+          <div>
+            <h3>Workspace sections</h3>
+            <span>{activeSection?.label ?? 'No section'} workflow</span>
+          </div>
+          <button
+            type="button"
+            className="planning-view__secondary"
+            disabled={executionSaving === 'sections:ready'}
+            onClick={() => onRunReadySections()}
+          >
+            {executionSaving === 'sections:ready' ? 'Running...' : 'Run ready sections'}
+          </button>
         </div>
         <div className="planning-view__section-tabs" role="tablist" aria-label="Planning workflow sections">
           {plan.workspaceSections.map((section) => (

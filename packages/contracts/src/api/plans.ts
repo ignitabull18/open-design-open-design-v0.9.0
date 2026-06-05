@@ -321,6 +321,11 @@ export interface RunProjectPlanSectionRequest {
   sectionId: ProjectWorkspaceSection['id'];
 }
 
+export interface RunProjectPlanSectionsRequest {
+  sectionIds?: ProjectWorkspaceSection['id'][];
+  onlyReady?: boolean;
+}
+
 export interface CheckProjectPlanToolRequest {
   toolId: PlanningToolId;
 }

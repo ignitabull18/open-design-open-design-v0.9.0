@@ -186,9 +186,9 @@ const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
-  'target-dir', 'delivery-target', 'project-management-target', 'tool',
+  'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4645,6 +4645,8 @@ async function runPlan(args) {
                                                  Execute or record one plan action.
   od plan run-section <id> --section <name> [--json]
                                                  Run a section planning agent and store its output.
+  od plan run-sections <id> [--sections a,b] [--ready] [--json]
+                                                 Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
   od plan artifacts <id> [--json]                List generated plan execution artifacts.
@@ -4914,6 +4916,35 @@ Common options:
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(`[plan] section run ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
       console.log(data.artifacts?.[0]?.title ?? '');
+      return;
+    }
+    case 'run-sections': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan run-sections <id> [--sections planning,design,database,integrations,ai,workflows,delivery] [--ready] [--json]');
+        process.exit(2);
+      }
+      const sectionIds = typeof flags.sections === 'string' && flags.sections.trim()
+        ? flags.sections.split(',').map((item) => item.trim()).filter(Boolean)
+        : undefined;
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(sectionIds ? { sectionIds } : {}),
+          onlyReady: flags.ready === true,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/sections/runs failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] section batch ${(data.runs ?? []).length} run(s)`);
+      for (const run of data.runs ?? []) {
+        console.log(`${run.sectionId ?? '-'}\t${run.status ?? '-'}\t${run.title ?? '-'}`);
+      }
       return;
     }
     case 'check-tool': {

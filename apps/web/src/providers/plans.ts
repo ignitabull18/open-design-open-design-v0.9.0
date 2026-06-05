@@ -14,6 +14,7 @@ import type {
   ProjectSectionAnswers,
   ProjectWorkspaceSection,
   RunProjectPlanSectionRequest,
+  RunProjectPlanSectionsRequest,
   UpdateProjectSectionRequest,
   ProjectToolConnection,
   ProviderCapabilitySnapshotsResponse,
@@ -205,6 +206,22 @@ export function runProjectPlanSection(
     {
       method: 'POST',
       body: JSON.stringify({}),
+    },
+  );
+}
+
+export function runProjectPlanSections(
+  planId: string,
+  input: RunProjectPlanSectionsRequest,
+): Promise<ProjectPlanExecutionResponse> {
+  return jsonFetch<ProjectPlanExecutionResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/sections/runs`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(input.sectionIds ? { sectionIds: input.sectionIds } : {}),
+        onlyReady: input.onlyReady === true,
+      }),
     },
   );
 }
