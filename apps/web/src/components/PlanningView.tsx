@@ -3,6 +3,7 @@ import type {
   PlanningExecutionArtifact,
   PlanningToolOption,
   ProviderCapabilityRefreshPolicy,
+  ProviderCapabilityRefreshSchedule,
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
@@ -27,8 +28,10 @@ import {
   listPlanningTools,
   listProjectPlans,
   refreshProviderCapabilitySnapshots,
+  runDueProviderCapabilityRefresh,
   runProjectPlanSection,
   runProjectPlanSections,
+  updateProviderCapabilityRefreshSchedule,
   updateProjectSectionWorkflow,
 } from '../providers/plans';
 
@@ -74,6 +77,7 @@ export function PlanningView() {
   const [tools, setTools] = useState<PlanningToolOption[]>([]);
   const [capabilities, setCapabilities] = useState<ProviderCapabilitySnapshot[]>([]);
   const [capabilityRefreshPolicy, setCapabilityRefreshPolicy] = useState<ProviderCapabilityRefreshPolicy | null>(null);
+  const [capabilityRefreshSchedule, setCapabilityRefreshSchedule] = useState<ProviderCapabilityRefreshSchedule | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +132,7 @@ export function PlanningView() {
         setTools(toolsResult.tools);
         setCapabilities(capabilitiesResult.capabilities);
         setCapabilityRefreshPolicy(capabilitiesResult.refreshPolicy ?? null);
+        setCapabilityRefreshSchedule(capabilitiesResult.refreshSchedule ?? null);
         setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
         setAuthRequired(false);
       } catch (err) {
@@ -417,9 +422,43 @@ export function PlanningView() {
       const plansResult = await listProjectPlans();
       setCapabilities(result.capabilities);
       setCapabilityRefreshPolicy(result.refreshPolicy ?? null);
+      setCapabilityRefreshSchedule(result.refreshSchedule ?? null);
       setPlans(plansResult.plans);
       setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
       if (selectedPlan) await refreshReadiness(selectedPlan.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshingCapabilities(false);
+    }
+  }
+
+  async function handleRunDueCapabilityRefresh(force = false) {
+    setRefreshingCapabilities(true);
+    setError(null);
+    try {
+      const result = await runDueProviderCapabilityRefresh({ force });
+      const plansResult = await listProjectPlans();
+      setCapabilities(result.capabilities);
+      setCapabilityRefreshPolicy(result.refreshPolicy ?? null);
+      setCapabilityRefreshSchedule(result.refreshSchedule ?? null);
+      setPlans(plansResult.plans);
+      setSelectedId((curr) => curr ?? plansResult.plans[0]?.id ?? null);
+      if (selectedPlan) await refreshReadiness(selectedPlan.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshingCapabilities(false);
+    }
+  }
+
+  async function handleToggleCapabilityRefreshSchedule(enabled: boolean) {
+    setRefreshingCapabilities(true);
+    setError(null);
+    try {
+      const result = await updateProviderCapabilityRefreshSchedule({ enabled });
+      setCapabilityRefreshPolicy(result.refreshPolicy);
+      setCapabilityRefreshSchedule(result.refreshSchedule);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -644,6 +683,7 @@ export function PlanningView() {
               executionSaving={executionSaving}
               capabilities={capabilities}
               capabilityRefreshPolicy={capabilityRefreshPolicy}
+              capabilityRefreshSchedule={capabilityRefreshSchedule}
               onIdeationPromptChange={setIdeationPrompt}
               onBrainstorm={handleBrainstorm}
               onSaveSectionAnswer={handleSaveSectionAnswer}
@@ -667,6 +707,8 @@ export function PlanningView() {
               onRunReadySections={handleRunReadySections}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
+              onRunDueCapabilityRefresh={handleRunDueCapabilityRefresh}
+              onToggleCapabilityRefreshSchedule={handleToggleCapabilityRefreshSchedule}
               refreshingCapabilities={refreshingCapabilities}
               artifactSaving={artifactSaving}
               artifactKind={artifactKind}
@@ -762,6 +804,7 @@ function PlanDetail({
   executionSaving,
   capabilities,
   capabilityRefreshPolicy,
+  capabilityRefreshSchedule,
   refreshingCapabilities,
   onIdeationPromptChange,
   onBrainstorm,
@@ -780,6 +823,8 @@ function PlanDetail({
   onRunReadySections,
   onCheckTool,
   onRefreshCapabilities,
+  onRunDueCapabilityRefresh,
+  onToggleCapabilityRefreshSchedule,
   artifactSaving,
   artifactKind,
   artifactTitle,
@@ -799,6 +844,7 @@ function PlanDetail({
   executionSaving: string | null;
   capabilities: ProviderCapabilitySnapshot[];
   capabilityRefreshPolicy: ProviderCapabilityRefreshPolicy | null;
+  capabilityRefreshSchedule: ProviderCapabilityRefreshSchedule | null;
   refreshingCapabilities: boolean;
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
@@ -826,6 +872,8 @@ function PlanDetail({
   onRunReadySections: () => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
+  onRunDueCapabilityRefresh: (force?: boolean) => void;
+  onToggleCapabilityRefreshSchedule: (enabled: boolean) => void;
   artifactSaving: boolean;
   artifactKind: PlanningExecutionArtifact['kind'];
   artifactTitle: string;
@@ -1169,15 +1217,45 @@ function PlanDetail({
                 {capabilityRefreshPolicy.cadence} refresh · stale after {capabilityRefreshPolicy.staleAfterDays} day(s) · {capabilityRefreshPolicy.staleCount} stale
               </span>
             ) : null}
+            <span>{formatCapabilityRefreshSchedule(capabilityRefreshSchedule)}</span>
+            {capabilityRefreshSchedule?.lastSummary ? <span>{capabilityRefreshSchedule.lastSummary}</span> : null}
           </div>
-          <button
-            type="button"
-            className="planning-view__secondary"
-            disabled={refreshingCapabilities}
-            onClick={() => onRefreshCapabilities()}
-          >
-            {refreshingCapabilities ? 'Refreshing...' : 'Refresh snapshots'}
-          </button>
+          <div className="planning-view__capability-actions">
+            {capabilityRefreshSchedule ? (
+              <button
+                type="button"
+                className="planning-view__secondary"
+                disabled={refreshingCapabilities}
+                onClick={() => onToggleCapabilityRefreshSchedule(!capabilityRefreshSchedule.enabled)}
+              >
+                {capabilityRefreshSchedule.enabled ? 'Disable schedule' : 'Enable schedule'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={refreshingCapabilities}
+              onClick={() => onRunDueCapabilityRefresh(false)}
+            >
+              {refreshingCapabilities ? 'Refreshing...' : 'Run due'}
+            </button>
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={refreshingCapabilities}
+              onClick={() => onRunDueCapabilityRefresh(true)}
+            >
+              Force refresh
+            </button>
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={refreshingCapabilities}
+              onClick={() => onRefreshCapabilities()}
+            >
+              Refresh snapshots
+            </button>
+          </div>
         </div>
         {visibleCapabilities.map((snapshot) => (
           <article key={`${snapshot.toolId}-${snapshot.sourceUrl}`} className="planning-view__capability">
@@ -1268,6 +1346,12 @@ function SectionWorkboardPanel({ plan }: { plan: ProjectPlan }) {
       </div>
     </div>
   );
+}
+
+function formatCapabilityRefreshSchedule(schedule: ProviderCapabilityRefreshSchedule | null) {
+  if (!schedule) return 'Schedule not loaded';
+  const nextRun = schedule.nextRunAt ? new Date(schedule.nextRunAt).toLocaleString() : 'not scheduled';
+  return `${schedule.enabled ? 'enabled' : 'disabled'} · ${schedule.schedule.kind} · next ${nextRun} · last ${schedule.lastStatus}`;
 }
 
 function DatabaseList({ title, items }: { title: string; items: string[] }) {

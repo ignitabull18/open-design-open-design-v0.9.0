@@ -86,6 +86,14 @@ describe('planning routes', () => {
       nextRecommendedRefreshAt: expect.any(Number),
     });
     expect(capabilities.body.refreshPolicy.nextRecommendedRefreshAt).toBeGreaterThan(capabilities.body.refreshPolicy.generatedAt);
+    expect(capabilities.body.refreshSchedule).toMatchObject({
+      enabled: true,
+      persist: true,
+      schedule: { kind: 'weekly', weekday: 1, time: '09:00', timezone: 'UTC' },
+      lastStatus: 'never',
+      lastEvidence: [],
+      nextRunAt: expect.any(Number),
+    });
     expect(capabilities.body.capabilities).toEqual(expect.arrayContaining([
       expect.objectContaining({
         toolId: 'cloudflare-hosting',
@@ -115,6 +123,76 @@ describe('planning routes', () => {
           expect.stringContaining('Run Engine 2'),
         ]),
       }),
+    ]));
+  });
+
+  it('stores and runs the provider capability refresh schedule', async () => {
+    const fetchCalls: string[] = [];
+    const baseUrl = await startPlanServer({
+      providerSourceFetcher: async (url) => {
+        fetchCalls.push(url);
+        return {
+          url,
+          statusCode: 200,
+          ok: true,
+          title: 'Provider Source',
+          excerpt: `Scheduled refresh source ${url}`,
+          durationMs: 5,
+        };
+      },
+    });
+
+    const disabled = await jsonFetch(`${baseUrl}/api/planning/capabilities/schedule`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        enabled: false,
+        persist: false,
+        schedule: { kind: 'daily', time: '08:30', timezone: 'UTC' },
+      }),
+    });
+
+    expect(disabled.status).toBe(200);
+    expect(disabled.body.refreshSchedule).toMatchObject({
+      enabled: false,
+      persist: false,
+      schedule: { kind: 'daily', time: '08:30', timezone: 'UTC' },
+      lastStatus: 'never',
+    });
+
+    const skipped = await jsonFetch(`${baseUrl}/api/planning/capabilities/refresh-due`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    expect(skipped.status).toBe(200);
+    expect(fetchCalls).toHaveLength(0);
+    expect(skipped.body.plansUpdated).toBe(0);
+    expect(skipped.body.refreshSchedule).toMatchObject({
+      enabled: false,
+      lastStatus: 'skipped',
+      lastSummary: expect.stringContaining('disabled'),
+    });
+
+    const forced = await jsonFetch(`${baseUrl}/api/planning/capabilities/refresh-due`, {
+      method: 'POST',
+      body: JSON.stringify({ force: true }),
+    });
+
+    expect(forced.status).toBe(200);
+    expect(fetchCalls).toEqual(expect.arrayContaining([
+      'https://supabase.com/changelog',
+      'https://trigger.dev/changelog/',
+    ]));
+    expect(forced.body.refreshSchedule).toMatchObject({
+      enabled: false,
+      persist: false,
+      lastStatus: 'completed',
+      lastRunAt: expect.any(Number),
+      nextRunAt: expect.any(Number),
+      lastSummary: expect.stringContaining('Refreshed'),
+    });
+    expect(forced.body.refreshSchedule.lastEvidence).toEqual(expect.arrayContaining([
+      expect.stringContaining('ok 200 https://supabase.com/changelog'),
     ]));
   });
 

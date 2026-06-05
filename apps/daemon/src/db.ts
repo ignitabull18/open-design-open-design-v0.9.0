@@ -254,6 +254,12 @@ function migrate(db: SqliteDb): void {
 
     CREATE INDEX IF NOT EXISTS idx_plan_ideation_sessions_plan
       ON plan_ideation_sessions(plan_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS planning_settings (
+      key TEXT PRIMARY KEY,
+      value_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
   // Forward-compatible column add for databases created before metadata_json.
   // SQLite has no IF NOT EXISTS for ALTER, so we check pragma_table_info.
@@ -1670,6 +1676,28 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
 export function deletePlan(db: SqliteDb, id: string): boolean {
   const result = db.prepare(`DELETE FROM plans WHERE id = ?`).run(id);
   return result.changes > 0;
+}
+
+export function getPlanningSetting(db: SqliteDb, key: string) {
+  const row = db
+    .prepare(`SELECT key, value_json AS valueJson, updated_at AS updatedAt FROM planning_settings WHERE key = ?`)
+    .get(key) as DbRow | undefined;
+  if (!row) return null;
+  return {
+    key: row.key,
+    value: parseJsonObject(row.valueJson, {}),
+    updatedAt: Number(row.updatedAt),
+  };
+}
+
+export function upsertPlanningSetting(db: SqliteDb, key: string, value: unknown) {
+  const updatedAt = Date.now();
+  db.prepare(
+    `INSERT INTO planning_settings (key, value_json, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+  ).run(key, JSON.stringify(value ?? {}), updatedAt);
+  return getPlanningSetting(db, key);
 }
 
 function normalizePlan(row: DbRow) {

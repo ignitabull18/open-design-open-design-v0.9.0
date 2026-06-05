@@ -187,9 +187,9 @@ const PLAN_STRING_FLAGS = new Set([
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
-  'kind', 'title', 'content-file',
+  'kind', 'title', 'content-file', 'schedule',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4623,8 +4623,9 @@ async function runPlan(args) {
   od plan tools [--json]                         List approved planning tools.
   od plan session [--token <token>|--token-file <path|->] [--json]
                                                  Inspect or create a hosted planning session.
-  od plan capabilities [--refresh] [--persist] [--json]
-                                                 List provider capability snapshots.
+  od plan capabilities [--refresh|--run-due] [--force] [--persist]
+                       [--schedule <spec>] [--enable-schedule|--disable-schedule] [--json]
+                                                 List, refresh, or schedule provider capability snapshots.
   od plan list [--json]                          List stored plans.
   od plan info <id> [--json]                     Print one stored plan.
   od plan create --name <title> --intent-json <path|->
@@ -4704,19 +4705,44 @@ Common options:
       return;
     }
     case 'capabilities': {
-      const resp = await fetch(`${base}/api/planning/capabilities${flags.refresh ? '/refresh' : ''}`, {
-        method: flags.refresh ? 'POST' : 'GET',
-        ...(flags.refresh ? {
+      let resp;
+      if (flags.schedule || flags['enable-schedule'] || flags['disable-schedule']) {
+        const body: Record<string, unknown> = {};
+        if (flags.schedule) body.schedule = parseScheduleFlag(flags.schedule);
+        if (flags['enable-schedule']) body.enabled = true;
+        if (flags['disable-schedule']) body.enabled = false;
+        if (flags.persist) body.persist = true;
+        resp = await fetch(`${base}/api/planning/capabilities/schedule`, {
+          method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ persist: flags.persist === true }),
-        } : {}),
-      });
+          body: JSON.stringify(body),
+        });
+      } else if (flags['run-due']) {
+        resp = await fetch(`${base}/api/planning/capabilities/refresh-due`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ force: flags.force === true }),
+        });
+      } else {
+        resp = await fetch(`${base}/api/planning/capabilities${flags.refresh ? '/refresh' : ''}`, {
+          method: flags.refresh ? 'POST' : 'GET',
+          ...(flags.refresh ? {
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ persist: flags.persist === true }),
+          } : {}),
+        });
+      }
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       if (typeof data?.plansUpdated === 'number') console.log(`Plans updated: ${data.plansUpdated}`);
       if (data?.refreshPolicy) {
         console.log(`Refresh: ${data.refreshPolicy.cadence} cadence, stale after ${data.refreshPolicy.staleAfterDays} day(s), stale snapshots ${data.refreshPolicy.staleCount}`);
+      }
+      if (data?.refreshSchedule) {
+        console.log(`Schedule: ${data.refreshSchedule.enabled ? 'enabled' : 'disabled'} ${describeAutomationScheduleForCli(data.refreshSchedule.schedule)} persist=${data.refreshSchedule.persist ? 'yes' : 'no'} last=${data.refreshSchedule.lastStatus}`);
+        if (data.refreshSchedule.nextRunAt) console.log(`Next run: ${new Date(data.refreshSchedule.nextRunAt).toISOString()}`);
+        if (data.refreshSchedule.lastSummary) console.log(`Last run: ${data.refreshSchedule.lastSummary}`);
       }
       for (const snapshot of data?.capabilities ?? []) {
         console.log(`${snapshot.toolId}\t${snapshot.label}\tchecked ${snapshot.checkedAt}`);

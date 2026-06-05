@@ -1,3 +1,5 @@
+import type { RoutineSchedule } from './routines.js';
+
 export type PlanningToolKind =
   | 'source-control'
   | 'hosting'
@@ -402,6 +404,28 @@ export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
 
+export interface ProviderCapabilityRefreshSchedule {
+  enabled: boolean;
+  persist: boolean;
+  schedule: RoutineSchedule;
+  nextRunAt?: number;
+  lastRunAt?: number;
+  lastStatus: 'never' | 'completed' | 'failed' | 'skipped';
+  lastSummary?: string;
+  lastEvidence: string[];
+  updatedAt: number;
+}
+
+export interface UpdateProviderCapabilityRefreshScheduleRequest {
+  enabled?: boolean;
+  persist?: boolean;
+  schedule?: RoutineSchedule;
+}
+
+export interface RunDueProviderCapabilityRefreshRequest {
+  force?: boolean;
+}
+
 export interface ProviderCapabilityRefreshPolicy {
   cadence: 'manual' | 'daily' | 'weekly';
   staleAfterDays: number;
@@ -463,9 +487,15 @@ export interface ProviderCapabilitySnapshotsResponse {
   capabilities: ProviderCapabilitySnapshot[];
   sourceUrls?: string[];
   refreshPolicy?: ProviderCapabilityRefreshPolicy;
+  refreshSchedule?: ProviderCapabilityRefreshSchedule;
   refreshedAt?: number;
   refreshEvidence?: string[];
   plansUpdated?: number;
+}
+
+export interface ProviderCapabilityRefreshScheduleResponse {
+  refreshPolicy: ProviderCapabilityRefreshPolicy;
+  refreshSchedule: ProviderCapabilityRefreshSchedule;
 }
 
 export interface PlanningSessionResponse {

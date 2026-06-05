@@ -21,6 +21,7 @@ import type {
   ProjectPlanReadinessReport,
   ProjectPlanReadinessStatus,
   ProviderCapabilityRefreshPolicy,
+  ProviderCapabilityRefreshSchedule,
   PlanningToolOption,
   PlanningToolCheck,
   PlanningToolId,
@@ -40,22 +41,27 @@ import type {
   ProjectWorkspaceSection,
   RefreshProviderCapabilitySnapshotsRequest,
   RepoPlan,
+  RunDueProviderCapabilityRefreshRequest,
   RunProjectPlanSectionRequest,
   RunProjectPlanSectionsRequest,
   ScaffoldExecutionPlan,
   ScaffoldPlan,
+  UpdateProviderCapabilityRefreshScheduleRequest,
   UpdateProjectSectionRequest,
   UpdateProjectPlanRequest,
 } from '@open-design/contracts';
 import {
   deletePlan,
   getPlan,
+  getPlanningSetting,
   insertPlan,
   insertPlanIdeationSession,
   listPlanIdeationSessions,
   listPlans,
   updatePlan,
+  upsertPlanningSetting,
 } from './db.js';
+import { nextRunAtForSchedule, validateSchedule } from './routines.js';
 import type { RouteDeps } from './server-context.js';
 
 interface ScaffoldCommandRequest {
@@ -344,6 +350,15 @@ const SOURCE_URLS = [
 const CHECKED_AT = '2026-06-05';
 const PROVIDER_REFRESH_CADENCE: ProviderCapabilityRefreshPolicy['cadence'] = 'weekly';
 const PROVIDER_REFRESH_STALE_AFTER_DAYS = 7;
+const PROVIDER_REFRESH_SCHEDULE_KEY = 'provider-capability-refresh';
+const DEFAULT_PROVIDER_REFRESH_SCHEDULE: ProviderCapabilityRefreshSchedule = {
+  enabled: true,
+  persist: true,
+  schedule: { kind: 'weekly', weekday: 1, time: '09:00', timezone: 'UTC' },
+  lastStatus: 'never',
+  lastEvidence: [],
+  updatedAt: 0,
+};
 
 const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
   {
@@ -824,7 +839,38 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       capabilities: PROVIDER_CAPABILITIES,
       sourceUrls: SOURCE_URLS,
       refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES),
+      refreshSchedule: getProviderCapabilityRefreshSchedule(db),
     });
+  });
+
+  app.get('/api/planning/capabilities/schedule', (_req, res) => {
+    res.json({
+      refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES),
+      refreshSchedule: getProviderCapabilityRefreshSchedule(db),
+    });
+  });
+
+  app.patch('/api/planning/capabilities/schedule', (req, res) => {
+    try {
+      const patch = normalizeProviderCapabilityRefreshScheduleBody(req.body || {});
+      const current = getProviderCapabilityRefreshSchedule(db);
+      const nextRunAt = patch.schedule || patch.enabled === true
+        ? buildNextProviderCapabilityRefreshRunAt(patch.schedule ?? current.schedule)
+        : current.nextRunAt;
+      const next = saveProviderCapabilityRefreshSchedule(db, {
+        ...current,
+        ...patch,
+        schedule: patch.schedule ?? current.schedule,
+        ...(nextRunAt ? { nextRunAt } : {}),
+        updatedAt: Date.now(),
+      });
+      res.json({
+        refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES),
+        refreshSchedule: next,
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
   });
 
   app.post('/api/planning/capabilities/refresh', async (req, res) => {
@@ -837,9 +883,80 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       res.json({
         ...refreshed,
         refreshPolicy: buildProviderCapabilityRefreshPolicy(refreshed.capabilities, refreshed.refreshedAt),
+        refreshSchedule: getProviderCapabilityRefreshSchedule(db),
         ...(body.persist ? { plansUpdated } : {}),
       });
     } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/planning/capabilities/refresh-due', async (req, res) => {
+    try {
+      const body = normalizeProviderCapabilityRefreshDueBody(req.body || {});
+      const current = getProviderCapabilityRefreshSchedule(db);
+      const now = Date.now();
+      if (!body.force && !current.enabled) {
+        const skipped = saveProviderCapabilityRefreshSchedule(db, {
+          ...current,
+          lastStatus: 'skipped',
+          lastSummary: 'Provider capability refresh schedule is disabled.',
+          lastEvidence: ['schedule disabled'],
+          updatedAt: now,
+        });
+        return res.json({
+          capabilities: PROVIDER_CAPABILITIES,
+          sourceUrls: SOURCE_URLS,
+          refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES, now),
+          refreshSchedule: skipped,
+          plansUpdated: 0,
+        });
+      }
+      if (!body.force && current.nextRunAt && current.nextRunAt > now) {
+        const skipped = saveProviderCapabilityRefreshSchedule(db, {
+          ...current,
+          lastStatus: 'skipped',
+          lastSummary: `Next provider capability refresh is scheduled for ${new Date(current.nextRunAt).toISOString()}.`,
+          lastEvidence: [`nextRunAt: ${current.nextRunAt}`],
+          updatedAt: now,
+        });
+        return res.json({
+          capabilities: PROVIDER_CAPABILITIES,
+          sourceUrls: SOURCE_URLS,
+          refreshPolicy: buildProviderCapabilityRefreshPolicy(PROVIDER_CAPABILITIES, now),
+          refreshSchedule: skipped,
+          plansUpdated: 0,
+        });
+      }
+      const refreshed = await refreshProviderCapabilities({
+        providerSourceFetcher,
+      });
+      const plansUpdated = current.persist ? persistRefreshedProviderCapabilities(db, refreshed.capabilities) : 0;
+      const nextRunAt = buildNextProviderCapabilityRefreshRunAt(current.schedule, refreshed.refreshedAt);
+      const nextSchedule = saveProviderCapabilityRefreshSchedule(db, {
+        ...current,
+        lastRunAt: refreshed.refreshedAt,
+        lastStatus: 'completed',
+        lastSummary: `Refreshed ${refreshed.capabilities.length} provider capability snapshot(s).`,
+        lastEvidence: refreshed.refreshEvidence.slice(0, 12),
+        ...(nextRunAt ? { nextRunAt } : {}),
+        updatedAt: refreshed.refreshedAt,
+      });
+      res.json({
+        ...refreshed,
+        refreshPolicy: buildProviderCapabilityRefreshPolicy(refreshed.capabilities, refreshed.refreshedAt),
+        refreshSchedule: nextSchedule,
+        plansUpdated,
+      });
+    } catch (err: any) {
+      const current = getProviderCapabilityRefreshSchedule(db);
+      saveProviderCapabilityRefreshSchedule(db, {
+        ...current,
+        lastStatus: 'failed',
+        lastSummary: String(err?.message ?? err),
+        lastEvidence: [String(err?.message ?? err)],
+        updatedAt: Date.now(),
+      });
       res.status(500).json({ error: String(err?.message ?? err) });
     }
   });
@@ -1295,6 +1412,25 @@ function isPlanningExecutionArtifactKind(value: string): value is PlanningExecut
 
 function normalizeCapabilityRefreshBody(body: Record<string, unknown>): RefreshProviderCapabilitySnapshotsRequest {
   return { persist: body.persist === true };
+}
+
+function normalizeProviderCapabilityRefreshScheduleBody(
+  body: Record<string, unknown>,
+): UpdateProviderCapabilityRefreshScheduleRequest {
+  const output: UpdateProviderCapabilityRefreshScheduleRequest = {};
+  if (body.enabled !== undefined) output.enabled = body.enabled === true;
+  if (body.persist !== undefined) output.persist = body.persist === true;
+  if (body.schedule !== undefined) {
+    validateSchedule(body.schedule as any);
+    output.schedule = body.schedule as NonNullable<UpdateProviderCapabilityRefreshScheduleRequest['schedule']>;
+  }
+  return output;
+}
+
+function normalizeProviderCapabilityRefreshDueBody(
+  body: Record<string, unknown>,
+): RunDueProviderCapabilityRefreshRequest {
+  return { force: body.force === true };
 }
 
 function normalizeSectionRunBody(sectionIdParam: string): RunProjectPlanSectionRequest {
@@ -1925,6 +2061,55 @@ function buildProviderCapabilityRefreshPolicy(
     staleCount: staleToolIds.length,
     staleToolIds,
   };
+}
+
+function getProviderCapabilityRefreshSchedule(db: Parameters<typeof listPlans>[0]): ProviderCapabilityRefreshSchedule {
+  const setting = getPlanningSetting(db, PROVIDER_REFRESH_SCHEDULE_KEY);
+  const raw = setting?.value && typeof setting.value === 'object' ? setting.value as Partial<ProviderCapabilityRefreshSchedule> : {};
+  const schedule = raw.schedule ?? DEFAULT_PROVIDER_REFRESH_SCHEDULE.schedule;
+  try {
+    validateSchedule(schedule as any);
+  } catch {
+    return saveProviderCapabilityRefreshSchedule(db, {
+      ...DEFAULT_PROVIDER_REFRESH_SCHEDULE,
+      updatedAt: Date.now(),
+    });
+  }
+  const nextRunAt = typeof raw.nextRunAt === 'number'
+    ? raw.nextRunAt
+    : buildNextProviderCapabilityRefreshRunAt(schedule);
+  return {
+    enabled: raw.enabled ?? DEFAULT_PROVIDER_REFRESH_SCHEDULE.enabled,
+    persist: raw.persist ?? DEFAULT_PROVIDER_REFRESH_SCHEDULE.persist,
+    schedule,
+    ...(nextRunAt ? { nextRunAt } : {}),
+    ...(typeof raw.lastRunAt === 'number' ? { lastRunAt: raw.lastRunAt } : {}),
+    lastStatus: raw.lastStatus ?? DEFAULT_PROVIDER_REFRESH_SCHEDULE.lastStatus,
+    ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
+    lastEvidence: Array.isArray(raw.lastEvidence) ? raw.lastEvidence.filter((item): item is string => typeof item === 'string') : [],
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : setting?.updatedAt ?? Date.now(),
+  };
+}
+
+function saveProviderCapabilityRefreshSchedule(
+  db: Parameters<typeof listPlans>[0],
+  schedule: ProviderCapabilityRefreshSchedule,
+): ProviderCapabilityRefreshSchedule {
+  const next: ProviderCapabilityRefreshSchedule = {
+    ...schedule,
+    lastEvidence: schedule.lastEvidence.slice(0, 20),
+    updatedAt: schedule.updatedAt || Date.now(),
+  };
+  upsertPlanningSetting(db, PROVIDER_REFRESH_SCHEDULE_KEY, next);
+  return next;
+}
+
+function buildNextProviderCapabilityRefreshRunAt(
+  schedule: ProviderCapabilityRefreshSchedule['schedule'],
+  from = Date.now(),
+): number | undefined {
+  const next = nextRunAtForSchedule(schedule, new Date(from));
+  return next?.getTime();
 }
 
 async function refreshProviderCapabilities(

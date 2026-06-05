@@ -25,6 +25,9 @@ import type {
   ProjectPlanResponse,
   ProjectPlansResponse,
   RefreshProviderCapabilitySnapshotsRequest,
+  RunDueProviderCapabilityRefreshRequest,
+  ProviderCapabilityRefreshScheduleResponse,
+  UpdateProviderCapabilityRefreshScheduleRequest,
   ProjectStackDecision,
 } from '@open-design/contracts';
 
@@ -93,6 +96,28 @@ export function refreshProviderCapabilitySnapshots(
     body: JSON.stringify({
       persist: input.persist === true,
     }),
+  });
+}
+
+export function getProviderCapabilityRefreshSchedule(): Promise<ProviderCapabilityRefreshScheduleResponse> {
+  return jsonFetch<ProviderCapabilityRefreshScheduleResponse>('/api/planning/capabilities/schedule');
+}
+
+export function updateProviderCapabilityRefreshSchedule(
+  input: UpdateProviderCapabilityRefreshScheduleRequest,
+): Promise<ProviderCapabilityRefreshScheduleResponse> {
+  return jsonFetch<ProviderCapabilityRefreshScheduleResponse>('/api/planning/capabilities/schedule', {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function runDueProviderCapabilityRefresh(
+  input: RunDueProviderCapabilityRefreshRequest = {},
+): Promise<ProviderCapabilitySnapshotsResponse> {
+  return jsonFetch<ProviderCapabilitySnapshotsResponse>('/api/planning/capabilities/refresh-due', {
+    method: 'POST',
+    body: JSON.stringify({ force: input.force === true }),
   });
 }
 
