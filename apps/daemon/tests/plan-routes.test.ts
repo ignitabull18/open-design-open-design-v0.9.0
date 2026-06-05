@@ -324,4 +324,82 @@ describe('planning routes', () => {
       }),
     ]));
   });
+
+  it('exposes section-specific workflows and saves one section independently', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Workflow Studio',
+        intent: { purpose: 'Plan a scaffoldable workflow-heavy SaaS workspace.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+        },
+      }),
+    });
+
+    const initial = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/sections/database`);
+
+    expect(initial.status).toBe(200);
+    expect(initial.body.workflow).toMatchObject({
+      section: { id: 'database', label: 'Database' },
+      databaseDesign: {
+        mode: 'transactional',
+        primaryStore: 'supabase',
+      },
+    });
+    expect(initial.body.workflow.questions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'data-source-of-truth', laneId: 'database' }),
+    ]));
+    expect(initial.body.workflow.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'database',
+        outputs: expect.arrayContaining(['entity map', 'migration plan']),
+      }),
+    ]));
+    expect(initial.body.workflow.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scaffold' }),
+    ]));
+
+    const saved = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/sections/database`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        answers: [
+          'Projects own plans, workflow runs, integration connections, and audit events.',
+          'Workflow logs should use retention policies and stay out of core plan tables.',
+        ],
+        notes: 'Database decisions from acceptance test',
+      }),
+    });
+
+    expect(saved.status).toBe(200);
+    expect(saved.body.workflow.answer).toMatchObject({
+      sectionId: 'database',
+      status: 'answered',
+      notes: 'Database decisions from acceptance test',
+      answers: [
+        'Projects own plans, workflow runs, integration connections, and audit events.',
+        'Workflow logs should use retention policies and stay out of core plan tables.',
+      ],
+    });
+    expect(saved.body.workflow.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'database',
+        brief: expect.stringContaining('Current database answers'),
+      }),
+    ]));
+    expect(saved.body.plan.sectionAnswers.database).toMatchObject({
+      status: 'answered',
+      notes: 'Database decisions from acceptance test',
+    });
+
+    const reloaded = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/sections/database`);
+    expect(reloaded.body.workflow.answer.answers).toEqual(saved.body.workflow.answer.answers);
+    expect(reloaded.body.workflow.questions).toHaveLength(initial.body.workflow.questions.length);
+  });
 });

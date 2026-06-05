@@ -4,9 +4,12 @@ import type {
   ExecuteProjectPlanActionRequest,
   CreateProjectIdeationRequest,
   PlanningSessionResponse,
+  ProjectSectionWorkflowResponse,
   ProjectIdeationSessionResponse,
   ProjectIdeationSessionsResponse,
   ProjectSectionAnswers,
+  ProjectWorkspaceSection,
+  UpdateProjectSectionRequest,
   ProjectToolConnection,
   ProviderCapabilitySnapshotsResponse,
   PlanningToolOptionsResponse,
@@ -117,6 +120,29 @@ export function updateProjectPlanSectionAnswers(
     method: 'PATCH',
     body: JSON.stringify({ sectionAnswers }),
   });
+}
+
+export function getProjectSectionWorkflow(
+  id: string,
+  sectionId: ProjectWorkspaceSection['id'],
+): Promise<ProjectSectionWorkflowResponse> {
+  return jsonFetch<ProjectSectionWorkflowResponse>(
+    `/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}`,
+  );
+}
+
+export function updateProjectSectionWorkflow(
+  id: string,
+  sectionId: ProjectWorkspaceSection['id'],
+  input: UpdateProjectSectionRequest,
+): Promise<ProjectSectionWorkflowResponse> {
+  return jsonFetch<ProjectSectionWorkflowResponse>(
+    `/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export function listProjectIdeationSessions(planId: string): Promise<ProjectIdeationSessionsResponse> {

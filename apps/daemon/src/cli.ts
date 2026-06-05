@@ -4849,20 +4849,18 @@ Common options:
       }
       const answerBody = requiredJson(flags['answers-json'], '--answers-json');
       const sectionAnswer = {
-        sectionId,
         status: answerBody.status ?? (Array.isArray(answerBody.answers) && answerBody.answers.length > 0 ? 'answered' : 'drafting'),
         answers: Array.isArray(answerBody.answers) ? answerBody.answers : [],
         ...(typeof answerBody.notes === 'string' ? { notes: answerBody.notes } : {}),
-        updatedAt: Date.now(),
       };
-      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}`, {
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sectionAnswers: { [sectionId]: sectionAnswer } }),
+        body: JSON.stringify(sectionAnswer),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        console.error(`PATCH /api/plans/${id} failed: ${resp.status} ${JSON.stringify(data)}`);
+        console.error(`PATCH /api/plans/${id}/sections/${sectionId} failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');

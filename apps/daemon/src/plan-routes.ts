@@ -18,11 +18,13 @@ import type {
   ProjectSectionAnswer,
   ProjectPlan,
   ProjectSectionAnswers,
+  ProjectSectionWorkflow,
   ProjectStackDecision,
   ProjectToolConnection,
   ProjectWorkspaceSection,
   RepoPlan,
   ScaffoldPlan,
+  UpdateProjectSectionRequest,
   UpdateProjectPlanRequest,
 } from '@open-design/contracts';
 import {
@@ -289,6 +291,45 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.get('/api/plans/:id/sections/:sectionId', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      const workflow = buildSectionWorkflow(plan, normalizeSectionId(req.params.sectionId));
+      res.json({ plan, workflow });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.patch('/api/plans/:id/sections/:sectionId', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const sectionId = normalizeSectionId(req.params.sectionId);
+      const body = normalizeSectionUpdateBody(req.body || {});
+      const sectionAnswers = mergeSectionAnswers(existing.sectionAnswers ?? {}, {
+        [sectionId]: {
+          sectionId,
+          status: body.status ?? ((body.answers?.length ?? 0) > 0 ? 'answered' : 'drafting'),
+          answers: body.answers ?? [],
+          ...(typeof body.notes === 'string' && body.notes.trim() ? { notes: body.notes.trim() } : {}),
+          updatedAt: Date.now(),
+        },
+      });
+      const rebuilt = buildProjectPlan({
+        ...existing,
+        sectionAnswers,
+        updatedAt: Date.now(),
+      });
+      const updated = updatePlan(db, req.params.id, rebuilt) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan: updated, workflow: buildSectionWorkflow(updated, sectionId) });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/plans/:id/ideation', (req, res) => {
     try {
       const plan = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -373,9 +414,47 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   });
 }
 
+function buildSectionWorkflow(
+  plan: ProjectPlan,
+  sectionId: ProjectWorkspaceSection['id'],
+): ProjectSectionWorkflow {
+  const section = plan.workspaceSections.find((item) => item.id === sectionId);
+  if (!section) throw new Error(`section not found: ${sectionId}`);
+  const laneIds = new Set(section.relatedLaneIds);
+  const toolIds = new Set(section.toolIds);
+  const lanes = plan.agentLanes.filter((lane) => lane.sectionId === sectionId || laneIds.has(lane.id));
+  return {
+    section,
+    ...(plan.sectionAnswers[sectionId] ? { answer: plan.sectionAnswers[sectionId] } : {}),
+    questions: plan.ideationQuestions.filter((question) => laneIds.has(question.laneId)),
+    lanes,
+    actions: plan.executionActions.filter((action) => action.relatedSectionIds.includes(sectionId)),
+    ...(sectionId === 'database' ? { databaseDesign: plan.databaseDesign } : {}),
+    providerCapabilities: plan.providerCapabilities.filter((snapshot) => toolIds.has(snapshot.toolId)),
+  };
+}
+
 function normalizeIdeationBody(body: Record<string, unknown>): CreateProjectIdeationRequest {
   return {
     prompt: cleanRequiredString(body.prompt, 'prompt'),
+  };
+}
+
+function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjectSectionRequest {
+  const answers = body.answers === undefined
+    ? []
+    : Array.isArray(body.answers)
+      ? cleanStringArray(body.answers)
+      : (() => {
+        throw new Error('answers must be an array');
+      })();
+  const status = typeof body.status === 'string' && ['not_started', 'drafting', 'answered', 'blocked'].includes(body.status)
+    ? body.status as UpdateProjectSectionRequest['status']
+    : undefined;
+  return {
+    answers,
+    ...(status ? { status } : {}),
+    ...(typeof body.notes === 'string' ? { notes: body.notes.trim() } : {}),
   };
 }
 
@@ -414,6 +493,13 @@ function normalizeUpdateBody(body: Record<string, unknown>): UpdateProjectPlanRe
     ...(body.repo === undefined ? {} : { repo: normalizeRepo(body.repo) }),
     ...(body.delivery === undefined ? {} : { delivery: normalizeDelivery(body.delivery) }),
   };
+}
+
+function normalizeSectionId(value: string): ProjectWorkspaceSection['id'] {
+  if (['planning', 'design', 'database', 'integrations', 'ai', 'workflows', 'delivery'].includes(value)) {
+    return value as ProjectWorkspaceSection['id'];
+  }
+  throw new Error('sectionId must be one of planning, design, database, integrations, ai, workflows, or delivery');
 }
 
 function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {

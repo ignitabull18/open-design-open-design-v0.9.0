@@ -485,13 +485,58 @@
   background: var(--bg);
 }
 
-.planning-view__section-grid {
+.planning-view__section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.planning-view__section-heading span,
+.planning-view__muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.planning-view__section-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
 }
 
-.planning-view__section-card {
+.planning-view__section-tabs button {
+  display: grid;
+  gap: 3px;
+  min-height: 52px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 200ms cubic-bezier(0.23, 1, 0.32, 1), background 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.planning-view__section-tabs button.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-subtle));
+}
+
+.planning-view__section-tabs span {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.planning-view__section-tabs small {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.planning-view__section-workflow {
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -530,34 +575,34 @@
   border-left-color: color-mix(in srgb, var(--accent) 45%, #64748b);
 }
 
-.planning-view__section-card > div {
+.planning-view__section-workflow > div {
   display: grid;
   gap: 3px;
 }
 
-.planning-view__section-card strong {
+.planning-view__section-workflow strong {
   font-size: 13px;
   color: var(--text-strong);
 }
 
-.planning-view__section-card span {
+.planning-view__section-workflow span {
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-muted);
 }
 
-.planning-view__section-card dl {
+.planning-view__section-workflow dl {
   display: grid;
   gap: 6px;
   margin: 0;
 }
 
-.planning-view__section-card dl div {
+.planning-view__section-workflow dl div {
   display: grid;
   gap: 2px;
 }
 
-.planning-view__section-card dt {
+.planning-view__section-workflow dt {
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -565,11 +610,62 @@
   color: var(--text-strong);
 }
 
-.planning-view__section-card dd {
+.planning-view__section-workflow dd {
   margin: 0;
   font-size: 11.5px;
   line-height: 1.35;
   color: var(--text-muted);
+}
+
+.planning-view__workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.planning-view__workflow-grid section,
+.planning-view__database-workflow,
+.planning-view__section-capabilities {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__workflow-grid h4,
+.planning-view__section-capabilities h4 {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-strong);
+}
+
+.planning-view__workflow-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.planning-view__workflow-item code {
+  overflow: auto;
+  padding: 7px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.planning-view__database-workflow {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planning-view__section-capabilities span {
+  padding: 7px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
 }
 
 .planning-view__section-editor {
@@ -787,9 +883,14 @@
 
   .planning-view__auth,
   .planning-view__decision-grid,
-  .planning-view__section-grid,
+  .planning-view__workflow-grid,
+  .planning-view__database-workflow,
   .planning-view__lane {
     grid-template-columns: 1fr;
+  }
+
+  .planning-view__section-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .planning-view__stack-grid {

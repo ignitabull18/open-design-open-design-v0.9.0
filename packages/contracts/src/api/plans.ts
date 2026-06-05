@@ -127,6 +127,16 @@ export interface ProjectSectionAnswer {
 
 export type ProjectSectionAnswers = Partial<Record<ProjectWorkspaceSection['id'], ProjectSectionAnswer>>;
 
+export interface ProjectSectionWorkflow {
+  section: ProjectWorkspaceSection;
+  answer?: ProjectSectionAnswer;
+  questions: IdeationQuestion[];
+  lanes: PlanningAgentLane[];
+  actions: PlanningExecutionAction[];
+  databaseDesign?: DatabaseDesignPlan;
+  providerCapabilities: ProviderCapabilitySnapshot[];
+}
+
 export interface ScaffoldPlan {
   engine: 'better-t-stack' | 'custom';
   command: string;
@@ -237,6 +247,12 @@ export interface UpdateProjectPlanRequest {
   delivery?: DeliveryPlan[];
 }
 
+export interface UpdateProjectSectionRequest {
+  status?: ProjectSectionAnswer['status'];
+  answers?: string[];
+  notes?: string;
+}
+
 export interface CreateProjectIdeationRequest {
   prompt: string;
 }
@@ -252,6 +268,11 @@ export interface ProjectPlansResponse {
 
 export interface ProjectPlanResponse {
   plan: ProjectPlan;
+}
+
+export interface ProjectSectionWorkflowResponse {
+  plan: ProjectPlan;
+  workflow: ProjectSectionWorkflow;
 }
 
 export interface PlanningToolOptionsResponse {

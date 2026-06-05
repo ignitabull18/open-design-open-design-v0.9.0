@@ -4,7 +4,6 @@ import type {
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectPlan,
-  ProjectSectionAnswers,
   ProjectToolConnection,
   ProjectWorkspaceSection,
   ProjectStackDecision,
@@ -21,7 +20,7 @@ import {
   listPlanningTools,
   listProjectPlans,
   refreshProviderCapabilitySnapshots,
-  updateProjectPlanSectionAnswers,
+  updateProjectSectionWorkflow,
 } from '../providers/plans';
 
 const HOSTING_OPTIONS: NonNullable<ProjectStackDecision['hosting']> = [
@@ -222,16 +221,11 @@ export function PlanningView() {
     setSectionSaving(sectionId);
     setError(null);
     try {
-      const sectionAnswers: ProjectSectionAnswers = {
-        [sectionId]: {
-          sectionId,
-          status: answerText.trim() ? 'answered' : 'drafting',
-          answers: answerText.split('\n').map((line) => line.trim()).filter(Boolean),
-          ...(notes.trim() ? { notes: notes.trim() } : {}),
-          updatedAt: Date.now(),
-        },
-      };
-      const result = await updateProjectPlanSectionAnswers(selectedPlan.id, sectionAnswers);
+      const result = await updateProjectSectionWorkflow(selectedPlan.id, sectionId, {
+        status: answerText.trim() ? 'answered' : 'drafting',
+        answers: answerText.split('\n').map((line) => line.trim()).filter(Boolean),
+        ...(notes.trim() ? { notes: notes.trim() } : {}),
+      });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -553,6 +547,17 @@ function PlanDetail({
   const visibleCapabilities = plan.providerCapabilities.length > 0
     ? plan.providerCapabilities
     : capabilities.slice(0, 4);
+  const [activeSectionId, setActiveSectionId] = useState<ProjectWorkspaceSection['id']>(
+    plan.workspaceSections[0]?.id ?? 'planning',
+  );
+  useEffect(() => {
+    if (!plan.workspaceSections.some((section) => section.id === activeSectionId)) {
+      setActiveSectionId(plan.workspaceSections[0]?.id ?? 'planning');
+    }
+  }, [activeSectionId, plan.workspaceSections]);
+  const activeSection = plan.workspaceSections.find((section) => section.id === activeSectionId)
+    ?? plan.workspaceSections[0]
+    ?? null;
 
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
@@ -598,33 +603,35 @@ function PlanDetail({
         </section>
       </div>
       <div className="planning-view__sections">
-        <h3>Workspace sections</h3>
-        <div className="planning-view__section-grid">
+        <div className="planning-view__section-heading">
+          <h3>Workspace sections</h3>
+          <span>{activeSection?.label ?? 'No section'} workflow</span>
+        </div>
+        <div className="planning-view__section-tabs" role="tablist" aria-label="Planning workflow sections">
           {plan.workspaceSections.map((section) => (
-            <SectionCard
+            <button
               key={section.id}
-              section={section}
-              answer={plan.sectionAnswers[section.id]}
-              saving={sectionSaving === section.id}
-              onSave={onSaveSectionAnswer}
-            />
+              type="button"
+              role="tab"
+              aria-selected={section.id === activeSectionId}
+              className={section.id === activeSectionId ? 'is-active' : ''}
+              onClick={() => setActiveSectionId(section.id)}
+            >
+              <span>{section.label}</span>
+              <small>{plan.sectionAnswers[section.id]?.status ?? 'not_started'}</small>
+            </button>
           ))}
         </div>
-      </div>
-      <div className="planning-view__lanes">
-        <h3>Agent lanes</h3>
-        {plan.agentLanes.map((lane) => (
-          <article key={lane.id} className="planning-view__lane">
-            <div>
-              <strong>{lane.label}</strong>
-              <span>{lane.brief}</span>
-              {lane.runbook.length > 0 ? (
-                <small>{lane.runbook.slice(0, 2).join(' · ')}</small>
-              ) : null}
-            </div>
-            <small>{lane.mode} · {lane.status}{lane.dependsOn.length ? ` · after ${lane.dependsOn.join(', ')}` : ''}</small>
-          </article>
-        ))}
+        {activeSection ? (
+          <SectionWorkflowPanel
+            section={activeSection}
+            plan={plan}
+            saving={sectionSaving === activeSection.id}
+            actionSaving={actionSaving}
+            onSave={onSaveSectionAnswer}
+            onAcceptAction={onAcceptAction}
+          />
+        ) : null}
       </div>
       <div className="planning-view__runtime">
         <h3>Runtime path</h3>
@@ -733,19 +740,29 @@ function DatabaseList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function SectionCard({
+function SectionWorkflowPanel({
   section,
-  answer,
+  plan,
   saving,
+  actionSaving,
   onSave,
+  onAcceptAction,
 }: {
   section: ProjectWorkspaceSection;
-  answer: ProjectPlan['sectionAnswers'][ProjectWorkspaceSection['id']];
+  plan: ProjectPlan;
   saving: boolean;
+  actionSaving: string | null;
   onSave: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
+  onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
 }) {
+  const answer = plan.sectionAnswers[section.id];
   const [answerText, setAnswerText] = useState(answer?.answers.join('\n') ?? '');
   const [notes, setNotes] = useState(answer?.notes ?? '');
+  const laneIds = new Set(section.relatedLaneIds);
+  const lanes = plan.agentLanes.filter((lane) => lane.sectionId === section.id || laneIds.has(lane.id));
+  const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
+  const actions = plan.executionActions.filter((action) => action.relatedSectionIds.includes(section.id));
+  const capabilities = plan.providerCapabilities.filter((snapshot) => section.toolIds.includes(snapshot.toolId));
 
   useEffect(() => {
     setAnswerText(answer?.answers.join('\n') ?? '');
@@ -753,7 +770,7 @@ function SectionCard({
   }, [answer]);
 
   return (
-    <article className={`planning-view__section-card planning-view__section-card--${section.id}`}>
+    <article className={`planning-view__section-workflow planning-view__section-card--${section.id}`}>
       <div>
         <strong>{section.label}</strong>
         <span>{section.purpose}</span>
@@ -772,6 +789,72 @@ function SectionCard({
           <dd>{section.outputs.slice(0, 3).join(', ')}</dd>
         </div>
       </dl>
+      <div className="planning-view__workflow-grid">
+        <section>
+          <h4>Pointed questions</h4>
+          {questions.map((question) => (
+            <div key={question.id} className="planning-view__workflow-item">
+              <strong>{question.question}</strong>
+              <span>{question.whyItMatters}</span>
+              {question.options?.length ? <small>{question.options.join(' · ')}</small> : null}
+            </div>
+          ))}
+        </section>
+        <section>
+          <h4>Agent outputs</h4>
+          {lanes.map((lane) => (
+            <div key={lane.id} className="planning-view__workflow-item">
+              <strong>{lane.label}</strong>
+              <span>{lane.outputs.join(' · ')}</span>
+              <small>{lane.mode} · {lane.status}{lane.parallelWith.length ? ` · parallel with ${lane.parallelWith.join(', ')}` : ''}</small>
+            </div>
+          ))}
+        </section>
+        <section>
+          <h4>Runbook</h4>
+          {lanes.flatMap((lane) => lane.runbook.map((step) => `${lane.label}: ${step}`)).slice(0, 6).map((step) => (
+            <div key={step} className="planning-view__workflow-item">
+              <span>{step}</span>
+            </div>
+          ))}
+        </section>
+        <section>
+          <h4>Execution</h4>
+          {actions.length === 0 ? <span className="planning-view__muted">No direct execution actions for this section yet.</span> : null}
+          {actions.map((action) => (
+            <div key={action.id} className="planning-view__workflow-item">
+              <strong>{action.label}</strong>
+              <span>{action.status} · {action.requiresConfirmation ? 'confirmation required' : 'open'}</span>
+              {action.command ? <code>{action.command}</code> : null}
+              <button
+                type="button"
+                className="planning-view__secondary"
+                disabled={actionSaving === action.id || action.status === 'accepted' || action.status === 'completed'}
+                onClick={() => onAcceptAction(action.id)}
+              >
+                {actionSaving === action.id ? 'Accepting...' : action.status === 'accepted' ? 'Accepted' : 'Accept action'}
+              </button>
+            </div>
+          ))}
+        </section>
+      </div>
+      {section.id === 'database' ? (
+        <div className="planning-view__database-workflow">
+          <DatabaseList title="Entities" items={plan.databaseDesign.entities} />
+          <DatabaseList title="Relationships" items={plan.databaseDesign.relationships} />
+          <DatabaseList title="Access patterns" items={plan.databaseDesign.accessPatterns} />
+          <DatabaseList title="Migrations" items={plan.databaseDesign.migrations} />
+          <DatabaseList title="Risks" items={plan.databaseDesign.riskNotes} />
+        </div>
+      ) : null}
+      {capabilities.length > 0 ? (
+        <div className="planning-view__section-capabilities">
+          <h4>Provider notes</h4>
+          {capabilities.map((snapshot) => (
+            <span key={`${snapshot.toolId}-${snapshot.sourceUrl}`}>{snapshot.label} · checked {snapshot.checkedAt}</span>
+          ))}
+        </div>
+      ) : null}
       <div className="planning-view__section-editor">
         <label>
           <span>Answers</span>
