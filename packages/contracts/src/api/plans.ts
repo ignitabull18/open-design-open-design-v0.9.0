@@ -165,7 +165,7 @@ export interface PlanningRuntimePlan {
 }
 
 export interface PlanningExecutionAction {
-  id: 'repo-create' | 'scaffold' | 'deploy-runtime' | 'provider-research' | 'project-management' | 'database-materialize';
+  id: 'repo-create' | 'scaffold' | 'deploy-runtime' | 'provider-research' | 'project-management' | 'database-materialize' | 'database-migrate';
   label: string;
   status: 'blocked' | 'ready' | 'accepted' | 'completed';
   requiresConfirmation: boolean;
@@ -197,7 +197,7 @@ export interface PlanningExecutionArtifact {
   id: string;
   planId: string;
   runId?: string;
-  kind: 'provider-research' | 'section-output' | 'database-draft' | 'database-materialization' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
+  kind: 'provider-research' | 'section-output' | 'database-draft' | 'database-materialization' | 'database-migration' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
   title: string;
   content: string;
   createdAt: number;

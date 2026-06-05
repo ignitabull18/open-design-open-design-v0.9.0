@@ -959,7 +959,23 @@ describe('planning routes', () => {
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'database-studio');
     mkdirSync(sourceDir, { recursive: true });
     writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"database-studio"}\n');
-    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const migrationCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      databaseMigrationRunner: async (request) => {
+        migrationCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'Pushed migration 0001_planning_schema.sql',
+          stderr: '',
+          durationMs: 19,
+        };
+      },
+    });
     const created = await jsonFetch(`${baseUrl}/api/plans`, {
       method: 'POST',
       body: JSON.stringify({
@@ -1006,6 +1022,84 @@ describe('planning routes', () => {
     expect(readme).toContain('Supabase/Postgres supports RLS');
     expect(migration).toContain('create table if not exists organizations');
     expect(migration).toContain('alter table plans enable row level security');
+
+    const migrated = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/database-migrate/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/database-studio',
+      }),
+    });
+
+    expect(migrated.status).toBe(201);
+    expect(migrationCalls).toEqual([
+      {
+        command: 'supabase',
+        args: ['db', 'push'],
+        cwd: sourceDir,
+      },
+    ]);
+    expect(migrated.body.run).toMatchObject({
+      actionId: 'database-migrate',
+      status: 'completed',
+      mode: 'external',
+      command: 'supabase db push',
+    });
+    expect(migrated.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'database-migrate', status: 'completed' }),
+    ]));
+    expect(migrated.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'database-migration',
+        content: expect.stringContaining('Pushed migration 0001_planning_schema.sql'),
+      }),
+    ]));
+  });
+
+  it('blocks database migration execution when provider identity is missing', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'd1-studio');
+    mkdirSync(path.join(sourceDir, 'db', 'migrations'), { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"d1-studio"}\n');
+    writeFileSync(path.join(sourceDir, 'db', 'migrations', '0001_planning_schema.sql'), '-- migration\n');
+    const previousDatabaseName = process.env.CLOUDFLARE_D1_DATABASE_NAME;
+    delete process.env.CLOUDFLARE_D1_DATABASE_NAME;
+    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'D1 Studio',
+        intent: { purpose: 'Apply edge database migrations.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'cloudflare-d1',
+          auth: 'better-auth',
+          packageManager: 'pnpm',
+        },
+      }),
+    });
+
+    const migrated = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/database-migrate/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/d1-studio',
+      }),
+    });
+
+    if (previousDatabaseName === undefined) delete process.env.CLOUDFLARE_D1_DATABASE_NAME;
+    else process.env.CLOUDFLARE_D1_DATABASE_NAME = previousDatabaseName;
+
+    expect(migrated.status).toBe(202);
+    expect(migrated.body.run).toMatchObject({
+      actionId: 'database-migrate',
+      status: 'blocked',
+      mode: 'dry-run',
+    });
+    expect(migrated.body.run.summary).toContain('CLOUDFLARE_D1_DATABASE_NAME');
+    expect(migrated.body.artifacts[0].content).toContain('Command: not available for this database target');
   });
 
   it('executes a confirmed GitHub Issues project-management handoff', async () => {

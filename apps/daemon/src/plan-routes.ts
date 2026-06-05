@@ -152,6 +152,30 @@ interface ProjectManagementCommandResult {
 
 type ProjectManagementCommandRunner = (request: ProjectManagementCommandRequest) => Promise<ProjectManagementCommandResult>;
 
+interface DatabaseMigrationCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+  env?: Record<string, string>;
+}
+
+interface DatabaseMigrationCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type DatabaseMigrationCommandRunner = (request: DatabaseMigrationCommandRequest) => Promise<DatabaseMigrationCommandResult>;
+
+interface DatabaseMigrationInvocation {
+  command: string;
+  args: string[];
+  displayCommand: string;
+  env?: Record<string, string>;
+}
+
 interface DatabaseMaterializedWrite {
   relativePath: string;
   absolutePath: string;
@@ -167,6 +191,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   toolCheckRunner?: ToolCheckCommandRunner;
   providerSourceFetcher?: ProviderSourceFetcher;
   projectManagementRunner?: ProjectManagementCommandRunner;
+  databaseMigrationRunner?: DatabaseMigrationCommandRunner;
 }
 
 interface ProjectPlanBuildInput {
@@ -362,6 +387,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const toolCheckRunner = ctx.toolCheckRunner ?? runToolCheckCommand;
   const providerSourceFetcher = ctx.providerSourceFetcher ?? fetchProviderSource;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
+  const databaseMigrationRunner = ctx.databaseMigrationRunner ?? runDatabaseMigrationCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
@@ -551,6 +577,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         deployRunner,
         deployHealthChecker,
         projectManagementRunner,
+        databaseMigrationRunner,
       });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
@@ -722,8 +749,8 @@ function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjec
 
 function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, or database-materialize');
+  if (!isPlanningExecutionActionId(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, or database-migrate');
   }
   return {
     actionId,
@@ -736,8 +763,8 @@ function normalizeActionExecutionBody(
   body: Record<string, unknown>,
 ): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, or database-materialize');
+  if (!isPlanningExecutionActionId(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, or database-migrate');
   }
   return {
     actionId,
@@ -750,6 +777,10 @@ function normalizeActionExecutionBody(
       ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
       : {}),
   };
+}
+
+function isPlanningExecutionActionId(value: string): value is PlanningExecutionAction['id'] {
+  return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize', 'database-migrate'].includes(value);
 }
 
 function normalizeSectionRunBody(sectionIdParam: string): RunProjectPlanSectionRequest {
@@ -1077,6 +1108,24 @@ function buildExecutionActions(
       relatedSectionIds: ['database', 'planning', 'delivery'],
     },
     {
+      id: 'database-migrate',
+      label: 'Apply database migrations',
+      status: isSqlDatabase(stack.database ?? 'supabase') ? 'ready' : 'blocked',
+      requiresConfirmation: true,
+      command: buildDatabaseMigrationCommandPreview(stack),
+      preconditions: [
+        'The database design files have been materialized and reviewed.',
+        'Provider CLI credentials are connected for the selected database.',
+        'A backup or rollback path is documented before applying live migrations.',
+      ],
+      effects: [
+        'Runs the generated migration against the selected database provider when provider identity is available.',
+        'Records stdout, stderr, exit code, and provider-specific migration proof.',
+        'Leaves Convex and non-SQL database plans blocked until schema/function generation is implemented.',
+      ],
+      relatedSectionIds: ['database', 'delivery'],
+    },
+    {
       id: 'project-management',
       label: 'Create project-management handoff',
       status: 'ready',
@@ -1100,7 +1149,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; projectManagementRunner: ProjectManagementCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -1117,6 +1166,9 @@ async function executePlanningAction(
   }
   if (action.id === 'database-materialize' && body.targetDir) {
     return executeDatabaseMaterializeAction(plan, action, body, options);
+  }
+  if (action.id === 'database-migrate' && body.targetDir) {
+    return executeDatabaseMigrateAction(plan, action, body, options);
   }
   if (action.id === 'project-management') {
     return executeProjectManagementAction(plan, action, body, options);
@@ -1185,6 +1237,94 @@ async function executePlanningAction(
 }
 
 type ProjectManagementTarget = Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'>;
+
+async function executeDatabaseMigrateAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string; databaseMigrationRunner: DatabaseMigrationCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const invocation = buildDatabaseMigrationInvocation(plan, sourceDir);
+  const unsupported = !invocation;
+  let result: DatabaseMigrationCommandResult = {
+    exitCode: unsupported ? 1 : 0,
+    stdout: '',
+    stderr: unsupported ? buildDatabaseMigrationBlockedReason(plan) : '',
+    durationMs: 0,
+  };
+  let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
+
+  if (invocation) {
+    try {
+      result = await options.databaseMigrationRunner({
+        command: invocation.command,
+        args: invocation.args,
+        cwd: sourceDir,
+        timeoutMs: 300_000,
+        ...(invocation.env ? { env: invocation.env } : {}),
+      });
+      if (result.exitCode !== 0) status = 'failed';
+    } catch (err: any) {
+      result = {
+        exitCode: typeof err?.code === 'number' ? err.code : 1,
+        stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+        stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+        durationMs: 0,
+      };
+      status = 'failed';
+    }
+  }
+
+  const artifact = buildDatabaseMigrationArtifact(plan, action, runId, sourceDir, invocation, result, status);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'database-migrate',
+    status,
+    title: `${action.label}: ${plan.databaseDesign.primaryStore}`,
+    mode: unsupported ? 'dry-run' : 'external',
+    summary: status === 'completed'
+      ? `Applied database migrations for ${plan.databaseDesign.primaryStore}.`
+      : unsupported
+        ? `Database migration execution is blocked for ${plan.databaseDesign.primaryStore}: ${result.stderr}`
+        : 'Database migration execution failed; inspect the attached artifact for stdout and stderr.',
+    ...(invocation ? { command: invocation.displayCommand } : {}),
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      `primaryStore: ${plan.databaseDesign.primaryStore}`,
+      `exitCode: ${result.exitCode}`,
+      ...(invocation ? [`command: ${invocation.displayCommand}`] : []),
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'database-migrate'
+      ? { ...item, status: status === 'completed' ? 'completed' as const : 'accepted' as const }
+      : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
 
 async function executeDatabaseMaterializeAction(
   plan: ProjectPlan,
@@ -1659,9 +1799,11 @@ function buildActionArtifact(
           ? 'repo-plan'
           : action.id === 'database-materialize'
             ? 'database-materialization'
-            : action.id === 'project-management'
-              ? 'project-management-plan'
-              : 'deployment-plan',
+            : action.id === 'database-migrate'
+              ? 'database-migration'
+              : action.id === 'project-management'
+                ? 'project-management-plan'
+                : 'deployment-plan',
     title: `${action.label} execution note`,
     content,
     createdAt: now,
@@ -1757,6 +1899,87 @@ function buildCloudflareDeployInvocation(packageManager: ProjectStackDecision['p
     case 'pnpm':
     default:
       return { command: 'pnpm', args: ['wrangler', 'deploy'] };
+  }
+}
+
+function buildDatabaseMigrationCommandPreview(stack: ProjectStackDecision): string {
+  switch (stack.database ?? 'supabase') {
+    case 'supabase':
+      return 'supabase db push';
+    case 'cloudflare-d1':
+      return 'wrangler d1 migrations apply $CLOUDFLARE_D1_DATABASE_NAME';
+    case 'postgres-coolify':
+      return 'psql $DATABASE_URL -f db/migrations/0001_planning_schema.sql';
+    case 'convex':
+      return 'convex deploy';
+    case 'none':
+    default:
+      return 'No SQL migration command available for this database selection.';
+  }
+}
+
+function buildDatabaseMigrationInvocation(
+  plan: ProjectPlan,
+  sourceDir: string,
+): DatabaseMigrationInvocation | null {
+  switch (plan.databaseDesign.primaryStore) {
+    case 'supabase':
+      return { command: 'supabase', args: ['db', 'push'], displayCommand: 'supabase db push' };
+    case 'cloudflare-d1': {
+      const databaseName = process.env.CLOUDFLARE_D1_DATABASE_NAME?.trim();
+      if (!databaseName) return null;
+      const base = buildCloudflareD1MigrationInvocation(plan.stack.packageManager);
+      return {
+        command: base.command,
+        args: [...base.args, databaseName],
+        displayCommand: `${[base.command, ...base.args].join(' ')} ${databaseName}`,
+      };
+    }
+    case 'postgres-coolify': {
+      const databaseUrl = process.env.POSTGRES_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
+      if (!databaseUrl) return null;
+      const migrationPath = path.resolve(sourceDir, 'db', 'migrations', '0001_planning_schema.sql');
+      return {
+        command: 'psql',
+        args: ['-f', migrationPath],
+        displayCommand: 'psql $DATABASE_URL -f db/migrations/0001_planning_schema.sql',
+        env: { PGDATABASE: databaseUrl },
+      };
+    }
+    case 'convex':
+    case 'none':
+    default:
+      return null;
+  }
+}
+
+function buildCloudflareD1MigrationInvocation(packageManager: ProjectStackDecision['packageManager']): { command: string; args: string[] } {
+  switch (packageManager ?? 'pnpm') {
+    case 'npm':
+      return { command: 'npx', args: ['wrangler', 'd1', 'migrations', 'apply'] };
+    case 'yarn':
+      return { command: 'yarn', args: ['wrangler', 'd1', 'migrations', 'apply'] };
+    case 'bun':
+      return { command: 'bunx', args: ['wrangler', 'd1', 'migrations', 'apply'] };
+    case 'pnpm':
+    default:
+      return { command: 'pnpm', args: ['wrangler', 'd1', 'migrations', 'apply'] };
+  }
+}
+
+function buildDatabaseMigrationBlockedReason(plan: ProjectPlan): string {
+  switch (plan.databaseDesign.primaryStore) {
+    case 'cloudflare-d1':
+      return 'CLOUDFLARE_D1_DATABASE_NAME is required to apply D1 migrations.';
+    case 'postgres-coolify':
+      return 'DATABASE_URL or POSTGRES_DATABASE_URL is required to apply Postgres migrations.';
+    case 'convex':
+      return 'Convex schema/function deployment is not implemented by this SQL migration executor.';
+    case 'none':
+      return 'No database provider is selected for migration execution.';
+    case 'supabase':
+    default:
+      return 'No database migration command is available for this provider.';
   }
 }
 
@@ -2343,6 +2566,40 @@ function buildDatabaseMaterializeArtifact(
   };
 }
 
+function buildDatabaseMigrationArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  invocation: DatabaseMigrationInvocation | null,
+  result: DatabaseMigrationCommandResult,
+  status: PlanningExecutionRun['status'],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'database-migration',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Primary store: ${plan.databaseDesign.primaryStore}`,
+      `Source directory: ${sourceDir}`,
+      invocation ? `Command: ${invocation.displayCommand}` : 'Command: not available for this database target',
+      `Exit code: ${result.exitCode}`,
+      `Duration ms: ${result.durationMs}`,
+      '',
+      'stdout:',
+      result.stdout || '(empty)',
+      '',
+      'stderr:',
+      result.stderr || '(empty)',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
 function buildProjectManagementArtifact(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
@@ -2575,6 +2832,25 @@ function runProjectManagementCommand(request: ProjectManagementCommandRequest): 
       timeout: request.timeoutMs,
       maxBuffer: 2 * 1024 * 1024,
       env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+function runDatabaseMigrationCommand(request: DatabaseMigrationCommandRequest): Promise<DatabaseMigrationCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, ...(request.env ?? {}) },
     }, (error: any, stdout, stderr) => {
       resolve({
         exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,

@@ -789,12 +789,12 @@ function PlanDetail({
               <span>{action.status} · {action.requiresConfirmation ? 'confirmation required' : 'open'}</span>
             </div>
             {action.command ? <code>{action.command}</code> : null}
-            {action.id === 'scaffold' || action.id === 'repo-create' || action.id === 'database-materialize' ? (
+            {action.id === 'scaffold' || action.id === 'repo-create' || action.id === 'database-materialize' || action.id === 'database-migrate' ? (
               <label className="planning-view__execution-target">
                 <span>
                   {action.id === 'scaffold'
                     ? 'Scaffold parent directory'
-                    : action.id === 'database-materialize'
+                    : action.id === 'database-materialize' || action.id === 'database-migrate'
                       ? 'Database source directory'
                       : 'Scaffold source directory'}
                 </span>
