@@ -941,6 +941,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         repoRunner,
         deployRunner,
         deployHealthChecker,
+        providerSourceFetcher,
         projectManagementRunner,
         databaseMigrationRunner,
       });
@@ -1633,12 +1634,15 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; providerSourceFetcher: ProviderSourceFetcher; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
 ): Promise<{
-  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'> & Partial<Pick<ProjectPlan, 'providerCapabilities'>>;
   run: PlanningExecutionRun;
   artifacts: PlanningExecutionArtifact[];
 }> {
+  if (action.id === 'provider-research') {
+    return executeProviderResearchAction(plan, action, options);
+  }
   if (action.id === 'scaffold' && body.targetDir) {
     return executeScaffoldAction(plan, action, body, options);
   }
@@ -1666,32 +1670,26 @@ async function executePlanningAction(
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
   const artifact = buildActionArtifact(plan, action, runId, body);
-  const isProviderResearch = action.id === 'provider-research';
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
     kind: 'action',
     actionId: action.id,
-    status: isProviderResearch ? 'completed' : 'blocked',
+    status: 'blocked',
     title: action.label,
-    mode: isProviderResearch ? 'record-only' : 'dry-run',
-    summary: isProviderResearch
-      ? 'Provider capability snapshots were reviewed and recorded as execution evidence.'
-      : 'External execution is gated. This run records the reviewed command, preconditions, and remaining provider write work.',
+    mode: 'dry-run',
+    summary: 'External execution is gated. This run records the reviewed command, preconditions, and remaining provider write work.',
     ...(action.command ? { command: action.command } : {}),
     startedAt: now,
     completedAt: now,
     artifactIds: [artifact.id],
-    evidence: isProviderResearch
-      ? plan.providerCapabilities.map((snapshot) => `${snapshot.toolId} checked ${snapshot.checkedAt} from ${snapshot.sourceUrl}`)
-      : [
-        'External writes are not performed by this first execution foundation.',
-        'The action remains accepted or blocked until a provider-specific executor records proof.',
-      ],
+    evidence: [
+      'External writes are not performed by this fallback execution path.',
+      'The action remains accepted or blocked until a provider-specific executor records proof.',
+    ],
   };
-  const nextActionStatus: PlanningExecutionAction['status'] = isProviderResearch ? 'completed' : 'accepted';
   const executionActions = plan.executionActions.map((item) =>
-    item.id === action.id ? { ...item, status: nextActionStatus } : item,
+    item.id === action.id ? { ...item, status: 'accepted' as const } : item,
   );
   const scaffoldExecution: ScaffoldExecutionPlan = action.id === 'scaffold'
     ? {
@@ -1720,6 +1718,39 @@ async function executePlanningAction(
       scaffoldExecution,
       repo,
       delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+async function executeProviderResearchAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  options: { providerSourceFetcher: ProviderSourceFetcher },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'> & Partial<Pick<ProjectPlan, 'providerCapabilities'>>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const refreshed = await refreshProviderCapabilities({
+    providerSourceFetcher: options.providerSourceFetcher,
+  });
+  const providerCapabilities = buildProviderCapabilitiesFromCatalog(plan.selectedTools, refreshed.capabilities);
+  const selectedCapabilities = providerCapabilities.length > 0 ? providerCapabilities : plan.providerCapabilities;
+  const { run, artifact } = buildProviderCapabilityRefreshRun(plan, selectedCapabilities);
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === action.id ? { ...item, status: 'completed' as const } : item,
+  );
+  return {
+    planPatch: {
+      providerCapabilities: selectedCapabilities,
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
     },
     run,
     artifacts: [artifact],

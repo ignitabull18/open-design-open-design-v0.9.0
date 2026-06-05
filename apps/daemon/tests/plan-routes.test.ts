@@ -404,6 +404,14 @@ describe('planning routes', () => {
   it('records plan execution runs, artifacts, tool checks, and section-agent outputs', async () => {
     const toolCheckCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
     const baseUrl = await startPlanServer({
+      providerSourceFetcher: async (url) => ({
+        url,
+        statusCode: 200,
+        ok: true,
+        title: url.includes('supabase') ? 'Supabase Action Changelog' : 'Provider Action Changelog',
+        excerpt: `Action refresh details from ${url}`,
+        durationMs: 9,
+      }),
       toolCheckRunner: async (request) => {
         toolCheckCalls.push({
           command: request.command,
@@ -451,10 +459,22 @@ describe('planning routes', () => {
       kind: 'action',
       actionId: 'provider-research',
       status: 'completed',
-      mode: 'record-only',
+      mode: 'external',
+      summary: expect.stringContaining('Refreshed'),
     });
     expect(providerRun.body.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'provider-research' }),
+      expect.objectContaining({
+        kind: 'provider-research',
+        content: expect.stringContaining('Supabase Action Changelog'),
+      }),
+    ]));
+    expect(providerRun.body.plan.providerCapabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'supabase-database',
+        refreshEvidence: expect.arrayContaining([
+          expect.stringContaining('Supabase Action Changelog'),
+        ]),
+      }),
     ]));
     expect(providerRun.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider-research', status: 'completed' }),
