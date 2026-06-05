@@ -187,7 +187,7 @@ const PLAN_STRING_FLAGS = new Set([
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
-  'kind', 'title', 'content-file', 'schedule',
+  'kind', 'title', 'content-file', 'schedule', 'status', 'notes',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4664,6 +4664,8 @@ async function runPlan(args) {
                                                  Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
+  od plan tool-status <id> --tool <tool-id> --status wanted|connected|deferred|blocked
+                 [--notes <text>] [--json]      Mark one selected tool connection status.
   od plan artifact <id> --kind <kind> --title <title> --content-file <path|->
                                                  Create one plan execution artifact.
   od plan artifacts <id> [--json]                List generated plan execution artifacts.
@@ -5125,6 +5127,52 @@ Common options:
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(`[plan] tool check ${data.toolCheck?.toolId ?? toolId}: ${data.toolCheck?.status ?? '-'}`);
       console.log(data.toolCheck?.summary ?? '');
+      return;
+    }
+    case 'tool-status': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const toolId = typeof flags.tool === 'string' ? flags.tool.trim() : '';
+      const status = typeof flags.status === 'string' ? flags.status.trim() : '';
+      if (!id || !toolId || !['wanted', 'connected', 'deferred', 'blocked'].includes(status)) {
+        console.error('Usage: od plan tool-status <id> --tool <tool-id> --status wanted|connected|deferred|blocked [--notes <text>] [--json]');
+        process.exit(2);
+      }
+      const current = await fetchPlan(base, id);
+      const plan = current.plan;
+      const selectedTools = Array.isArray(plan?.selectedTools) ? plan.selectedTools : [];
+      if (!selectedTools.some((tool) => tool.toolId === toolId)) {
+        console.error(`tool is not selected for this plan: ${toolId}`);
+        process.exit(2);
+      }
+      const notes = typeof flags.notes === 'string' ? flags.notes.trim() : '';
+      const nextTools = selectedTools.map((tool) => {
+        if (tool.toolId !== toolId) return tool;
+        return {
+          ...tool,
+          status,
+          ...(notes
+            ? { notes }
+            : status === 'deferred' && !tool.notes
+              ? { notes: 'Deferred by planner.' }
+              : status === 'blocked' && !tool.notes
+                ? { notes: 'Blocked by planner.' }
+                : {}),
+        };
+      });
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ selectedTools: nextTools }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`PATCH /api/plans/${id} failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const updated = data.plan?.selectedTools?.find((tool) => tool.toolId === toolId);
+      console.log(`[plan] tool ${toolId}: ${updated?.status ?? status}`);
+      if (updated?.notes) console.log(updated.notes);
       return;
     }
     case 'artifacts': {
