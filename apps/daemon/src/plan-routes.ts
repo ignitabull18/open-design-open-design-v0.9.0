@@ -1,5 +1,8 @@
 import type { Express } from 'express';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import type {
   CheckProjectPlanToolRequest,
   CreateProjectIdeationRequest,
@@ -44,7 +47,27 @@ import {
 } from './db.js';
 import type { RouteDeps } from './server-context.js';
 
-export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {}
+interface ScaffoldCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  outputDir: string;
+  timeoutMs: number;
+}
+
+interface ScaffoldCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type ScaffoldCommandRunner = (request: ScaffoldCommandRequest) => Promise<ScaffoldCommandResult>;
+
+export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
+  scaffoldRoot?: string;
+  scaffoldRunner?: ScaffoldCommandRunner;
+}
 
 interface ProjectPlanBuildInput {
   id: string;
@@ -232,6 +255,8 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
 
 export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const { db } = ctx;
+  const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
+  const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
     res.json({ tools: APPROVED_TOOLS });
@@ -397,7 +422,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
-  app.post('/api/plans/:id/actions/:actionId/execute', (req, res) => {
+  app.post('/api/plans/:id/actions/:actionId/execute', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
       if (!existing) return res.status(404).json({ error: 'plan not found' });
@@ -411,7 +436,10 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
           confirmation: 'Repeat with confirmed: true after reviewing the command, preconditions, and effects.',
         });
       }
-      const { planPatch, run, artifacts } = executePlanningAction(existing, action, body);
+      const { planPatch, run, artifacts } = await executePlanningAction(existing, action, body, {
+        scaffoldRoot,
+        scaffoldRunner,
+      });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         ...planPatch,
@@ -834,15 +862,19 @@ function buildExecutionActions(
   ];
 }
 
-function executePlanningAction(
+async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-): {
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner },
+): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
   artifacts: PlanningExecutionArtifact[];
-} {
+}> {
+  if (action.id === 'scaffold' && body.targetDir) {
+    return executeScaffoldAction(plan, action, body, options);
+  }
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
   const artifact = buildActionArtifact(plan, action, runId, body);
@@ -906,6 +938,94 @@ function executePlanningAction(
   };
 }
 
+async function executeScaffoldAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const target = await resolveScaffoldTarget(plan, body.targetDir ?? '', options.scaffoldRoot);
+  const invocation = buildScaffoldInvocation(plan);
+  let result: ScaffoldCommandResult;
+  let status: PlanningExecutionRun['status'] = 'completed';
+  try {
+    result = await options.scaffoldRunner({
+      command: invocation.command,
+      args: invocation.args,
+      cwd: target.parentDir,
+      outputDir: target.outputDir,
+      timeoutMs: 300_000,
+    });
+    if (result.exitCode !== 0) status = 'failed';
+  } catch (err: any) {
+    result = {
+      exitCode: typeof err?.code === 'number' ? err.code : 1,
+      stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+      stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+      durationMs: 0,
+    };
+    status = 'failed';
+  }
+  const outputExists = await directoryExists(target.outputDir);
+  if (status === 'completed' && !outputExists) status = 'failed';
+  const artifact = buildScaffoldArtifact(plan, action, runId, target, invocation, result, status);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'scaffold',
+    status,
+    title: action.label,
+    mode: 'external',
+    summary: status === 'completed'
+      ? `Better-T-Stack scaffold created ${target.outputDir}.`
+      : 'Better-T-Stack scaffold execution failed; inspect the attached artifact for stdout and stderr.',
+    command: [invocation.command, ...invocation.args].join(' '),
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `cwd: ${target.parentDir}`,
+      `outputDir: ${target.outputDir}`,
+      `exitCode: ${result.exitCode}`,
+      `outputDirExists: ${outputExists ? 'yes' : 'no'}`,
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'scaffold'
+      ? { ...item, status: status === 'completed' ? 'completed' as const : 'accepted' as const }
+      : item,
+  );
+  const scaffoldExecution: ScaffoldExecutionPlan = {
+    status: status === 'completed' ? 'completed' : 'blocked',
+    targetDir: target.parentDir,
+    lastRunId: run.id,
+    ...(run.command ? { lastCommand: run.command } : {}),
+    notes: status === 'completed'
+      ? [`Scaffold output created at ${target.outputDir}.`]
+      : [`Scaffold command failed with exit code ${result.exitCode}.`, result.stderr.slice(0, 500)].filter(Boolean),
+    updatedAt: Date.now(),
+  };
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
 function buildActionArtifact(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
@@ -945,6 +1065,127 @@ function buildActionArtifact(
     content,
     createdAt: now,
   };
+}
+
+function buildScaffoldInvocation(plan: ProjectPlan): { command: string; args: string[] } {
+  const pm = plan.stack.packageManager ?? 'pnpm';
+  const slug = slugify(plan.repo.name ?? plan.name ?? 'new-project');
+  const args = [
+    pm === 'npm' ? 'create' : 'create',
+    'better-t-stack@latest',
+    slug,
+    '--frontend',
+    plan.stack.frontend ?? 'next',
+    '--backend',
+    plan.stack.backend ?? 'hono',
+    '--runtime',
+    plan.stack.runtime ?? 'workers',
+    '--database',
+    dbFlag(plan.stack),
+    '--orm',
+    plan.stack.orm ?? 'drizzle',
+    '--api',
+    plan.stack.api ?? 'trpc',
+    '--auth',
+    plan.stack.auth === 'better-auth' ? 'better-auth' : 'none',
+  ];
+  const addons = plan.stack.addons?.length ? plan.stack.addons : defaultAddons(plan.stack);
+  if (addons.length > 0) args.push('--addons', addons.join(','));
+  return {
+    command: pm,
+    args,
+  };
+}
+
+async function resolveScaffoldTarget(
+  plan: ProjectPlan,
+  targetDir: string,
+  scaffoldRoot: string,
+): Promise<{ parentDir: string; outputDir: string }> {
+  const root = path.resolve(scaffoldRoot);
+  const parentDir = path.isAbsolute(targetDir)
+    ? path.resolve(targetDir)
+    : path.resolve(root, targetDir);
+  assertPathInside(parentDir, root, 'targetDir must stay inside the configured scaffold root');
+  await fs.mkdir(parentDir, { recursive: true });
+  const outputDir = path.resolve(parentDir, slugify(plan.repo.name ?? plan.name ?? 'new-project'));
+  assertPathInside(outputDir, root, 'scaffold output must stay inside the configured scaffold root');
+  const entries = await fs.readdir(outputDir).catch((err: any) => {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  });
+  if (entries && entries.length > 0) {
+    throw new Error(`scaffold output directory is not empty: ${outputDir}`);
+  }
+  return { parentDir, outputDir };
+}
+
+function assertPathInside(candidate: string, root: string, message: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
+  throw new Error(message);
+}
+
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    return (await fs.stat(dir)).isDirectory();
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+function buildScaffoldArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  target: { parentDir: string; outputDir: string },
+  invocation: { command: string; args: string[] },
+  result: ScaffoldCommandResult,
+  status: PlanningExecutionRun['status'],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'scaffold-plan',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Command: ${[invocation.command, ...invocation.args].join(' ')}`,
+      `Working directory: ${target.parentDir}`,
+      `Output directory: ${target.outputDir}`,
+      `Exit code: ${result.exitCode}`,
+      `Duration ms: ${result.durationMs}`,
+      '',
+      'stdout:',
+      result.stdout || '<empty>',
+      '',
+      'stderr:',
+      result.stderr || '<empty>',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function runScaffoldCommand(request: ScaffoldCommandRequest): Promise<ScaffoldCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
 }
 
 function runPlanningSection(

@@ -1,12 +1,12 @@
 import express from 'express';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { closeDatabase, openDatabase } from '../src/db.js';
-import { registerPlanRoutes } from '../src/plan-routes.js';
+import { registerPlanRoutes, type RegisterPlanRoutesDeps } from '../src/plan-routes.js';
 
 let tempDir: string;
 let server: http.Server | undefined;
@@ -25,11 +25,11 @@ afterEach(async () => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-async function startPlanServer(): Promise<string> {
+async function startPlanServer(options: Partial<Omit<RegisterPlanRoutesDeps, 'db'>> = {}): Promise<string> {
   const app = express();
   app.use(express.json());
   const db = openDatabase(tempDir, { dataDir: tempDir });
-  registerPlanRoutes(app, { db });
+  registerPlanRoutes(app, { db, ...options });
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
     server?.once('listening', resolve);
@@ -305,7 +305,7 @@ describe('planning routes', () => {
 
     const scaffoldRun = await jsonFetch(`${baseUrl}/api/plans/${planId}/actions/scaffold/execute`, {
       method: 'POST',
-      body: JSON.stringify({ confirmed: true, targetDir: '/tmp/execution-studio' }),
+      body: JSON.stringify({ confirmed: true }),
     });
     expect(scaffoldRun.status).toBe(202);
     expect(scaffoldRun.body.run).toMatchObject({
@@ -316,7 +316,6 @@ describe('planning routes', () => {
     });
     expect(scaffoldRun.body.plan.scaffoldExecution).toMatchObject({
       status: 'planned',
-      targetDir: '/tmp/execution-studio',
       lastRunId: scaffoldRun.body.run.id,
     });
 
@@ -363,7 +362,85 @@ describe('planning routes', () => {
     expect(execution.body.toolChecks).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'connected' }),
     ]));
-    expect(execution.body.scaffoldExecution).toMatchObject({ targetDir: '/tmp/execution-studio' });
+    expect(execution.body.scaffoldExecution).toMatchObject({ status: 'planned' });
+  });
+
+  it('executes a confirmed scaffold inside the configured scaffold root', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string; outputDir: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      scaffoldRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+          outputDir: request.outputDir,
+        });
+        mkdirSync(request.outputDir, { recursive: true });
+        return {
+          exitCode: 0,
+          stdout: 'created scaffold',
+          stderr: '',
+          durationMs: 12,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Scaffold Studio',
+        intent: { purpose: 'Run Better-T-Stack in a jailed target directory.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+          packageManager: 'pnpm',
+        },
+      }),
+    });
+
+    const blockedEscape = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/scaffold/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: path.join(tempDir, '..', 'outside') }),
+    });
+    expect(blockedEscape.status).toBe(400);
+    expect(blockedEscape.body.error).toContain('targetDir must stay inside');
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/scaffold/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: 'workspace' }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'pnpm',
+      args: expect.arrayContaining(['create', 'better-t-stack@latest', 'scaffold-studio']),
+      cwd: path.join(scaffoldRoot, 'workspace'),
+      outputDir: path.join(scaffoldRoot, 'workspace', 'scaffold-studio'),
+    });
+    expect(executed.body.run).toMatchObject({
+      actionId: 'scaffold',
+      status: 'completed',
+      mode: 'external',
+    });
+    expect(executed.body.plan.scaffoldExecution).toMatchObject({
+      status: 'completed',
+      targetDir: path.join(scaffoldRoot, 'workspace'),
+    });
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scaffold', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'scaffold-plan',
+        content: expect.stringContaining('created scaffold'),
+      }),
+    ]));
   });
 
   it('updates stack decisions and regenerates the scaffold command', async () => {

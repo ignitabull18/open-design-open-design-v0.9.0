@@ -5859,7 +5859,7 @@ export async function startServer({
     research: researchDeps,
   });
 
-  registerPlanRoutes(app, { db });
+  registerPlanRoutes(app, { db, scaffoldRoot: path.join(RUNTIME_DATA_DIR, 'scaffolds') });
 
   app.delete('/api/projects/:id', async (req, res) => {
     try {
