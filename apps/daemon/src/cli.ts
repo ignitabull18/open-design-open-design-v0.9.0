@@ -4644,6 +4644,11 @@ async function runPlan(args) {
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
   od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
   od plan proof <id> [--json]                    Show launch proof gates and missing evidence.
+  od plan launch <id> --confirmed
+                 [--target-dir <path>] [--scaffold-parent-dir <path>]
+                 [--delivery-target <target>] [--project-management-target <target>]
+                 [--validate-providers] [--json]
+                                                 Execute the launch sequence until blocked or complete.
   od plan execute <id> --action <name> --confirmed
                  [--target-dir <path>] [--delivery-target <target>]
                  [--project-management-target <target>] [--validate-providers] [--json]
@@ -4984,6 +4989,37 @@ Common options:
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       console.log(`[plan] run ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
       console.log(data.run?.summary ?? '');
+      return;
+    }
+    case 'launch': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan launch <id> --confirmed [--target-dir <path>] [--scaffold-parent-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--validate-providers] [--json]');
+        process.exit(2);
+      }
+      const body = {
+        confirmed: flags.confirmed === true,
+        ...(typeof flags['target-dir'] === 'string' ? { targetDir: flags['target-dir'] } : {}),
+        ...(typeof flags['scaffold-parent-dir'] === 'string' ? { scaffoldParentDir: flags['scaffold-parent-dir'] } : {}),
+        ...(typeof flags['delivery-target'] === 'string' ? { deliveryTarget: flags['delivery-target'] } : {}),
+        ...(typeof flags['project-management-target'] === 'string' ? { projectManagementTarget: flags['project-management-target'] } : {}),
+        validateProviders: flags['validate-providers'] === true,
+      };
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/launch/execute failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(resp.status === 409 ? 2 : 1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] launch ${id}: ${data.proof?.status ?? '-'}`);
+      console.log(`Runs: ${(data.runs ?? []).length}\tReady: ${data.proof?.readyGateCount ?? 0}/${data.proof?.totalGateCount ?? 0}`);
+      if (data.stoppedAtActionId) console.log(`Stopped at: ${data.stoppedAtActionId}`);
+      for (const run of data.runs ?? []) console.log(`${run.actionId ?? run.kind}\t${run.status}\t${run.summary}`);
       return;
     }
     case 'run-section': {

@@ -355,6 +355,17 @@ export interface ExecuteProjectPlanActionRequest {
   validateProviders?: boolean;
 }
 
+export interface ExecuteProjectPlanLaunchRequest {
+  confirmed?: boolean;
+  actionIds?: PlanningExecutionAction['id'][];
+  targetDir?: string;
+  scaffoldParentDir?: string;
+  deliveryTarget?: DeliveryPlan['target'];
+  projectManagementTarget?: Extract<PlanningToolId, 'github-issues' | 'linear' | 'google-docs'>;
+  validateProviders?: boolean;
+  stopOnBlocked?: boolean;
+}
+
 export interface RunProjectPlanSectionRequest {
   sectionId: ProjectWorkspaceSection['id'];
 }
@@ -506,6 +517,15 @@ export interface ProjectPlanExecutionRunResponse {
   plan: ProjectPlan;
   run: PlanningExecutionRun;
   artifacts: PlanningExecutionArtifact[];
+}
+
+export interface ProjectPlanLaunchExecutionResponse {
+  plan: ProjectPlan;
+  runs: PlanningExecutionRun[];
+  artifacts: PlanningExecutionArtifact[];
+  proof: ProjectLaunchProofReport;
+  stoppedAtActionId?: PlanningExecutionAction['id'];
+  nextActionId?: PlanningExecutionAction['id'];
 }
 
 export interface ProjectPlanArtifactResponse {

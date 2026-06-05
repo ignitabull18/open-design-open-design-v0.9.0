@@ -21,6 +21,7 @@ import {
   createProjectPlanArtifact,
   createProjectIdeationSession,
   createProjectPlan,
+  executeProjectPlanLaunch,
   executeProjectPlanAction,
   getProjectLaunchProof,
   getProjectPlanReadiness,
@@ -352,6 +353,38 @@ export function PlanningView() {
         ...(validateProviders ? { validateProviders: true } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      await refreshReadiness(result.plan.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
+    }
+  }
+
+  async function handleExecuteLaunchSequence() {
+    if (!selectedPlan) return;
+    setExecutionSaving('launch-sequence');
+    setError(null);
+    try {
+      const result = await executeProjectPlanLaunch(selectedPlan.id, {
+        confirmed: true,
+        scaffoldParentDir: executionTargets.scaffold,
+        targetDir: executionTargets['repo-create']
+          || executionTargets['provider-setup']
+          || executionTargets['database-materialize']
+          || executionTargets['design-materialize']
+          || executionTargets['deploy-runtime']
+          || executionTargets['project-management'],
+        deliveryTarget: deliveryTargets['deploy-runtime'] || selectedPlan.delivery[0]?.target,
+        projectManagementTarget: projectManagementTargets['project-management'] || selectedPlan.selectedTools
+          .map((tool) => tool.toolId)
+          .find((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
+            toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
+          ),
+        validateProviders: validateProviderSetup,
+      });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      setProofByPlanId((curr) => ({ ...curr, [result.plan.id]: result.proof }));
       await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -702,6 +735,7 @@ export function PlanningView() {
               onSaveSectionAnswer={handleSaveSectionAnswer}
               onAcceptAction={handleAcceptAction}
               onExecuteAction={handleExecuteAction}
+              onExecuteLaunchSequence={handleExecuteLaunchSequence}
               executionTargets={executionTargets}
               onExecutionTargetChange={(actionId, targetDir) => {
                 setExecutionTargets((curr) => ({ ...curr, [actionId]: targetDir }));
@@ -869,6 +903,7 @@ function PlanDetail({
   onSaveSectionAnswer,
   onAcceptAction,
   onExecuteAction,
+  onExecuteLaunchSequence,
   executionTargets,
   onExecutionTargetChange,
   deliveryTargets,
@@ -916,6 +951,7 @@ function PlanDetail({
     projectManagementTarget?: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
     validateProviders?: boolean,
   ) => void;
+  onExecuteLaunchSequence: () => void;
   executionTargets: Record<string, string>;
   onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
   deliveryTargets: Record<string, ProjectPlan['delivery'][number]['target'] | ''>;
@@ -1078,6 +1114,14 @@ function PlanDetail({
       </div>
       <div className="planning-view__actions">
         <h3>Execution actions</h3>
+        <button
+          type="button"
+          className="planning-view__primary"
+          disabled={executionSaving === 'launch-sequence'}
+          onClick={onExecuteLaunchSequence}
+        >
+          {executionSaving === 'launch-sequence' ? 'Running launch...' : 'Run launch sequence'}
+        </button>
         {plan.executionActions.map((action) => (
           <article key={action.id} className="planning-view__action">
             <div>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, getProjectPlanReadiness } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanReadiness } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -111,6 +111,50 @@ describe('plans provider', () => {
     expect(JSON.parse(init.body)).toEqual({
       confirmed: true,
       targetDir: 'workspace/my-app',
+      validateProviders: true,
+    });
+  });
+
+  it('executes a plan launch sequence through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: { id: 'plan-1' },
+      runs: [],
+      artifacts: [],
+      proof: {
+        planId: 'plan-1',
+        generatedAt: 1,
+        status: 'in_progress',
+        summary: 'Launch proof is incomplete.',
+        readyGateCount: 3,
+        totalGateCount: 9,
+        blockedGateCount: 0,
+        nextSteps: [],
+        gates: [],
+      },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await executeProjectPlanLaunch('plan-1', {
+      confirmed: true,
+      scaffoldParentDir: 'workspace',
+      targetDir: 'workspace/my-app',
+      deliveryTarget: 'vercel',
+      projectManagementTarget: 'github-issues',
+      validateProviders: true,
+    });
+
+    expect(result.proof.readyGateCount).toBe(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/launch/execute');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      confirmed: true,
+      scaffoldParentDir: 'workspace',
+      targetDir: 'workspace/my-app',
+      deliveryTarget: 'vercel',
+      projectManagementTarget: 'github-issues',
       validateProviders: true,
     });
   });

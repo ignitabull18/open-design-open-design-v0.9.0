@@ -1344,6 +1344,93 @@ describe('planning routes', () => {
     expect(executed.body.artifacts[0].content).toContain('not logged in');
   });
 
+  it('executes a confirmed launch sequence until the first blocked action', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'launch-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"launch-studio"}\n');
+    const repoCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      repoRunner: async (request) => {
+        repoCalls.push({ command: request.command, args: request.args, cwd: request.cwd });
+        if (request.args.join(' ') === 'auth status') {
+          return {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'gh auth missing',
+            durationMs: 10,
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: 'ok',
+          stderr: '',
+          durationMs: 8,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Launch Studio',
+        intent: { purpose: 'Run the launch sequence until the first blocked provider write.' },
+        repo: {
+          owner: 'ignitabull',
+          name: 'launch-studio',
+          visibility: 'private',
+        },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+          { toolId: 'onepassword', status: 'deferred' },
+        ],
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/launch/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        actionIds: ['provider-setup', 'repo-create', 'design-materialize'],
+        targetDir: 'workspace/launch-studio',
+      }),
+    });
+
+    expect(executed.status).toBe(202);
+    expect(executed.body.runs.map((run: { actionId?: string }) => run.actionId)).toEqual(['provider-setup', 'repo-create']);
+    expect(executed.body.stoppedAtActionId).toBe('repo-create');
+    expect(repoCalls.map((call) => call.args.join(' '))).toEqual(['--version', 'auth status']);
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-setup', status: 'completed' }),
+      expect.objectContaining({ id: 'repo-create', status: 'accepted' }),
+      expect.objectContaining({ id: 'design-materialize', status: 'ready' }),
+    ]));
+    expect(executed.body.proof).toMatchObject({
+      planId: created.body.plan.id,
+      status: 'blocked',
+      nextGateId: 'repo',
+    });
+    expect(executed.body.proof.gates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'provider-setup',
+        status: 'ready',
+      }),
+      expect.objectContaining({
+        id: 'repo',
+        status: 'blocked',
+      }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider-setup',
+      }),
+      expect.objectContaining({
+        kind: 'repo-plan',
+        content: expect.stringContaining('gh auth missing'),
+      }),
+    ]));
+  });
+
   it('executes a confirmed Vercel deployment from a configured scaffold source', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'deploy-studio');

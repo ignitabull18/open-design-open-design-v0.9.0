@@ -4,10 +4,12 @@ import type {
   CheckProjectPlanToolRequest,
   CreateProjectPlanRequest,
   ExecuteProjectPlanActionRequest,
+  ExecuteProjectPlanLaunchRequest,
   CreateProjectIdeationRequest,
   PlanningSessionResponse,
   ProjectPlanExecutionResponse,
   ProjectPlanExecutionRunResponse,
+  ProjectPlanLaunchExecutionResponse,
   ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
   ProjectPlanReadinessResponse,
@@ -236,6 +238,28 @@ export function executeProjectPlanAction(
         ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
         ...(input.projectManagementTarget ? { projectManagementTarget: input.projectManagementTarget } : {}),
         ...(input.validateProviders ? { validateProviders: true } : {}),
+      }),
+    },
+  );
+}
+
+export function executeProjectPlanLaunch(
+  planId: string,
+  input: ExecuteProjectPlanLaunchRequest,
+): Promise<ProjectPlanLaunchExecutionResponse> {
+  return jsonFetch<ProjectPlanLaunchExecutionResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/launch/execute`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: input.confirmed === true,
+        ...(input.actionIds?.length ? { actionIds: input.actionIds } : {}),
+        ...(input.targetDir ? { targetDir: input.targetDir } : {}),
+        ...(input.scaffoldParentDir ? { scaffoldParentDir: input.scaffoldParentDir } : {}),
+        ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
+        ...(input.projectManagementTarget ? { projectManagementTarget: input.projectManagementTarget } : {}),
+        ...(input.validateProviders ? { validateProviders: true } : {}),
+        ...(input.stopOnBlocked === false ? { stopOnBlocked: false } : {}),
       }),
     },
   );

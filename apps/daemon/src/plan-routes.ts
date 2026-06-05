@@ -7,6 +7,7 @@ import type {
   CheckProjectPlanToolRequest,
   CreateProjectPlanArtifactRequest,
   CreateProjectIdeationRequest,
+  ExecuteProjectPlanLaunchRequest,
   ExecuteProjectPlanActionRequest,
   CreateProjectPlanRequest,
   DatabaseDesignPlan,
@@ -1177,6 +1178,48 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/launch/execute', async (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeLaunchExecutionBody(req.body || {});
+      if (!body.confirmed) {
+        return res.status(409).json({
+          error: 'confirmation required',
+          confirmation: 'Repeat with confirmed: true after reviewing the launch sequence, provider writes, and deployment effects.',
+        });
+      }
+      const result = await executePlanningLaunchSequence(existing, body, {
+        scaffoldRoot,
+        scaffoldRunner,
+        repoRunner,
+        deployRunner,
+        deployHealthChecker,
+        providerSourceFetcher,
+        providerSetupRunner,
+        projectManagementRunner,
+        databaseMigrationRunner,
+      });
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        ...result.planPatch,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      const proof = buildLaunchProofReport(updated);
+      res.status(result.runs.some((run) => run.status === 'blocked' || run.status === 'failed') ? 202 : 201).json({
+        plan: updated,
+        runs: result.runs,
+        artifacts: result.artifacts,
+        proof,
+        ...(result.stoppedAtActionId ? { stoppedAtActionId: result.stoppedAtActionId } : {}),
+        ...(proof.nextGateId ? { nextActionId: launchProofGateActionId(proof.nextGateId) } : {}),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/plans/:id/sections/runs', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1394,6 +1437,32 @@ function normalizeActionExecutionBody(
       ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
       : {}),
     validateProviders: body.validateProviders === true,
+  };
+}
+
+function normalizeLaunchExecutionBody(body: Record<string, unknown>): ExecuteProjectPlanLaunchRequest {
+  const actionIds = Array.isArray(body.actionIds)
+    ? body.actionIds.map((item) => {
+      const actionId = cleanRequiredString(item, 'actionIds[]') as PlanningExecutionAction['id'];
+      if (!isPlanningExecutionActionId(actionId)) {
+        throw new Error('actionIds must contain only known planning execution action ids');
+      }
+      return actionId;
+    })
+    : undefined;
+  return {
+    confirmed: body.confirmed === true,
+    ...(actionIds ? { actionIds: Array.from(new Set(actionIds)) } : {}),
+    ...(typeof body.targetDir === 'string' && body.targetDir.trim() ? { targetDir: body.targetDir.trim() } : {}),
+    ...(typeof body.scaffoldParentDir === 'string' && body.scaffoldParentDir.trim() ? { scaffoldParentDir: body.scaffoldParentDir.trim() } : {}),
+    ...(typeof body.deliveryTarget === 'string' && ['cloudflare', 'vercel', 'coolify', 'hostinger'].includes(body.deliveryTarget)
+      ? { deliveryTarget: body.deliveryTarget as DeliveryPlan['target'] }
+      : {}),
+    ...(typeof body.projectManagementTarget === 'string' && ['github-issues', 'linear', 'google-docs'].includes(body.projectManagementTarget)
+      ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
+      : {}),
+    validateProviders: body.validateProviders === true,
+    stopOnBlocked: body.stopOnBlocked !== false,
   };
 }
 
@@ -1722,6 +1791,30 @@ function buildActionLaunchProofGate(input: {
     ...input,
     toolCheckIds: [],
   };
+}
+
+function launchProofGateActionId(gateId: ProjectLaunchProofGateId): PlanningExecutionAction['id'] | undefined {
+  switch (gateId) {
+    case 'scaffold':
+      return 'scaffold';
+    case 'repo':
+      return 'repo-create';
+    case 'provider-setup':
+      return 'provider-setup';
+    case 'database':
+      return 'database-materialize';
+    case 'design':
+      return 'design-materialize';
+    case 'delivery':
+      return 'deploy-runtime';
+    case 'project-management':
+      return 'project-management';
+    case 'provider-checks':
+      return 'provider-research';
+    case 'planning-sections':
+    default:
+      return undefined;
+  }
 }
 
 function buildLaunchPathReadinessItem(coreItems: ProjectPlanReadinessItem[]): ProjectPlanReadinessItem {
@@ -2661,6 +2754,100 @@ async function executePlanningAction(
     run,
     artifacts: [artifact],
   };
+}
+
+const DEFAULT_LAUNCH_ACTION_SEQUENCE: PlanningExecutionAction['id'][] = [
+  'provider-research',
+  'scaffold',
+  'repo-create',
+  'provider-setup',
+  'database-materialize',
+  'database-migrate',
+  'design-materialize',
+  'deploy-runtime',
+  'project-management',
+];
+
+async function executePlanningLaunchSequence(
+  plan: ProjectPlan,
+  body: ExecuteProjectPlanLaunchRequest,
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; providerSourceFetcher: ProviderSourceFetcher; providerSetupRunner: ProviderSetupCommandRunner; projectManagementRunner: ProjectManagementCommandRunner; databaseMigrationRunner: DatabaseMigrationCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'> & Partial<Pick<ProjectPlan, 'providerCapabilities'>>;
+  runs: PlanningExecutionRun[];
+  artifacts: PlanningExecutionArtifact[];
+  stoppedAtActionId?: PlanningExecutionAction['id'];
+}> {
+  const requested = body.actionIds?.length ? body.actionIds : DEFAULT_LAUNCH_ACTION_SEQUENCE;
+  let current: ProjectPlan = plan;
+  const runs: PlanningExecutionRun[] = [];
+  const artifacts: PlanningExecutionArtifact[] = [];
+  let stoppedAtActionId: PlanningExecutionAction['id'] | undefined;
+
+  for (const actionId of requested) {
+    const action = current.executionActions.find((item) => item.id === actionId);
+    if (!action) continue;
+    if (action.status === 'completed') continue;
+    const actionBody = buildLaunchActionExecutionBody(current, actionId, body);
+    const result = await executePlanningAction(current, action, actionBody, options);
+    runs.push(result.run);
+    artifacts.push(...result.artifacts);
+    current = {
+      ...current,
+      ...result.planPatch,
+      updatedAt: Date.now(),
+    };
+    if ((result.run.status === 'blocked' || result.run.status === 'failed') && body.stopOnBlocked !== false) {
+      stoppedAtActionId = actionId;
+      break;
+    }
+  }
+
+  return {
+    planPatch: {
+      ...(current.providerCapabilities ? { providerCapabilities: current.providerCapabilities } : {}),
+      executionRuns: current.executionRuns ?? [],
+      executionArtifacts: current.executionArtifacts ?? [],
+      executionActions: current.executionActions,
+      scaffoldExecution: current.scaffoldExecution,
+      repo: current.repo,
+      delivery: current.delivery,
+    },
+    runs,
+    artifacts,
+    ...(stoppedAtActionId ? { stoppedAtActionId } : {}),
+  };
+}
+
+function buildLaunchActionExecutionBody(
+  plan: ProjectPlan,
+  actionId: PlanningExecutionAction['id'],
+  body: ExecuteProjectPlanLaunchRequest,
+): ExecuteProjectPlanActionRequest {
+  const targetDir = launchActionTargetDir(plan, actionId, body);
+  return {
+    actionId,
+    confirmed: true,
+    ...(targetDir ? { targetDir } : {}),
+    ...(body.deliveryTarget ? { deliveryTarget: body.deliveryTarget } : {}),
+    ...(body.projectManagementTarget ? { projectManagementTarget: body.projectManagementTarget } : {}),
+    validateProviders: body.validateProviders === true,
+  };
+}
+
+function launchActionTargetDir(
+  plan: ProjectPlan,
+  actionId: PlanningExecutionAction['id'],
+  body: ExecuteProjectPlanLaunchRequest,
+): string | undefined {
+  if (actionId === 'scaffold') return body.scaffoldParentDir ?? body.targetDir;
+  if (actionId === 'provider-research' || actionId === 'project-management') return body.targetDir;
+  return body.targetDir ?? deriveLaunchScaffoldSourceDir(plan, body.scaffoldParentDir);
+}
+
+function deriveLaunchScaffoldSourceDir(plan: ProjectPlan, scaffoldParentDir?: string): string | undefined {
+  if (!scaffoldParentDir?.trim()) return undefined;
+  return path.join(scaffoldParentDir.trim(), slugify(plan.repo.name ?? plan.name ?? 'new-project'));
 }
 
 async function executeProviderResearchAction(
