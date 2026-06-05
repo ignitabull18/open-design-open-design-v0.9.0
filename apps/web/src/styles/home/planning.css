@@ -920,6 +920,44 @@
   gap: 8px;
 }
 
+.planning-view__artifact-form {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__artifact-form h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.planning-view__artifact-content {
+  display: grid;
+  gap: 5px;
+}
+
+.planning-view__artifact-content span {
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.planning-view__artifact-content textarea {
+  width: 100%;
+  min-height: 94px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
 .planning-view__ideation textarea {
   min-height: 78px;
   padding: 9px 10px;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+  PlanningExecutionArtifact,
   PlanningToolOption,
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
@@ -13,6 +14,7 @@ import {
   acceptProjectPlanAction,
   checkProjectPlanTool,
   createPlanningSession,
+  createProjectPlanArtifact,
   createProjectIdeationSession,
   createProjectPlan,
   executeProjectPlanAction,
@@ -47,6 +49,23 @@ const INITIAL_STACK: ProjectStackDecision = {
   packageManager: 'pnpm',
 };
 
+const ARTIFACT_KIND_OPTIONS: PlanningExecutionArtifact['kind'][] = [
+  'provider-research',
+  'provider-setup',
+  'section-output',
+  'specialist-agent-manifest',
+  'parallel-orchestration',
+  'database-draft',
+  'database-materialization',
+  'database-migration',
+  'design-materialization',
+  'scaffold-plan',
+  'repo-plan',
+  'deployment-plan',
+  'project-management-plan',
+  'tool-check',
+];
+
 export function PlanningView() {
   const [plans, setPlans] = useState<ProjectPlan[]>([]);
   const [tools, setTools] = useState<PlanningToolOption[]>([]);
@@ -64,6 +83,10 @@ export function PlanningView() {
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [executionSaving, setExecutionSaving] = useState<string | null>(null);
+  const [artifactSaving, setArtifactSaving] = useState(false);
+  const [artifactKind, setArtifactKind] = useState<PlanningExecutionArtifact['kind']>('project-management-plan');
+  const [artifactTitle, setArtifactTitle] = useState('PRD handoff notes');
+  const [artifactContent, setArtifactContent] = useState('');
   const [executionTargets, setExecutionTargets] = useState<Record<string, string>>({});
   const [deliveryTargets, setDeliveryTargets] = useState<Record<string, ProjectPlan['delivery'][number]['target'] | ''>>({});
   const [projectManagementTargets, setProjectManagementTargets] = useState<Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>>({});
@@ -326,6 +349,26 @@ export function PlanningView() {
     }
   }
 
+  async function handleCreateArtifact() {
+    if (!selectedPlan) return;
+    setArtifactSaving(true);
+    setError(null);
+    try {
+      const result = await createProjectPlanArtifact(selectedPlan.id, {
+        kind: artifactKind,
+        title: artifactTitle.trim(),
+        content: artifactContent.trim(),
+      });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+      setArtifactTitle('');
+      setArtifactContent('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setArtifactSaving(false);
+    }
+  }
+
   async function handleRefreshCapabilities() {
     setRefreshingCapabilities(true);
     setError(null);
@@ -579,6 +622,14 @@ export function PlanningView() {
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
               refreshingCapabilities={refreshingCapabilities}
+              artifactSaving={artifactSaving}
+              artifactKind={artifactKind}
+              artifactTitle={artifactTitle}
+              artifactContent={artifactContent}
+              onArtifactKindChange={setArtifactKind}
+              onArtifactTitleChange={setArtifactTitle}
+              onArtifactContentChange={setArtifactContent}
+              onCreateArtifact={handleCreateArtifact}
             />
           ) : null}
         </aside>
@@ -635,6 +686,14 @@ function PlanDetail({
   onRunReadySections,
   onCheckTool,
   onRefreshCapabilities,
+  artifactSaving,
+  artifactKind,
+  artifactTitle,
+  artifactContent,
+  onArtifactKindChange,
+  onArtifactTitleChange,
+  onArtifactContentChange,
+  onCreateArtifact,
 }: {
   plan: ProjectPlan;
   ideationPrompt: string;
@@ -668,6 +727,14 @@ function PlanDetail({
   onRunReadySections: () => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
+  artifactSaving: boolean;
+  artifactKind: PlanningExecutionArtifact['kind'];
+  artifactTitle: string;
+  artifactContent: string;
+  onArtifactKindChange: (kind: PlanningExecutionArtifact['kind']) => void;
+  onArtifactTitleChange: (title: string) => void;
+  onArtifactContentChange: (content: string) => void;
+  onCreateArtifact: () => void;
 }) {
   const visibleCapabilities = plan.providerCapabilities.length > 0
     ? plan.providerCapabilities
@@ -924,6 +991,52 @@ function PlanDetail({
             </ul>
           </div>
         ) : null}
+        <form
+          className="planning-view__artifact-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onCreateArtifact();
+          }}
+        >
+          <h3>Create artifact</h3>
+          <div className="planning-view__execution-grid">
+            <label className="planning-view__execution-target">
+              <span>Kind</span>
+              <select
+                value={artifactKind}
+                onChange={(event) => onArtifactKindChange(event.target.value as PlanningExecutionArtifact['kind'])}
+              >
+                {ARTIFACT_KIND_OPTIONS.map((kind) => (
+                  <option key={kind} value={kind}>{kind}</option>
+                ))}
+              </select>
+            </label>
+            <label className="planning-view__execution-target">
+              <span>Title</span>
+              <input
+                value={artifactTitle}
+                placeholder="PRD handoff notes"
+                onChange={(event) => onArtifactTitleChange(event.target.value)}
+              />
+            </label>
+          </div>
+          <label className="planning-view__artifact-content">
+            <span>Content</span>
+            <textarea
+              value={artifactContent}
+              rows={4}
+              placeholder="Paste generated notes, drafts, schema decisions, or handoff details."
+              onChange={(event) => onArtifactContentChange(event.target.value)}
+            />
+          </label>
+          <button
+            type="submit"
+            className="planning-view__secondary"
+            disabled={artifactSaving || !artifactTitle.trim() || !artifactContent.trim()}
+          >
+            {artifactSaving ? 'Creating...' : 'Create artifact'}
+          </button>
+        </form>
         {(plan.toolChecks ?? []).length > 0 ? (
           <div className="planning-view__task-list">
             <h3>Tool checks</h3>

@@ -1,5 +1,6 @@
 import type {
   CreatePlanningSessionRequest,
+  CreateProjectPlanArtifactRequest,
   CheckProjectPlanToolRequest,
   CreateProjectPlanRequest,
   ExecuteProjectPlanActionRequest,
@@ -7,6 +8,7 @@ import type {
   PlanningSessionResponse,
   ProjectPlanExecutionResponse,
   ProjectPlanExecutionRunResponse,
+  ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
   ProjectSectionWorkflowResponse,
   ProjectIdeationSessionResponse,
@@ -242,6 +244,19 @@ export function checkProjectPlanTool(
     {
       method: 'POST',
       body: JSON.stringify({}),
+    },
+  );
+}
+
+export function createProjectPlanArtifact(
+  planId: string,
+  input: CreateProjectPlanArtifactRequest,
+): Promise<ProjectPlanArtifactResponse> {
+  return jsonFetch<ProjectPlanArtifactResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/artifacts`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
     },
   );
 }
