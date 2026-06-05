@@ -4429,6 +4429,58 @@ function runDatabaseMigrationCommand(request: DatabaseMigrationCommandRequest): 
   });
 }
 
+interface SpecialistAgentManifest {
+  generatedAt: string;
+  plan: {
+    id: string;
+    name: string;
+    purpose: string;
+  };
+  section: {
+    id: ProjectWorkspaceSection['id'];
+    label: string;
+    purpose: string;
+    owns: string[];
+    doesNotOwn: string[];
+  };
+  role: string;
+  prompt: string;
+  inputs: {
+    acceptedAnswers: string[];
+    notes?: string;
+    pointedQuestions: Array<{
+      id: string;
+      question: string;
+      whyItMatters: string;
+      answerType: IdeationQuestion['answerType'];
+      options?: string[];
+    }>;
+    selectedTools: ProjectToolConnection[];
+    providerConstraints: string[];
+    runtimeSummary: string;
+  };
+  lanes: Array<{
+    id: PlanningAgentLane['id'];
+    label: string;
+    mode: PlanningAgentLane['mode'];
+    status: PlanningAgentLane['status'];
+    dependsOn: PlanningAgentLane['dependsOn'];
+    parallelWith: PlanningAgentLane['parallelWith'];
+    toolIds: PlanningAgentLane['toolIds'];
+    brief: string;
+    outputs: string[];
+    runbook: string[];
+  }>;
+  dependencies: string[];
+  parallelPeers: string[];
+  expectedOutputs: string[];
+  followUpActions: Array<{
+    id: PlanningExecutionAction['id'];
+    label: string;
+    status: PlanningExecutionAction['status'];
+  }>;
+}
+
 function runPlanningSection(
   plan: ProjectPlan,
   section: ProjectWorkspaceSection,
@@ -4440,7 +4492,7 @@ function runPlanningSection(
   const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
   const answer = plan.sectionAnswers[section.id];
   const databaseDraft = section.id === 'database' ? buildDatabaseDraftArtifactContent(plan) : '';
-  const artifact: PlanningExecutionArtifact = {
+  const draftArtifact: PlanningExecutionArtifact = {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
     runId,
@@ -4463,6 +4515,7 @@ function runPlanningSection(
     ].filter(Boolean).join('\n'),
     createdAt: now,
   };
+  const manifestArtifact = buildSpecialistAgentManifestArtifact(plan, section, lanes, questions, answer, runId, now);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -4474,14 +4527,110 @@ function runPlanningSection(
     summary: `Generated a durable ${section.label} section output draft from stored answers, lanes, and provider notes.`,
     startedAt: now,
     completedAt: now,
-    artifactIds: [artifact.id],
+    artifactIds: [draftArtifact.id, manifestArtifact.id],
     evidence: [
       `${lanes.length} lane(s) considered`,
       `${questions.length} pointed question(s) attached`,
       answer ? `section answer status: ${answer.status}` : 'no section answer stored yet',
+      `specialist manifest: ${manifestArtifact.id}`,
     ],
   };
-  return { run, artifacts: [artifact] };
+  return { run, artifacts: [draftArtifact, manifestArtifact] };
+}
+
+function buildSpecialistAgentManifestArtifact(
+  plan: ProjectPlan,
+  section: ProjectWorkspaceSection,
+  lanes: PlanningAgentLane[],
+  questions: IdeationQuestion[],
+  answer: ProjectSectionAnswer | undefined,
+  runId: string,
+  now: number,
+): PlanningExecutionArtifact {
+  const relatedToolIds = new Set([
+    ...section.toolIds,
+    ...lanes.flatMap((lane) => lane.toolIds),
+  ]);
+  const relatedActions = plan.executionActions.filter((action) => action.relatedSectionIds.includes(section.id));
+  const providerConstraints = plan.providerCapabilities
+    .filter((snapshot) => relatedToolIds.has(snapshot.toolId))
+    .flatMap((snapshot) => [
+      `${snapshot.toolId}: ${snapshot.planningImplications[0] ?? snapshot.label}`,
+      ...(snapshot.riskNotes[0] ? [`${snapshot.toolId} risk: ${snapshot.riskNotes[0]}`] : []),
+    ]);
+  const dependencies = uniqueStrings(lanes.flatMap((lane) => lane.dependsOn));
+  const parallelPeers = uniqueStrings(lanes.flatMap((lane) => lane.parallelWith));
+  const expectedOutputs = uniqueStrings([
+    ...lanes.flatMap((lane) => lane.outputs),
+    ...relatedActions.flatMap((action) => action.effects),
+  ]);
+  const prompt = [
+    `You are the ${section.label} specialist for the project "${plan.name}".`,
+    `Purpose: ${plan.intent.purpose}`,
+    `Section boundary: own ${section.owns.join(', ')}; do not own ${section.doesNotOwn.join(', ')}.`,
+    'Use the accepted answers and pointed questions as your working context.',
+    'Return concrete decisions, blockers, files or artifacts to create, validation steps, and dependencies on other specialist sections.',
+  ].join('\n');
+  const manifest: SpecialistAgentManifest = {
+    generatedAt: new Date(now).toISOString(),
+    plan: {
+      id: plan.id,
+      name: plan.name,
+      purpose: plan.intent.purpose,
+    },
+    section: {
+      id: section.id,
+      label: section.label,
+      purpose: section.purpose,
+      owns: section.owns,
+      doesNotOwn: section.doesNotOwn,
+    },
+    role: `${section.label} specialist`,
+    prompt,
+    inputs: {
+      acceptedAnswers: answer?.answers ?? [],
+      ...(answer?.notes ? { notes: answer.notes } : {}),
+      pointedQuestions: questions.map((question) => ({
+        id: question.id,
+        question: question.question,
+        whyItMatters: question.whyItMatters,
+        answerType: question.answerType,
+        ...(question.options ? { options: question.options } : {}),
+      })),
+      selectedTools: plan.selectedTools.filter((tool) => relatedToolIds.has(tool.toolId)),
+      providerConstraints,
+      runtimeSummary: plan.runtimePlan.summary,
+    },
+    lanes: lanes.map((lane) => ({
+      id: lane.id,
+      label: lane.label,
+      mode: lane.mode,
+      status: lane.status,
+      dependsOn: lane.dependsOn,
+      parallelWith: lane.parallelWith,
+      toolIds: lane.toolIds,
+      brief: lane.brief,
+      outputs: lane.outputs,
+      runbook: lane.runbook,
+    })),
+    dependencies,
+    parallelPeers,
+    expectedOutputs,
+    followUpActions: relatedActions.map((action) => ({
+      id: action.id,
+      label: action.label,
+      status: action.status,
+    })),
+  };
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'specialist-agent-manifest',
+    title: `${section.label} specialist agent manifest`,
+    content: JSON.stringify(manifest, null, 2),
+    createdAt: now,
+  };
 }
 
 function selectSectionsForRun(

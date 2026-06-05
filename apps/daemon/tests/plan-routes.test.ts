@@ -472,10 +472,21 @@ describe('planning routes', () => {
         kind: 'database-draft',
         content: expect.stringContaining('Logical schema:'),
       }),
+      expect.objectContaining({
+        kind: 'specialist-agent-manifest',
+        title: expect.stringContaining('Database specialist agent manifest'),
+        content: expect.stringContaining('"role": "Database specialist"'),
+      }),
     ]));
     expect(sectionRun.body.artifacts[0].content).toContain('plans');
     expect(sectionRun.body.artifacts[0].content).toContain('Access policy draft:');
     expect(sectionRun.body.artifacts[0].content).toContain('Supabase/Postgres path');
+    const databaseManifest = JSON.parse(
+      sectionRun.body.artifacts.find((artifact: { kind: string }) => artifact.kind === 'specialist-agent-manifest').content,
+    ) as { section: { id: string }; dependencies: string[]; expectedOutputs: string[] };
+    expect(databaseManifest.section.id).toBe('database');
+    expect(databaseManifest.dependencies).toEqual(expect.arrayContaining(['product']));
+    expect(databaseManifest.expectedOutputs).toEqual(expect.arrayContaining(['entity map', 'migration plan']));
 
     const sectionBatch = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/runs`, {
       method: 'POST',
@@ -506,6 +517,8 @@ describe('planning routes', () => {
       expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Design') }),
       expect.objectContaining({ kind: 'database-draft', title: expect.stringContaining('Database') }),
       expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Integrations') }),
+      expect.objectContaining({ kind: 'specialist-agent-manifest', title: expect.stringContaining('Design specialist agent manifest') }),
+      expect.objectContaining({ kind: 'specialist-agent-manifest', title: expect.stringContaining('Integrations specialist agent manifest') }),
     ]));
 
     const toolCheck = await jsonFetch(`${baseUrl}/api/plans/${planId}/tools/cloudflare-hosting/check`, {
@@ -542,6 +555,7 @@ describe('planning routes', () => {
       expect.objectContaining({ kind: 'provider-research' }),
       expect.objectContaining({ kind: 'scaffold-plan' }),
       expect.objectContaining({ kind: 'parallel-orchestration' }),
+      expect.objectContaining({ kind: 'specialist-agent-manifest' }),
       expect.objectContaining({ kind: 'database-draft' }),
       expect.objectContaining({ kind: 'tool-check' }),
     ]));
