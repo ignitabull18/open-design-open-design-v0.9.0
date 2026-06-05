@@ -1219,8 +1219,23 @@ describe('planning routes', () => {
     });
 
     expect(executed.status).toBe(201);
-    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls).toHaveLength(4);
     expect(runnerCalls[0]).toMatchObject({
+      command: 'gh',
+      args: ['--version'],
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[1]).toMatchObject({
+      command: 'gh',
+      args: ['auth', 'status'],
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[2]).toMatchObject({
+      command: 'gh',
+      args: ['api', 'users/ignitabull', '--jq', '.login'],
+      cwd: sourceDir,
+    });
+    expect(runnerCalls[3]).toMatchObject({
       command: 'gh',
       args: [
         'repo',
@@ -1241,6 +1256,11 @@ describe('planning routes', () => {
       mode: 'external',
       summary: expect.stringContaining('https://github.com/ignitabull/repo-studio'),
     });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'gh availability exitCode: 0',
+      'gh authentication exitCode: 0',
+      'github owner lookup exitCode: 0',
+    ]));
     expect(executed.body.plan.repo).toMatchObject({
       owner: 'ignitabull',
       name: 'repo-studio',
@@ -1254,9 +1274,74 @@ describe('planning routes', () => {
     expect(executed.body.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'repo-plan',
+        content: expect.stringContaining('Preflight: gh authentication'),
+      }),
+      expect.objectContaining({
+        kind: 'repo-plan',
         content: expect.stringContaining('https://github.com/ignitabull/repo-studio'),
       }),
     ]));
+  });
+
+  it('blocks GitHub repo creation when gh authentication preflight fails', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'repo-auth-blocked');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"repo-auth-blocked"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      repoRunner: async (request) => {
+        runnerCalls.push({ command: request.command, args: request.args, cwd: request.cwd });
+        if (request.args.join(' ') === 'auth status') {
+          return {
+            exitCode: 1,
+            stdout: '',
+            stderr: 'not logged in',
+            durationMs: 12,
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: 'ok',
+          stderr: '',
+          durationMs: 8,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Repo Auth Blocked',
+        intent: { purpose: 'Verify gh auth before repository creation.' },
+        repo: {
+          owner: 'ignitabull',
+          name: 'repo-auth-blocked',
+          visibility: 'private',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/repo-create/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: 'workspace/repo-auth-blocked' }),
+    });
+
+    expect(executed.status).toBe(202);
+    expect(runnerCalls).toHaveLength(2);
+    expect(runnerCalls.map((call) => call.args.join(' '))).toEqual(['--version', 'auth status']);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'repo-create',
+      status: 'blocked',
+      summary: expect.stringContaining('gh preflight'),
+    });
+    expect(executed.body.plan.repo).toMatchObject({
+      owner: 'ignitabull',
+      name: 'repo-auth-blocked',
+      status: 'blocked',
+    });
+    expect(executed.body.artifacts[0].content).toContain('Preflight: gh authentication');
+    expect(executed.body.artifacts[0].content).toContain('not logged in');
   });
 
   it('executes a confirmed Vercel deployment from a configured scaffold source', async () => {

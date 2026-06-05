@@ -3184,26 +3184,58 @@ async function executeRepoCreateAction(
   const runId = `plan-run-${randomUUID()}`;
   const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
   const invocation = buildRepoCreateInvocation(plan, sourceDir);
-  let result: RepoCommandResult;
+  const preflightInvocations = buildRepoCreatePreflightInvocations(invocation.owner);
+  const preflightExecutions: Array<{ label: string; command: string; result: RepoCommandResult }> = [];
+  let result: RepoCommandResult = {
+    exitCode: 1,
+    stdout: '',
+    stderr: 'GitHub repository creation was not attempted because a preflight check failed.',
+    durationMs: 0,
+  };
   let status: PlanningExecutionRun['status'] = 'completed';
-  try {
-    result = await options.repoRunner({
-      command: invocation.command,
-      args: invocation.args,
-      cwd: sourceDir,
-      timeoutMs: 120_000,
+  for (const preflight of preflightInvocations) {
+    let preflightResult: RepoCommandResult;
+    try {
+      preflightResult = await options.repoRunner({
+        command: preflight.command,
+        args: preflight.args,
+        cwd: sourceDir,
+        timeoutMs: 30_000,
+      });
+    } catch (err: any) {
+      preflightResult = repoCommandErrorResult(err);
+    }
+    preflightExecutions.push({
+      label: preflight.label,
+      command: [preflight.command, ...preflight.args].join(' '),
+      result: preflightResult,
     });
-    if (result.exitCode !== 0) status = 'failed';
-  } catch (err: any) {
-    result = {
-      exitCode: typeof err?.code === 'number' ? err.code : 1,
-      stdout: typeof err?.stdout === 'string' ? err.stdout : '',
-      stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
-      durationMs: 0,
-    };
-    status = 'failed';
+    if (preflightResult.exitCode !== 0) {
+      status = 'blocked';
+      result = {
+        exitCode: preflightResult.exitCode,
+        stdout: preflightResult.stdout,
+        stderr: preflightResult.stderr || `${preflight.label} failed.`,
+        durationMs: preflightResult.durationMs,
+      };
+      break;
+    }
   }
-  const artifact = buildRepoArtifact(plan, action, runId, sourceDir, invocation, result, status);
+  if (status === 'completed') {
+    try {
+      result = await options.repoRunner({
+        command: invocation.command,
+        args: invocation.args,
+        cwd: sourceDir,
+        timeoutMs: 120_000,
+      });
+      if (result.exitCode !== 0) status = 'failed';
+    } catch (err: any) {
+      result = repoCommandErrorResult(err);
+      status = 'failed';
+    }
+  }
+  const artifact = buildRepoArtifact(plan, action, runId, sourceDir, invocation, preflightExecutions, result, status);
   const repoUrl = `https://github.com/${invocation.owner}/${invocation.name}`;
   const run: PlanningExecutionRun = {
     id: runId,
@@ -3215,7 +3247,9 @@ async function executeRepoCreateAction(
     mode: 'external',
     summary: status === 'completed'
       ? `GitHub repository created at ${repoUrl}.`
-      : 'GitHub repository creation failed; inspect the attached artifact for stdout and stderr.',
+      : status === 'blocked'
+        ? 'GitHub repository creation is blocked by a failed gh preflight; inspect the attached artifact for stdout and stderr.'
+        : 'GitHub repository creation failed; inspect the attached artifact for stdout and stderr.',
     command: [invocation.command, ...invocation.args].join(' '),
     startedAt: now,
     completedAt: Date.now(),
@@ -3224,6 +3258,7 @@ async function executeRepoCreateAction(
       `sourceDir: ${sourceDir}`,
       `repo: ${invocation.owner}/${invocation.name}`,
       `visibility: ${invocation.visibility}`,
+      ...preflightExecutions.map((execution) => `${execution.label} exitCode: ${execution.result.exitCode}`),
       `exitCode: ${result.exitCode}`,
     ],
   };
@@ -3451,6 +3486,35 @@ function buildRepoCreateInvocation(
     owner,
     name,
     visibility,
+  };
+}
+
+function buildRepoCreatePreflightInvocations(owner: string): Array<{ label: string; command: string; args: string[] }> {
+  return [
+    {
+      label: 'gh availability',
+      command: 'gh',
+      args: ['--version'],
+    },
+    {
+      label: 'gh authentication',
+      command: 'gh',
+      args: ['auth', 'status'],
+    },
+    {
+      label: 'github owner lookup',
+      command: 'gh',
+      args: ['api', `users/${owner}`, '--jq', '.login'],
+    },
+  ];
+}
+
+function repoCommandErrorResult(err: any): RepoCommandResult {
+  return {
+    exitCode: typeof err?.code === 'number' ? err.code : 1,
+    stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+    stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+    durationMs: 0,
   };
 }
 
@@ -5373,9 +5437,23 @@ function buildRepoArtifact(
   runId: string,
   sourceDir: string,
   invocation: { command: string; args: string[]; owner: string; name: string; visibility: NonNullable<RepoPlan['visibility']> },
+  preflightExecutions: Array<{ label: string; command: string; result: RepoCommandResult }>,
   result: RepoCommandResult,
   status: PlanningExecutionRun['status'],
 ): PlanningExecutionArtifact {
+  const preflightBlocks = preflightExecutions.length > 0
+    ? preflightExecutions.flatMap((execution) => [
+      `Preflight: ${execution.label}`,
+      `Command: ${execution.command}`,
+      `Exit code: ${execution.result.exitCode}`,
+      `Duration ms: ${execution.result.durationMs}`,
+      'stdout:',
+      execution.result.stdout || '(empty)',
+      'stderr:',
+      execution.result.stderr || '(empty)',
+      '',
+    ])
+    : ['No GitHub CLI preflight checks were recorded.', ''];
   return {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
@@ -5391,6 +5469,9 @@ function buildRepoArtifact(
       `Source directory: ${sourceDir}`,
       `Exit code: ${result.exitCode}`,
       `Duration ms: ${result.durationMs}`,
+      '',
+      'Preflight checks:',
+      ...preflightBlocks,
       '',
       'stdout:',
       result.stdout || '(empty)',
