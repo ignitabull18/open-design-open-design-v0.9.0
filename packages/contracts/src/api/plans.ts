@@ -233,7 +233,7 @@ export interface PlanningExecutionArtifact {
   id: string;
   planId: string;
   runId?: string;
-  kind: 'provider-research' | 'provider-setup' | 'section-output' | 'specialist-agent-manifest' | 'parallel-orchestration' | 'database-draft' | 'database-materialization' | 'database-migration' | 'design-materialization' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
+  kind: 'provider-research' | 'provider-setup' | 'section-output' | 'specialist-agent-manifest' | 'parallel-orchestration' | 'database-draft' | 'database-materialization' | 'database-migration' | 'design-materialization' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check' | 'launch-summary';
   title: string;
   content: string;
   createdAt: number;

@@ -1525,6 +1525,7 @@ function isPlanningExecutionArtifactKind(value: string): value is PlanningExecut
     'deployment-plan',
     'project-management-plan',
     'tool-check',
+    'launch-summary',
   ].includes(value);
 }
 
@@ -2895,6 +2896,7 @@ async function executePlanningLaunchSequence(
   const runs: PlanningExecutionRun[] = [];
   const artifacts: PlanningExecutionArtifact[] = [];
   let stoppedAtActionId: PlanningExecutionAction['id'] | undefined;
+  const preview = buildLaunchPreview(plan, body);
 
   for (const actionId of requested) {
     const action = current.executionActions.find((item) => item.id === actionId);
@@ -2913,6 +2915,14 @@ async function executePlanningLaunchSequence(
       stoppedAtActionId = actionId;
       break;
     }
+  }
+  if (runs.length > 0) {
+    const summaryArtifact = buildLaunchSummaryArtifact(plan, current, body, preview, runs, artifacts, stoppedAtActionId);
+    artifacts.push(summaryArtifact);
+    current = {
+      ...current,
+      executionArtifacts: [...(current.executionArtifacts ?? []), summaryArtifact],
+    };
   }
 
   return {
@@ -2960,6 +2970,62 @@ function launchActionTargetDir(
 function deriveLaunchScaffoldSourceDir(plan: ProjectPlan, scaffoldParentDir?: string): string | undefined {
   if (!scaffoldParentDir?.trim()) return undefined;
   return path.join(scaffoldParentDir.trim(), slugify(plan.repo.name ?? plan.name ?? 'new-project'));
+}
+
+function buildLaunchSummaryArtifact(
+  originalPlan: ProjectPlan,
+  currentPlan: ProjectPlan,
+  body: ExecuteProjectPlanLaunchRequest,
+  preview: ProjectLaunchPreview,
+  runs: PlanningExecutionRun[],
+  artifacts: PlanningExecutionArtifact[],
+  stoppedAtActionId?: PlanningExecutionAction['id'],
+): PlanningExecutionArtifact {
+  const proof = buildLaunchProofReport(currentPlan);
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: originalPlan.id,
+    kind: 'launch-summary',
+    title: `Launch sequence summary: ${originalPlan.name}`,
+    content: [
+      `Plan: ${originalPlan.name}`,
+      `Plan id: ${originalPlan.id}`,
+      `Status: ${proof.status}`,
+      `Ready gates: ${proof.readyGateCount}/${proof.totalGateCount}`,
+      `Blocked gates: ${proof.blockedGateCount}`,
+      stoppedAtActionId ? `Stopped at action: ${stoppedAtActionId}` : 'Stopped at action: none',
+      '',
+      'Launch inputs:',
+      ...preview.requirements.map((requirement) =>
+        `- ${requirement.label}: ${requirement.status}${requirement.value ? ` (${requirement.value})` : ''}`,
+      ),
+      '',
+      'Executed runs:',
+      ...(runs.length
+        ? runs.map((run) => `- ${run.actionId ?? run.kind}: ${run.status} - ${run.summary}`)
+        : ['- No runs executed.']),
+      '',
+      'Artifacts created in this sequence:',
+      ...(artifacts.length
+        ? artifacts.map((artifact) => `- ${artifact.kind}: ${artifact.title} (${artifact.id})`)
+        : ['- None.']),
+      '',
+      'Incomplete gates:',
+      ...proof.gates
+        .filter((gate) => gate.status !== 'ready')
+        .map((gate) => `- ${gate.label}: ${gate.status}; ${gate.missingEvidence[0] ?? gate.summary}`),
+      '',
+      'Next steps:',
+      ...(proof.nextSteps.length ? proof.nextSteps.map((step) => `- ${step}`) : ['- None.']),
+      '',
+      'Options:',
+      body.deliveryTarget ? `- deliveryTarget: ${body.deliveryTarget}` : '',
+      body.projectManagementTarget ? `- projectManagementTarget: ${body.projectManagementTarget}` : '',
+      body.validateProviders ? '- validateProviders: true' : '- validateProviders: false',
+      body.stopOnBlocked === false ? '- stopOnBlocked: false' : '- stopOnBlocked: true',
+    ].filter(Boolean).join('\n'),
+    createdAt: Date.now(),
+  };
 }
 
 async function executeProviderResearchAction(

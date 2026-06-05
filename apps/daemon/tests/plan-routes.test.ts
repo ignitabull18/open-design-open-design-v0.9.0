@@ -1428,6 +1428,16 @@ describe('planning routes', () => {
         kind: 'repo-plan',
         content: expect.stringContaining('gh auth missing'),
       }),
+      expect.objectContaining({
+        kind: 'launch-summary',
+        content: expect.stringContaining('Stopped at action: repo-create'),
+      }),
+    ]));
+    expect(executed.body.plan.executionArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'launch-summary',
+        title: expect.stringContaining('Launch sequence summary'),
+      }),
     ]));
   });
 
