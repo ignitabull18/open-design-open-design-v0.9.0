@@ -2408,7 +2408,8 @@ async function executeScaffoldAction(
   }
   const outputExists = await directoryExists(target.outputDir);
   if (status === 'completed' && !outputExists) status = 'failed';
-  const artifact = buildScaffoldArtifact(plan, action, runId, target, invocation, result, status);
+  const handoffWrites = status === 'completed' ? await writeScaffoldHandoffFiles(plan, target.outputDir, runId) : [];
+  const artifact = buildScaffoldArtifact(plan, action, runId, target, invocation, result, status, handoffWrites);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -2429,6 +2430,7 @@ async function executeScaffoldAction(
       `outputDir: ${target.outputDir}`,
       `exitCode: ${result.exitCode}`,
       `outputDirExists: ${outputExists ? 'yes' : 'no'}`,
+      ...handoffWrites.map((write) => `wrote ${write.relativePath}`),
     ],
   };
   const executionActions = plan.executionActions.map((item) =>
@@ -2442,7 +2444,10 @@ async function executeScaffoldAction(
     lastRunId: run.id,
     ...(run.command ? { lastCommand: run.command } : {}),
     notes: status === 'completed'
-      ? [`Scaffold output created at ${target.outputDir}.`]
+      ? [
+        `Scaffold output created at ${target.outputDir}.`,
+        ...handoffWrites.map((write) => `Wrote ${write.relativePath}.`),
+      ]
       : [`Scaffold command failed with exit code ${result.exitCode}.`, result.stderr.slice(0, 500)].filter(Boolean),
     updatedAt: Date.now(),
   };
@@ -3101,6 +3106,17 @@ async function writeProviderSetupFiles(plan: ProjectPlan, sourceDir: string): Pr
   return writes;
 }
 
+async function writeScaffoldHandoffFiles(
+  plan: ProjectPlan,
+  sourceDir: string,
+  runId: string,
+): Promise<ProjectMaterializedWrite[]> {
+  const writes: ProjectMaterializedWrite[] = [];
+  await writeProjectFile(sourceDir, 'docs/open-design-plan.md', buildScaffoldHandoffMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, '.od/planning-handoff.json', buildScaffoldHandoffJson(plan, runId), writes);
+  return writes;
+}
+
 async function writeProjectFile(
   sourceDir: string,
   relativePath: string,
@@ -3124,6 +3140,101 @@ function isSqlDatabase(primaryStore: string): boolean {
 
 function canExecuteDatabaseDeployment(primaryStore: string): boolean {
   return isSqlDatabase(primaryStore) || primaryStore === 'convex';
+}
+
+function buildScaffoldHandoffMarkdown(plan: ProjectPlan): string {
+  const answeredSections = Object.values(plan.sectionAnswers ?? {})
+    .filter((answer): answer is ProjectSectionAnswer => Boolean(answer) && answer.answers.length > 0);
+  const nextActions = plan.executionActions.filter((action) => action.id !== 'scaffold');
+  return [
+    '# Open Design Plan Handoff',
+    '',
+    `Project: ${plan.name}`,
+    `Plan id: ${plan.id}`,
+    `Purpose: ${plan.intent.purpose}`,
+    plan.intent.audience ? `Audience: ${plan.intent.audience}` : '',
+    '',
+    '## Stack Decision',
+    `- Frontend: ${plan.stack.frontend ?? 'next'}`,
+    `- Backend: ${plan.stack.backend ?? 'hono'}`,
+    `- Runtime: ${plan.stack.runtime ?? 'workers'}`,
+    `- Database: ${plan.stack.database ?? 'supabase'}`,
+    `- ORM: ${plan.stack.orm ?? 'drizzle'}`,
+    `- API: ${plan.stack.api ?? 'trpc'}`,
+    `- Auth: ${plan.stack.auth ?? 'better-auth'}`,
+    `- Payments: ${plan.stack.payments ?? 'none'}`,
+    `- Hosting: ${plan.stack.hosting?.join(', ') || 'none'}`,
+    '',
+    '## Better-T-Stack Command',
+    plan.scaffold.command,
+    '',
+    '## Selected Tools',
+    ...formatBullets(plan.selectedTools.map((tool) =>
+      `${tool.toolId}: ${tool.status}${tool.notes ? ` (${tool.notes})` : ''}`,
+    )),
+    '',
+    '## Workspace Sections',
+    ...formatBullets(plan.workspaceSections.map((section) =>
+      `${section.label}: ${section.purpose}`,
+    )),
+    '',
+    '## Accepted Section Answers',
+    ...(answeredSections.length
+      ? answeredSections.flatMap((answer) => [
+        `### ${answer.sectionId}`,
+        ...answer.answers.map((line) => `- ${line}`),
+        answer.notes ? `Notes: ${answer.notes}` : '',
+        '',
+      ])
+      : ['- No accepted section answers have been stored yet.']),
+    '',
+    '## Database Plan',
+    `- Primary store: ${plan.databaseDesign.primaryStore}`,
+    `- Mode: ${plan.databaseDesign.mode}`,
+    ...formatBullets(plan.databaseDesign.entities.map((entity) => `Entity: ${entity}`)),
+    '',
+    '## Next Execution Actions',
+    ...formatBullets(nextActions.map((action) =>
+      `${action.id}: ${action.status} - ${action.label}`,
+    )),
+    '',
+    '## Provider Capability Notes',
+    ...formatBullets(plan.providerCapabilities.map((snapshot) =>
+      `${snapshot.toolId}: checked ${snapshot.checkedAt}; ${snapshot.planningImplications[0] ?? snapshot.sourceUrl}`,
+    )),
+    '',
+    '## Guardrails',
+    '- Keep secret values in the selected secret manager; do not commit provider secrets.',
+    '- Treat provider checks, migrations, deploys, repo creation, and project-management writes as separate proof-bearing actions.',
+    '- Keep Planning, Design, Database, Integrations, AI, Workflows, and Delivery decisions distinct when implementing this scaffold.',
+  ].filter(Boolean).join('\n');
+}
+
+function buildScaffoldHandoffJson(plan: ProjectPlan, runId: string): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    generatedBy: 'open-design-planning',
+    planId: plan.id,
+    runId,
+    projectName: plan.name,
+    intent: plan.intent,
+    stack: plan.stack,
+    selectedTools: plan.selectedTools,
+    scaffold: plan.scaffold,
+    databaseDesign: plan.databaseDesign,
+    workspaceSections: plan.workspaceSections.map((section) => ({
+      id: section.id,
+      label: section.label,
+      purpose: section.purpose,
+      owns: section.owns,
+      doesNotOwn: section.doesNotOwn,
+      outputs: section.outputs,
+    })),
+    sectionAnswers: plan.sectionAnswers,
+    delivery: plan.delivery,
+    repo: plan.repo,
+    nextActionIds: plan.executionActions.filter((action) => action.id !== 'scaffold').map((action) => action.id),
+  }, null, 2);
 }
 
 function buildDesignPlanMarkdown(plan: ProjectPlan): string {
@@ -4108,6 +4219,7 @@ function buildScaffoldArtifact(
   invocation: { command: string; args: string[] },
   result: ScaffoldCommandResult,
   status: PlanningExecutionRun['status'],
+  handoffWrites: ProjectMaterializedWrite[],
 ): PlanningExecutionArtifact {
   return {
     id: `plan-artifact-${randomUUID()}`,
@@ -4123,6 +4235,11 @@ function buildScaffoldArtifact(
       `Output directory: ${target.outputDir}`,
       `Exit code: ${result.exitCode}`,
       `Duration ms: ${result.durationMs}`,
+      '',
+      'Generated handoff files:',
+      ...(handoffWrites.length
+        ? handoffWrites.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`)
+        : ['- None written.']),
       '',
       'stdout:',
       result.stdout || '<empty>',

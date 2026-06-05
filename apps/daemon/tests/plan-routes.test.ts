@@ -886,6 +886,10 @@ describe('planning routes', () => {
       status: 'completed',
       targetDir: path.join(scaffoldRoot, 'workspace'),
     });
+    expect(executed.body.plan.scaffoldExecution.notes).toEqual(expect.arrayContaining([
+      'Wrote docs/open-design-plan.md.',
+      'Wrote .od/planning-handoff.json.',
+    ]));
     expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'scaffold', status: 'completed' }),
     ]));
@@ -894,6 +898,35 @@ describe('planning routes', () => {
         kind: 'scaffold-plan',
         content: expect.stringContaining('created scaffold'),
       }),
+    ]));
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'wrote docs/open-design-plan.md',
+      'wrote .od/planning-handoff.json',
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('Generated handoff files:');
+    expect(executed.body.artifacts[0].content).toContain('docs/open-design-plan.md');
+    const handoffMarkdown = readFileSync(path.join(scaffoldRoot, 'workspace', 'scaffold-studio', 'docs', 'open-design-plan.md'), 'utf8');
+    expect(handoffMarkdown).toContain('# Open Design Plan Handoff');
+    expect(handoffMarkdown).toContain('Project: Scaffold Studio');
+    expect(handoffMarkdown).toContain('## Better-T-Stack Command');
+    expect(handoffMarkdown).toContain('## Next Execution Actions');
+    const handoffJson = JSON.parse(readFileSync(path.join(scaffoldRoot, 'workspace', 'scaffold-studio', '.od', 'planning-handoff.json'), 'utf8'));
+    expect(handoffJson).toMatchObject({
+      schemaVersion: 1,
+      generatedBy: 'open-design-planning',
+      planId: created.body.plan.id,
+      projectName: 'Scaffold Studio',
+      stack: {
+        frontend: 'next',
+        database: 'supabase',
+        auth: 'better-auth',
+      },
+    });
+    expect(handoffJson.nextActionIds).toEqual(expect.arrayContaining([
+      'repo-create',
+      'database-materialize',
+      'provider-setup',
+      'deploy-runtime',
     ]));
   });
 
