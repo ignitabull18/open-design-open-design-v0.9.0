@@ -10,6 +10,7 @@ import type {
   ProjectPlanExecutionResponse,
   ProjectPlanExecutionRunResponse,
   ProjectPlanLaunchExecutionResponse,
+  ProjectPlanLaunchPreviewResponse,
   ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
   ProjectPlanReadinessResponse,
@@ -222,6 +223,10 @@ export function getProjectPlanReadiness(planId: string): Promise<ProjectPlanRead
 
 export function getProjectLaunchProof(planId: string): Promise<ProjectLaunchProofResponse> {
   return jsonFetch<ProjectLaunchProofResponse>(`/api/plans/${encodeURIComponent(planId)}/proof`);
+}
+
+export function getProjectPlanLaunchPreview(planId: string): Promise<ProjectPlanLaunchPreviewResponse> {
+  return jsonFetch<ProjectPlanLaunchPreviewResponse>(`/api/plans/${encodeURIComponent(planId)}/launch`);
 }
 
 export function executeProjectPlanAction(

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanReadiness } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -157,5 +157,39 @@ describe('plans provider', () => {
       projectManagementTarget: 'github-issues',
       validateProviders: true,
     });
+  });
+
+  it('fetches a plan launch preview through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: { id: 'plan-1' },
+      launch: {
+        planId: 'plan-1',
+        generatedAt: 1,
+        readyToExecute: false,
+        actionIds: ['scaffold'],
+        missingInputs: ['Scaffold parent directory: Required'],
+        requirements: [],
+      },
+      proof: {
+        planId: 'plan-1',
+        generatedAt: 1,
+        status: 'not_started',
+        summary: 'Launch proof is incomplete.',
+        readyGateCount: 0,
+        totalGateCount: 9,
+        blockedGateCount: 0,
+        nextSteps: [],
+        gates: [],
+      },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await getProjectPlanLaunchPreview('plan-1');
+
+    expect(result.launch.readyToExecute).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/launch');
+    expect(init.credentials).toBe('include');
   });
 });

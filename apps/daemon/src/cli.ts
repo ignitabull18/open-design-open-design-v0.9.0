@@ -4644,6 +4644,7 @@ async function runPlan(args) {
   od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
   od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
   od plan proof <id> [--json]                    Show launch proof gates and missing evidence.
+  od plan launch-preview <id> [--json]           Show launch sequence inputs before execution.
   od plan launch <id> --confirmed
                  [--target-dir <path>] [--scaffold-parent-dir <path>]
                  [--delivery-target <target>] [--project-management-target <target>]
@@ -4959,6 +4960,24 @@ Common options:
         console.log(`${gate.status}\t${gate.id}\t${gate.label}`);
         for (const missing of gate.missingEvidence ?? []) console.log(`  missing: ${missing}`);
         if (gate.proof?.[0]) console.log(`  proof: ${gate.proof[0]}`);
+      }
+      return;
+    }
+    case 'launch-preview': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan launch-preview <id> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      const launch = data.launch ?? {};
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] launch preview ${id}: ${launch.readyToExecute ? 'ready' : 'missing inputs'}`);
+      console.log(`Actions: ${(launch.actionIds ?? []).join(', ') || '-'}`);
+      for (const requirement of launch.requirements ?? []) {
+        console.log(`${requirement.status}\t${requirement.id}\t${requirement.value ?? requirement.reason}`);
       }
       return;
     }

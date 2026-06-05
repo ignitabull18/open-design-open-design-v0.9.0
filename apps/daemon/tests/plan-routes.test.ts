@@ -1431,6 +1431,47 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('reports missing launch inputs before executing a launch sequence', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Launch Inputs Studio',
+        intent: { purpose: 'Show missing launch inputs before executing writes.' },
+        delivery: [{ target: 'vercel', status: 'planned' }],
+        selectedTools: [{ toolId: 'github-issues', status: 'wanted' }],
+      }),
+    });
+
+    const preview = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/launch`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.launch).toMatchObject({
+      planId: created.body.plan.id,
+      readyToExecute: false,
+    });
+    expect(preview.body.launch.missingInputs.join('\n')).toContain('Scaffold parent directory');
+    expect(preview.body.launch.missingInputs.join('\n')).toContain('Scaffold source directory');
+    expect(preview.body.launch.requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'scaffold-parent-dir', status: 'missing' }),
+      expect.objectContaining({ id: 'target-dir', status: 'missing' }),
+      expect.objectContaining({ id: 'delivery-target', status: 'ready', value: 'vercel' }),
+      expect.objectContaining({ id: 'project-management-target', status: 'ready', value: 'github-issues' }),
+    ]));
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/launch/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true }),
+    });
+    expect(executed.status).toBe(202);
+    expect(executed.body.runs).toEqual([]);
+    expect(executed.body.launch).toMatchObject({
+      readyToExecute: false,
+      missingInputs: expect.arrayContaining([expect.stringContaining('Scaffold parent directory')]),
+    });
+    expect(executed.body.stoppedAtActionId).toBe('scaffold');
+  });
+
   it('executes a confirmed Vercel deployment from a configured scaffold source', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'deploy-studio');

@@ -7,6 +7,7 @@ import type {
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectLaunchProofReport,
+  ProjectLaunchPreview,
   ProjectPlan,
   ProjectPlanReadinessReport,
   ProjectToolConnection,
@@ -24,6 +25,7 @@ import {
   executeProjectPlanLaunch,
   executeProjectPlanAction,
   getProjectLaunchProof,
+  getProjectPlanLaunchPreview,
   getProjectPlanReadiness,
   isPlanningAuthError,
   listProviderCapabilitySnapshots,
@@ -91,6 +93,7 @@ export function PlanningView() {
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
   const [readinessByPlanId, setReadinessByPlanId] = useState<Record<string, ProjectPlanReadinessReport>>({});
   const [proofByPlanId, setProofByPlanId] = useState<Record<string, ProjectLaunchProofReport>>({});
+  const [launchPreviewByPlanId, setLaunchPreviewByPlanId] = useState<Record<string, ProjectLaunchPreview>>({});
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
@@ -177,14 +180,17 @@ export function PlanningView() {
   const selectedIdeation = selectedPlan ? ideationByPlanId[selectedPlan.id] ?? [] : [];
   const selectedReadiness = selectedPlan ? readinessByPlanId[selectedPlan.id] ?? null : null;
   const selectedProof = selectedPlan ? proofByPlanId[selectedPlan.id] ?? null : null;
+  const selectedLaunchPreview = selectedPlan ? launchPreviewByPlanId[selectedPlan.id] ?? null : null;
 
   const refreshReadiness = useCallback(async (planId: string) => {
-    const [readinessResult, proofResult] = await Promise.all([
+    const [readinessResult, proofResult, launchResult] = await Promise.all([
       getProjectPlanReadiness(planId),
       getProjectLaunchProof(planId),
+      getProjectPlanLaunchPreview(planId),
     ]);
     setReadinessByPlanId((curr) => ({ ...curr, [planId]: readinessResult.readiness }));
     setProofByPlanId((curr) => ({ ...curr, [planId]: proofResult.proof }));
+    setLaunchPreviewByPlanId((curr) => ({ ...curr, [planId]: launchResult.launch }));
     setPlans((curr) => curr.map((plan) => (plan.id === readinessResult.plan.id ? readinessResult.plan : plan)));
   }, []);
 
@@ -205,16 +211,18 @@ export function PlanningView() {
   }, [ideationByPlanId, selectedPlan]);
 
   useEffect(() => {
-    if (!selectedPlan || (readinessByPlanId[selectedPlan.id] && proofByPlanId[selectedPlan.id])) return;
+    if (!selectedPlan || (readinessByPlanId[selectedPlan.id] && proofByPlanId[selectedPlan.id] && launchPreviewByPlanId[selectedPlan.id])) return;
     let cancelled = false;
     void Promise.all([
       getProjectPlanReadiness(selectedPlan.id),
       getProjectLaunchProof(selectedPlan.id),
+      getProjectPlanLaunchPreview(selectedPlan.id),
     ])
-      .then(([result, proofResult]) => {
+      .then(([result, proofResult, launchResult]) => {
         if (cancelled) return;
         setReadinessByPlanId((curr) => ({ ...curr, [selectedPlan.id]: result.readiness }));
         setProofByPlanId((curr) => ({ ...curr, [selectedPlan.id]: proofResult.proof }));
+        setLaunchPreviewByPlanId((curr) => ({ ...curr, [selectedPlan.id]: launchResult.launch }));
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -222,7 +230,7 @@ export function PlanningView() {
     return () => {
       cancelled = true;
     };
-  }, [proofByPlanId, readinessByPlanId, selectedPlan]);
+  }, [launchPreviewByPlanId, proofByPlanId, readinessByPlanId, selectedPlan]);
 
   async function handleCreatePlan() {
     setSaving(true);
@@ -385,6 +393,7 @@ export function PlanningView() {
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       setProofByPlanId((curr) => ({ ...curr, [result.plan.id]: result.proof }));
+      if (result.launch) setLaunchPreviewByPlanId((curr) => ({ ...curr, [result.plan.id]: result.launch! }));
       await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -721,6 +730,7 @@ export function PlanningView() {
               plan={selectedPlan}
               readiness={selectedReadiness}
               proof={selectedProof}
+              launchPreview={selectedLaunchPreview}
               ideationPrompt={ideationPrompt}
               ideationSessions={selectedIdeation}
               brainstorming={brainstorming}
@@ -888,6 +898,7 @@ function PlanDetail({
   plan,
   readiness,
   proof,
+  launchPreview,
   ideationPrompt,
   ideationSessions,
   brainstorming,
@@ -930,6 +941,7 @@ function PlanDetail({
   plan: ProjectPlan;
   readiness: ProjectPlanReadinessReport | null;
   proof: ProjectLaunchProofReport | null;
+  launchPreview: ProjectLaunchPreview | null;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
   brainstorming: boolean;
@@ -1114,6 +1126,17 @@ function PlanDetail({
       </div>
       <div className="planning-view__actions">
         <h3>Execution actions</h3>
+        {launchPreview && launchPreview.missingInputs.length > 0 ? (
+          <ul className="planning-view__readiness-list" aria-label="Launch inputs">
+            {launchPreview.missingInputs.slice(0, 4).map((input) => (
+              <li key={input}>
+                <strong>Launch input</strong>
+                <span>missing</span>
+                <small>{input}</small>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <button
           type="button"
           className="planning-view__primary"

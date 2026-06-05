@@ -447,6 +447,24 @@ export interface ProjectLaunchProofReport {
   gates: ProjectLaunchProofGate[];
 }
 
+export interface ProjectLaunchInputRequirement {
+  id: 'scaffold-parent-dir' | 'target-dir' | 'delivery-target' | 'project-management-target';
+  label: string;
+  status: 'ready' | 'missing' | 'not_applicable';
+  value?: string;
+  reason: string;
+  actionIds: PlanningExecutionAction['id'][];
+}
+
+export interface ProjectLaunchPreview {
+  planId: string;
+  generatedAt: number;
+  readyToExecute: boolean;
+  actionIds: PlanningExecutionAction['id'][];
+  missingInputs: string[];
+  requirements: ProjectLaunchInputRequirement[];
+}
+
 export interface RefreshProviderCapabilitySnapshotsRequest {
   persist?: boolean;
 }
@@ -513,6 +531,12 @@ export interface ProjectLaunchProofResponse {
   proof: ProjectLaunchProofReport;
 }
 
+export interface ProjectPlanLaunchPreviewResponse {
+  plan: ProjectPlan;
+  launch: ProjectLaunchPreview;
+  proof: ProjectLaunchProofReport;
+}
+
 export interface ProjectPlanExecutionRunResponse {
   plan: ProjectPlan;
   run: PlanningExecutionRun;
@@ -524,6 +548,7 @@ export interface ProjectPlanLaunchExecutionResponse {
   runs: PlanningExecutionRun[];
   artifacts: PlanningExecutionArtifact[];
   proof: ProjectLaunchProofReport;
+  launch?: ProjectLaunchPreview;
   stoppedAtActionId?: PlanningExecutionAction['id'];
   nextActionId?: PlanningExecutionAction['id'];
 }

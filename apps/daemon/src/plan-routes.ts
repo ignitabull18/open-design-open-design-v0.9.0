@@ -23,6 +23,7 @@ import type {
   ProjectPlanReadinessStatus,
   ProjectLaunchProofGate,
   ProjectLaunchProofGateId,
+  ProjectLaunchPreview,
   ProjectLaunchProofReport,
   ProviderCapabilityRefreshPolicy,
   ProviderCapabilityRefreshSchedule,
@@ -1178,6 +1179,21 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.get('/api/plans/:id/launch', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeLaunchExecutionBody(req.query as Record<string, unknown>);
+      res.json({
+        plan,
+        launch: buildLaunchPreview(plan, body),
+        proof: buildLaunchProofReport(plan),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/plans/:id/launch/execute', async (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1187,6 +1203,17 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         return res.status(409).json({
           error: 'confirmation required',
           confirmation: 'Repeat with confirmed: true after reviewing the launch sequence, provider writes, and deployment effects.',
+        });
+      }
+      const launchPreview = buildLaunchPreview(existing, body);
+      if (!launchPreview.readyToExecute) {
+        return res.status(202).json({
+          plan: existing,
+          runs: [],
+          artifacts: [],
+          proof: buildLaunchProofReport(existing),
+          launch: launchPreview,
+          ...(firstMissingLaunchActionId(launchPreview) ? { stoppedAtActionId: firstMissingLaunchActionId(launchPreview) } : {}),
         });
       }
       const result = await executePlanningLaunchSequence(existing, body, {
@@ -1461,8 +1488,8 @@ function normalizeLaunchExecutionBody(body: Record<string, unknown>): ExecutePro
     ...(typeof body.projectManagementTarget === 'string' && ['github-issues', 'linear', 'google-docs'].includes(body.projectManagementTarget)
       ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
       : {}),
-    validateProviders: body.validateProviders === true,
-    stopOnBlocked: body.stopOnBlocked !== false,
+    validateProviders: body.validateProviders === true || body.validateProviders === 'true',
+    stopOnBlocked: body.stopOnBlocked !== false && body.stopOnBlocked !== 'false',
   };
 }
 
@@ -2767,6 +2794,91 @@ const DEFAULT_LAUNCH_ACTION_SEQUENCE: PlanningExecutionAction['id'][] = [
   'deploy-runtime',
   'project-management',
 ];
+
+function buildLaunchPreview(
+  plan: ProjectPlan,
+  body: ExecuteProjectPlanLaunchRequest,
+): ProjectLaunchPreview {
+  const actionIds = body.actionIds?.length ? body.actionIds : DEFAULT_LAUNCH_ACTION_SEQUENCE;
+  const selectedActions = actionIds.filter((actionId) =>
+    plan.executionActions.some((action) => action.id === actionId && action.status !== 'completed'),
+  );
+  const requiresScaffoldParent = selectedActions.includes('scaffold');
+  const sourceActionIds = selectedActions.filter((actionId) =>
+    ['repo-create', 'provider-setup', 'database-materialize', 'database-migrate', 'design-materialize', 'deploy-runtime'].includes(actionId),
+  );
+  const requiresTargetDir = sourceActionIds.length > 0;
+  const projectManagementSelected = selectedActions.includes('project-management');
+  const deliverySelected = selectedActions.includes('deploy-runtime');
+  const deliveryTarget = body.deliveryTarget ?? plan.delivery[0]?.target;
+  const projectManagementTarget = body.projectManagementTarget ?? resolveOptionalProjectManagementTarget(plan);
+  const targetDir = body.targetDir ?? deriveLaunchScaffoldSourceDir(plan, body.scaffoldParentDir);
+  const requirements: ProjectLaunchPreview['requirements'] = [
+    {
+      id: 'scaffold-parent-dir',
+      label: 'Scaffold parent directory',
+      status: requiresScaffoldParent ? body.scaffoldParentDir || body.targetDir ? 'ready' : 'missing' : 'not_applicable',
+      ...(body.scaffoldParentDir || body.targetDir ? { value: body.scaffoldParentDir ?? body.targetDir } : {}),
+      reason: requiresScaffoldParent
+        ? 'Required to run Better-T-Stack into a known parent directory.'
+        : 'No scaffold action is selected for this launch sequence.',
+      actionIds: requiresScaffoldParent ? ['scaffold'] : [],
+    },
+    {
+      id: 'target-dir',
+      label: 'Scaffold source directory',
+      status: requiresTargetDir ? targetDir ? 'ready' : 'missing' : 'not_applicable',
+      ...(targetDir ? { value: targetDir } : {}),
+      reason: requiresTargetDir
+        ? 'Required for source-tree actions such as repo, provider setup, database, design, and deploy.'
+        : 'No source-tree action is selected for this launch sequence.',
+      actionIds: sourceActionIds,
+    },
+    {
+      id: 'delivery-target',
+      label: 'Delivery target',
+      status: deliverySelected ? deliveryTarget ? 'ready' : 'missing' : 'not_applicable',
+      ...(deliveryTarget ? { value: deliveryTarget } : {}),
+      reason: deliverySelected
+        ? 'Required to select which configured hosting provider receives the deployment.'
+        : 'Deployment is not selected for this launch sequence.',
+      actionIds: deliverySelected ? ['deploy-runtime'] : [],
+    },
+    {
+      id: 'project-management-target',
+      label: 'Project-management target',
+      status: projectManagementSelected ? projectManagementTarget ? 'ready' : 'missing' : 'not_applicable',
+      ...(projectManagementTarget ? { value: projectManagementTarget } : {}),
+      reason: projectManagementSelected
+        ? 'Required to create a GitHub Issues, Linear, or Google Docs handoff.'
+        : 'Project-management handoff is not selected for this launch sequence.',
+      actionIds: projectManagementSelected ? ['project-management'] : [],
+    },
+  ];
+  const missingInputs = requirements
+    .filter((requirement) => requirement.status === 'missing')
+    .map((requirement) => `${requirement.label}: ${requirement.reason}`);
+  return {
+    planId: plan.id,
+    generatedAt: Date.now(),
+    readyToExecute: missingInputs.length === 0,
+    actionIds: selectedActions,
+    missingInputs,
+    requirements,
+  };
+}
+
+function firstMissingLaunchActionId(preview: ProjectLaunchPreview): PlanningExecutionAction['id'] | undefined {
+  return preview.requirements.find((requirement) => requirement.status === 'missing')?.actionIds[0];
+}
+
+function resolveOptionalProjectManagementTarget(plan: ProjectPlan): ProjectManagementTarget | undefined {
+  const selected = new Set(plan.selectedTools.map((tool) => tool.toolId));
+  if (selected.has('github-issues')) return 'github-issues';
+  if (selected.has('linear')) return 'linear';
+  if (selected.has('google-docs')) return 'google-docs';
+  return undefined;
+}
 
 async function executePlanningLaunchSequence(
   plan: ProjectPlan,
