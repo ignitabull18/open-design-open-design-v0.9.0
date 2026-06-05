@@ -1049,6 +1049,27 @@ function SectionWorkflowPanel({
   const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
   const actions = plan.executionActions.filter((action) => action.relatedSectionIds.includes(section.id));
   const capabilities = plan.providerCapabilities.filter((snapshot) => section.toolIds.includes(snapshot.toolId));
+  const latestRun = [...(plan.executionRuns ?? [])]
+    .reverse()
+    .find((run) => run.kind === 'section-agent' && run.sectionId === section.id);
+  const latestManifest = latestRun
+    ? [...(plan.executionArtifacts ?? [])]
+      .reverse()
+      .find((artifact) =>
+        artifact.kind === 'specialist-agent-manifest'
+        && latestRun.artifactIds.includes(artifact.id)
+        && artifact.title.includes(section.label),
+      )
+    : undefined;
+  const readyLanes = lanes.filter((lane) => lane.status === 'ready').length;
+  const blockedLanes = lanes.filter((lane) => lane.status === 'blocked').length;
+  const acceptedActions = actions.filter((action) => action.status === 'accepted' || action.status === 'completed').length;
+  const blockedActions = actions.filter((action) => action.status === 'blocked').length;
+  const dependencies = Array.from(new Set(lanes.flatMap((lane) => lane.dependsOn)));
+  const parallelPeers = Array.from(new Set(lanes.flatMap((lane) => lane.parallelWith)));
+  const providerRisks = capabilities.flatMap((snapshot) =>
+    snapshot.riskNotes.slice(0, 1).map((risk) => `${snapshot.toolId}: ${risk}`),
+  );
 
   useEffect(() => {
     setAnswerText(answer?.answers.join('\n') ?? '');
@@ -1068,6 +1089,64 @@ function SectionWorkflowPanel({
         >
           {executionSaving === `section:${section.id}` ? 'Running...' : 'Run section agent'}
         </button>
+      </div>
+      <div className="planning-view__section-dashboard" aria-label={`${section.label} section dashboard`}>
+        <div className="planning-view__section-metric">
+          <strong>{answer?.status ?? 'not_started'}</strong>
+          <span>Decision status</span>
+        </div>
+        <div className="planning-view__section-metric">
+          <strong>{readyLanes}/{lanes.length || 0}</strong>
+          <span>Ready lanes</span>
+        </div>
+        <div className="planning-view__section-metric">
+          <strong>{acceptedActions}/{actions.length || 0}</strong>
+          <span>Accepted actions</span>
+        </div>
+        <div className="planning-view__section-metric">
+          <strong>{blockedLanes + blockedActions}</strong>
+          <span>Visible blockers</span>
+        </div>
+      </div>
+      <div className="planning-view__section-agent-summary">
+        <div>
+          <h4>Latest specialist run</h4>
+          {latestRun ? (
+            <div className="planning-view__workflow-item">
+              <strong>{latestRun.status} · {latestRun.mode}</strong>
+              <span>{latestRun.summary}</span>
+              <small>{latestRun.evidence.slice(0, 3).join(' · ')}</small>
+            </div>
+          ) : (
+            <span className="planning-view__muted">No specialist run has been recorded for this section yet.</span>
+          )}
+        </div>
+        <div>
+          <h4>Agent manifest</h4>
+          {latestManifest ? (
+            <div className="planning-view__workflow-item">
+              <strong>{latestManifest.title}</strong>
+              <span>{latestManifest.kind}</span>
+              <small>{latestManifest.id}</small>
+            </div>
+          ) : (
+            <span className="planning-view__muted">Run this section agent to generate a structured specialist manifest.</span>
+          )}
+        </div>
+      </div>
+      <div className="planning-view__section-dependency-grid">
+        <div>
+          <h4>Dependencies</h4>
+          {dependencies.length ? dependencies.map((dependency) => <span key={dependency}>{dependency}</span>) : <span>none</span>}
+        </div>
+        <div>
+          <h4>Parallel peers</h4>
+          {parallelPeers.length ? parallelPeers.map((peer) => <span key={peer}>{peer}</span>) : <span>none</span>}
+        </div>
+        <div>
+          <h4>Provider risks</h4>
+          {providerRisks.length ? providerRisks.map((risk) => <span key={risk}>{risk}</span>) : <span>none recorded</span>}
+        </div>
       </div>
       <dl>
         <div>
