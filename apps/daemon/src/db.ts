@@ -227,6 +227,10 @@ function migrate(db: SqliteDb): void {
       provider_capabilities_json TEXT NOT NULL DEFAULT '[]',
       runtime_plan_json TEXT NOT NULL DEFAULT '{}',
       execution_actions_json TEXT NOT NULL DEFAULT '[]',
+      execution_runs_json TEXT NOT NULL DEFAULT '[]',
+      execution_artifacts_json TEXT NOT NULL DEFAULT '[]',
+      tool_checks_json TEXT NOT NULL DEFAULT '[]',
+      scaffold_execution_json TEXT NOT NULL DEFAULT '{}',
       scaffold_json TEXT NOT NULL,
       repo_json TEXT NOT NULL,
       delivery_json TEXT NOT NULL,
@@ -339,6 +343,18 @@ function migrate(db: SqliteDb): void {
   }
   if (!planCols.some((c: DbRow) => c.name === 'execution_actions_json')) {
     db.exec(`ALTER TABLE plans ADD COLUMN execution_actions_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'execution_runs_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN execution_runs_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'execution_artifacts_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN execution_artifacts_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'tool_checks_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN tool_checks_json TEXT NOT NULL DEFAULT '[]'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'scaffold_execution_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN scaffold_execution_json TEXT NOT NULL DEFAULT '{}'`);
   }
   // schedule_json holds the full RoutineSchedule object (kind discriminator
   // plus kind-specific fields like time/timezone/weekday). The legacy
@@ -1523,6 +1539,10 @@ const PLAN_COLS = `id, name,
   provider_capabilities_json AS providerCapabilitiesJson,
   runtime_plan_json AS runtimePlanJson,
   execution_actions_json AS executionActionsJson,
+  execution_runs_json AS executionRunsJson,
+  execution_artifacts_json AS executionArtifactsJson,
+  tool_checks_json AS toolChecksJson,
+  scaffold_execution_json AS scaffoldExecutionJson,
   scaffold_json AS scaffoldJson,
   repo_json AS repoJson,
   delivery_json AS deliveryJson,
@@ -1549,9 +1569,10 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
        (id, name, intent_json, selected_tools_json, stack_json,
         database_design_json, agent_lanes_json, ideation_questions_json,
         workspace_sections_json, section_answers_json, provider_capabilities_json,
-        runtime_plan_json, execution_actions_json, scaffold_json, repo_json, delivery_json,
+        runtime_plan_json, execution_actions_json, execution_runs_json, execution_artifacts_json,
+        tool_checks_json, scaffold_execution_json, scaffold_json, repo_json, delivery_json,
         created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     plan.id,
     plan.name,
@@ -1566,6 +1587,10 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     JSON.stringify(plan.providerCapabilities ?? []),
     JSON.stringify(plan.runtimePlan ?? {}),
     JSON.stringify(plan.executionActions ?? []),
+    JSON.stringify(plan.executionRuns ?? []),
+    JSON.stringify(plan.executionArtifacts ?? []),
+    JSON.stringify(plan.toolChecks ?? []),
+    JSON.stringify(plan.scaffoldExecution ?? {}),
     JSON.stringify(plan.scaffold ?? {}),
     JSON.stringify(plan.repo ?? {}),
     JSON.stringify(plan.delivery ?? []),
@@ -1599,6 +1624,10 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
             provider_capabilities_json = ?,
             runtime_plan_json = ?,
             execution_actions_json = ?,
+            execution_runs_json = ?,
+            execution_artifacts_json = ?,
+            tool_checks_json = ?,
+            scaffold_execution_json = ?,
             scaffold_json = ?,
             repo_json = ?,
             delivery_json = ?,
@@ -1617,6 +1646,10 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
     JSON.stringify(merged.providerCapabilities ?? []),
     JSON.stringify(merged.runtimePlan ?? {}),
     JSON.stringify(merged.executionActions ?? []),
+    JSON.stringify(merged.executionRuns ?? []),
+    JSON.stringify(merged.executionArtifacts ?? []),
+    JSON.stringify(merged.toolChecks ?? []),
+    JSON.stringify(merged.scaffoldExecution ?? {}),
     JSON.stringify(merged.scaffold ?? {}),
     JSON.stringify(merged.repo ?? {}),
     JSON.stringify(merged.delivery ?? []),
@@ -1646,6 +1679,10 @@ function normalizePlan(row: DbRow) {
     providerCapabilities: parseJsonObject(row.providerCapabilitiesJson, []),
     runtimePlan: parseJsonObject(row.runtimePlanJson, {}),
     executionActions: parseJsonObject(row.executionActionsJson, []),
+    executionRuns: parseJsonObject(row.executionRunsJson, []),
+    executionArtifacts: parseJsonObject(row.executionArtifactsJson, []),
+    toolChecks: parseJsonObject(row.toolChecksJson, []),
+    scaffoldExecution: parseJsonObject(row.scaffoldExecutionJson, {}),
     scaffold: parseJsonObject(row.scaffoldJson, {}),
     repo: parseJsonObject(row.repoJson, {}),
     delivery: parseJsonObject(row.deliveryJson, []),

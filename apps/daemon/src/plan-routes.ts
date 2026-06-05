@@ -1,6 +1,7 @@
 import type { Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type {
+  CheckProjectPlanToolRequest,
   CreateProjectIdeationRequest,
   ExecuteProjectPlanActionRequest,
   CreateProjectPlanRequest,
@@ -10,7 +11,10 @@ import type {
   PlanningAgentLane,
   PlanningExecutionAction,
   PlanningRuntimePlan,
+  PlanningExecutionArtifact,
+  PlanningExecutionRun,
   PlanningToolOption,
+  PlanningToolCheck,
   ProjectIdeaOption,
   ProjectIdeationSession,
   ProjectIntentBrief,
@@ -23,6 +27,8 @@ import type {
   ProjectToolConnection,
   ProjectWorkspaceSection,
   RepoPlan,
+  RunProjectPlanSectionRequest,
+  ScaffoldExecutionPlan,
   ScaffoldPlan,
   UpdateProjectSectionRequest,
   UpdateProjectPlanRequest,
@@ -49,6 +55,10 @@ interface ProjectPlanBuildInput {
   sectionAnswers?: ProjectSectionAnswers;
   repo?: Partial<RepoPlan>;
   delivery?: DeliveryPlan[];
+  executionRuns?: PlanningExecutionRun[];
+  executionArtifacts?: PlanningExecutionArtifact[];
+  toolChecks?: PlanningToolCheck[];
+  scaffoldExecution?: ScaffoldExecutionPlan;
   createdAt: number;
   updatedAt: number;
 }
@@ -291,6 +301,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.get('/api/plans/:id/execution', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json(buildExecutionResponse(plan));
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.get('/api/plans/:id/sections/:sectionId', (req, res) => {
     try {
       const plan = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -372,6 +392,77 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         updatedAt: Date.now(),
       });
       res.json({ plan: updated, action: nextActions.find((item) => item.id === body.actionId) });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/actions/:actionId/execute', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeActionExecutionBody(req.params.actionId, req.body || {});
+      const action = existing.executionActions.find((item) => item.id === body.actionId);
+      if (!action) return res.status(404).json({ error: 'plan action not found' });
+      if (action.requiresConfirmation && !body.confirmed) {
+        return res.status(409).json({
+          error: 'confirmation required',
+          action,
+          confirmation: 'Repeat with confirmed: true after reviewing the command, preconditions, and effects.',
+        });
+      }
+      const { planPatch, run, artifacts } = executePlanningAction(existing, action, body);
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        ...planPatch,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(run.status === 'blocked' ? 202 : 201).json({ plan: updated, run, artifacts });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/sections/:sectionId/runs', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeSectionRunBody(req.params.sectionId);
+      const section = existing.workspaceSections.find((item) => item.id === body.sectionId);
+      if (!section) return res.status(404).json({ error: 'plan section not found' });
+      const { run, artifacts } = runPlanningSection(existing, section);
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        executionRuns: [...(existing.executionRuns ?? []), run],
+        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({ plan: updated, run, artifacts });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/tools/:toolId/check', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeToolCheckBody(req.params.toolId);
+      const tool = APPROVED_TOOLS.find((item) => item.id === body.toolId);
+      if (!tool) return res.status(404).json({ error: 'planning tool not found' });
+      const { run, toolCheck, artifacts, selectedTools } = checkPlanningTool(existing, body.toolId);
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        selectedTools,
+        executionRuns: [...(existing.executionRuns ?? []), run],
+        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        toolChecks: [toolCheck, ...(existing.toolChecks ?? []).filter((item) => item.toolId !== body.toolId)],
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({ plan: updated, run, toolCheck, artifacts });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message ?? err) });
     }
@@ -469,6 +560,43 @@ function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanA
   };
 }
 
+function normalizeActionExecutionBody(
+  actionIdParam: string,
+  body: Record<string, unknown>,
+): ExecuteProjectPlanActionRequest {
+  const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, or provider-research');
+  }
+  return {
+    actionId,
+    confirmed: body.confirmed === true,
+    ...(typeof body.targetDir === 'string' && body.targetDir.trim() ? { targetDir: body.targetDir.trim() } : {}),
+  };
+}
+
+function normalizeSectionRunBody(sectionIdParam: string): RunProjectPlanSectionRequest {
+  return { sectionId: normalizeSectionId(sectionIdParam) };
+}
+
+function normalizeToolCheckBody(toolIdParam: string): CheckProjectPlanToolRequest {
+  const toolId = cleanRequiredString(toolIdParam, 'toolId') as CheckProjectPlanToolRequest['toolId'];
+  if (!APPROVED_TOOLS.some((tool) => tool.id === toolId)) {
+    throw new Error('toolId must be one of the approved planning tool ids');
+  }
+  return { toolId };
+}
+
+function buildExecutionResponse(plan: ProjectPlan) {
+  return {
+    plan,
+    runs: plan.executionRuns ?? [],
+    artifacts: plan.executionArtifacts ?? [],
+    toolChecks: plan.toolChecks ?? [],
+    scaffoldExecution: plan.scaffoldExecution ?? { status: 'not_started' as const },
+  };
+}
+
 function normalizeCreateBody(body: Record<string, unknown>): CreateProjectPlanRequest {
   const name = cleanRequiredString(body.name, 'name');
   const intent = normalizeIntent(body.intent, false);
@@ -522,6 +650,10 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     providerCapabilities: buildProviderCapabilities(selectedTools),
     runtimePlan: buildRuntimePlan(stack, selectedTools),
     executionActions: buildExecutionActions(input.name, stack, selectedTools, sectionAnswers, repoPatch),
+    executionRuns: input.executionRuns ?? [],
+    executionArtifacts: input.executionArtifacts ?? [],
+    toolChecks: input.toolChecks ?? [],
+    scaffoldExecution: input.scaffoldExecution ?? { status: 'not_started' },
     scaffold: buildScaffoldPlan(input.name, stack, selectedTools, sectionAnswers),
     repo: {
       ...repoRest,
@@ -700,6 +832,239 @@ function buildExecutionActions(
       relatedSectionIds: ['delivery', 'integrations'],
     },
   ];
+}
+
+function executePlanningAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+): {
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+} {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const artifact = buildActionArtifact(plan, action, runId, body);
+  const isProviderResearch = action.id === 'provider-research';
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: action.id,
+    status: isProviderResearch ? 'completed' : 'blocked',
+    title: action.label,
+    mode: isProviderResearch ? 'record-only' : 'dry-run',
+    summary: isProviderResearch
+      ? 'Provider capability snapshots were reviewed and recorded as execution evidence.'
+      : 'External execution is gated. This run records the reviewed command, preconditions, and remaining provider write work.',
+    ...(action.command ? { command: action.command } : {}),
+    startedAt: now,
+    completedAt: now,
+    artifactIds: [artifact.id],
+    evidence: isProviderResearch
+      ? plan.providerCapabilities.map((snapshot) => `${snapshot.toolId} checked ${snapshot.checkedAt} from ${snapshot.sourceUrl}`)
+      : [
+        'External writes are not performed by this first execution foundation.',
+        'The action remains accepted or blocked until a provider-specific executor records proof.',
+      ],
+  };
+  const nextActionStatus: PlanningExecutionAction['status'] = isProviderResearch ? 'completed' : 'accepted';
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === action.id ? { ...item, status: nextActionStatus } : item,
+  );
+  const scaffoldExecution: ScaffoldExecutionPlan = action.id === 'scaffold'
+    ? {
+      status: 'planned',
+      ...(body.targetDir ? { targetDir: body.targetDir } : {}),
+      lastRunId: run.id,
+      ...(action.command ? { lastCommand: action.command } : {}),
+      notes: [
+        'Better-T-Stack command recorded. Real scaffold execution still needs the provider-specific executor.',
+        ...action.preconditions,
+      ],
+      updatedAt: now,
+    }
+    : plan.scaffoldExecution ?? { status: 'not_started' };
+  const repo = action.id === 'repo-create'
+    ? { ...plan.repo, status: 'planned' as const }
+    : plan.repo;
+  const delivery = action.id === 'deploy-runtime'
+    ? plan.delivery.map((item) => item.status === 'not_started' ? { ...item, status: 'planned' as const } : item)
+    : plan.delivery;
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution,
+      repo,
+      delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+function buildActionArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  body: ExecuteProjectPlanActionRequest,
+): PlanningExecutionArtifact {
+  const now = Date.now();
+  const content = [
+    `Plan: ${plan.name}`,
+    `Action: ${action.label}`,
+    `Status: ${action.id === 'provider-research' ? 'completed' : 'external executor pending'}`,
+    action.command ? `Command:\n${action.command}` : '',
+    body.targetDir ? `Target directory: ${body.targetDir}` : '',
+    '',
+    'Preconditions:',
+    ...action.preconditions.map((item) => `- ${item}`),
+    '',
+    'Expected effects:',
+    ...action.effects.map((item) => `- ${item}`),
+    '',
+    action.id === 'provider-research'
+      ? `Provider snapshots:\n${plan.providerCapabilities.map((snapshot) => `- ${snapshot.toolId}: checked ${snapshot.checkedAt} (${snapshot.sourceUrl})`).join('\n')}`
+      : 'External writes were not performed in this run. Provider-specific execution must attach command output or live proof in a later run.',
+  ].filter(Boolean).join('\n');
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: action.id === 'provider-research'
+      ? 'provider-research'
+      : action.id === 'scaffold'
+        ? 'scaffold-plan'
+        : action.id === 'repo-create'
+          ? 'repo-plan'
+          : 'deployment-plan',
+    title: `${action.label} execution note`,
+    content,
+    createdAt: now,
+  };
+}
+
+function runPlanningSection(
+  plan: ProjectPlan,
+  section: ProjectWorkspaceSection,
+): { run: PlanningExecutionRun; artifacts: PlanningExecutionArtifact[] } {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const laneIds = new Set(section.relatedLaneIds);
+  const lanes = plan.agentLanes.filter((lane) => lane.sectionId === section.id || laneIds.has(lane.id));
+  const questions = plan.ideationQuestions.filter((question) => laneIds.has(question.laneId));
+  const answer = plan.sectionAnswers[section.id];
+  const artifact: PlanningExecutionArtifact = {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: section.id === 'database' ? 'database-draft' : 'section-output',
+    title: `${section.label} section output draft`,
+    content: [
+      `Section: ${section.label}`,
+      `Purpose: ${section.purpose}`,
+      '',
+      'Accepted answers:',
+      ...(answer?.answers.length ? answer.answers.map((item) => `- ${item}`) : ['- No accepted answers yet.']),
+      answer?.notes ? `Notes: ${answer.notes}` : '',
+      '',
+      'Agent lanes:',
+      ...lanes.map((lane) => `- ${lane.label}: ${lane.outputs.join(', ')}`),
+      '',
+      'Pointed questions:',
+      ...questions.map((question) => `- ${question.question}`),
+      section.id === 'database'
+        ? `\nDatabase draft:\nEntities: ${plan.databaseDesign.entities.join(', ')}\nRelationships: ${plan.databaseDesign.relationships.join(' | ')}\nMigrations: ${plan.databaseDesign.migrations.join(' | ')}`
+        : '',
+    ].filter(Boolean).join('\n'),
+    createdAt: now,
+  };
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'section-agent',
+    sectionId: section.id,
+    status: 'completed',
+    title: `${section.label} planning agent run`,
+    mode: 'record-only',
+    summary: `Generated a durable ${section.label} section output draft from stored answers, lanes, and provider notes.`,
+    startedAt: now,
+    completedAt: now,
+    artifactIds: [artifact.id],
+    evidence: [
+      `${lanes.length} lane(s) considered`,
+      `${questions.length} pointed question(s) attached`,
+      answer ? `section answer status: ${answer.status}` : 'no section answer stored yet',
+    ],
+  };
+  return { run, artifacts: [artifact] };
+}
+
+function checkPlanningTool(
+  plan: ProjectPlan,
+  toolId: PlanningToolCheck['toolId'],
+): {
+  run: PlanningExecutionRun;
+  toolCheck: PlanningToolCheck;
+  artifacts: PlanningExecutionArtifact[];
+  selectedTools: ProjectToolConnection[];
+} {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const snapshot = plan.providerCapabilities.find((item) => item.toolId === toolId);
+  const tool = APPROVED_TOOLS.find((item) => item.id === toolId);
+  const status: PlanningToolCheck['status'] = snapshot ? 'connected' : 'blocked';
+  const evidence = snapshot
+    ? [
+      `Provider snapshot available: ${snapshot.sourceUrl}`,
+      `Checked at ${snapshot.checkedAt}`,
+      ...snapshot.planningImplications.slice(0, 2),
+    ]
+    : [
+      'No provider snapshot is attached to this plan for the requested tool.',
+      'Select the tool or refresh provider capabilities before relying on this provider.',
+    ];
+  const toolCheck: PlanningToolCheck = {
+    id: `tool-check-${randomUUID()}`,
+    planId: plan.id,
+    toolId,
+    status,
+    summary: status === 'connected'
+      ? `${tool?.label ?? toolId} has planning evidence attached to this plan.`
+      : `${tool?.label ?? toolId} is not yet backed by plan-specific capability evidence.`,
+    evidence,
+    checkedAt: now,
+  };
+  const artifact: PlanningExecutionArtifact = {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'tool-check',
+    title: `${tool?.label ?? toolId} tool check`,
+    content: [`Tool: ${tool?.label ?? toolId}`, `Status: ${status}`, '', ...evidence.map((item) => `- ${item}`)].join('\n'),
+    createdAt: now,
+  };
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'tool-check',
+    toolId,
+    status: status === 'connected' ? 'completed' : 'blocked',
+    title: `${tool?.label ?? toolId} tool check`,
+    mode: 'record-only',
+    summary: toolCheck.summary,
+    startedAt: now,
+    completedAt: now,
+    artifactIds: [artifact.id],
+    evidence,
+  };
+  const selectedTools = plan.selectedTools.map((item) =>
+    item.toolId === toolId ? { ...item, status } : item,
+  );
+  return { run, toolCheck, artifacts: [artifact], selectedTools };
 }
 
 function buildIdeationSession(plan: ProjectPlan, prompt: string): ProjectIdeationSession {

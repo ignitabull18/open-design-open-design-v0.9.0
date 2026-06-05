@@ -11,15 +11,18 @@ import type {
 import { Icon } from './Icon';
 import {
   acceptProjectPlanAction,
+  checkProjectPlanTool,
   createPlanningSession,
   createProjectIdeationSession,
   createProjectPlan,
+  executeProjectPlanAction,
   isPlanningAuthError,
   listProviderCapabilitySnapshots,
   listProjectIdeationSessions,
   listPlanningTools,
   listProjectPlans,
   refreshProviderCapabilitySnapshots,
+  runProjectPlanSection,
   updateProjectSectionWorkflow,
 } from '../providers/plans';
 
@@ -59,6 +62,7 @@ export function PlanningView() {
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [actionSaving, setActionSaving] = useState<string | null>(null);
+  const [executionSaving, setExecutionSaving] = useState<string | null>(null);
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -248,6 +252,51 @@ export function PlanningView() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionSaving(null);
+    }
+  }
+
+  async function handleExecuteAction(actionId: ProjectPlan['executionActions'][number]['id']) {
+    if (!selectedPlan) return;
+    setExecutionSaving(`action:${actionId}`);
+    setError(null);
+    try {
+      const result = await executeProjectPlanAction(selectedPlan.id, {
+        actionId,
+        confirmed: true,
+      });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
+    }
+  }
+
+  async function handleRunSection(sectionId: ProjectWorkspaceSection['id']) {
+    if (!selectedPlan) return;
+    setExecutionSaving(`section:${sectionId}`);
+    setError(null);
+    try {
+      const result = await runProjectPlanSection(selectedPlan.id, { sectionId });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
+    }
+  }
+
+  async function handleCheckTool(toolId: ProjectToolConnection['toolId']) {
+    if (!selectedPlan) return;
+    setExecutionSaving(`tool:${toolId}`);
+    setError(null);
+    try {
+      const result = await checkProjectPlanTool(selectedPlan.id, { toolId });
+      setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExecutionSaving(null);
     }
   }
 
@@ -477,11 +526,15 @@ export function PlanningView() {
               brainstorming={brainstorming}
               sectionSaving={sectionSaving}
               actionSaving={actionSaving}
+              executionSaving={executionSaving}
               capabilities={capabilities}
               onIdeationPromptChange={setIdeationPrompt}
               onBrainstorm={handleBrainstorm}
               onSaveSectionAnswer={handleSaveSectionAnswer}
               onAcceptAction={handleAcceptAction}
+              onExecuteAction={handleExecuteAction}
+              onRunSection={handleRunSection}
+              onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
               refreshingCapabilities={refreshingCapabilities}
             />
@@ -522,12 +575,16 @@ function PlanDetail({
   brainstorming,
   sectionSaving,
   actionSaving,
+  executionSaving,
   capabilities,
   refreshingCapabilities,
   onIdeationPromptChange,
   onBrainstorm,
   onSaveSectionAnswer,
   onAcceptAction,
+  onExecuteAction,
+  onRunSection,
+  onCheckTool,
   onRefreshCapabilities,
 }: {
   plan: ProjectPlan;
@@ -536,12 +593,16 @@ function PlanDetail({
   brainstorming: boolean;
   sectionSaving: string | null;
   actionSaving: string | null;
+  executionSaving: string | null;
   capabilities: ProviderCapabilitySnapshot[];
   refreshingCapabilities: boolean;
   onIdeationPromptChange: (prompt: string) => void;
   onBrainstorm: () => void;
   onSaveSectionAnswer: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
   onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
+  onExecuteAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
+  onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
+  onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
 }) {
   const visibleCapabilities = plan.providerCapabilities.length > 0
@@ -628,8 +689,10 @@ function PlanDetail({
             plan={plan}
             saving={sectionSaving === activeSection.id}
             actionSaving={actionSaving}
+            executionSaving={executionSaving}
             onSave={onSaveSectionAnswer}
             onAcceptAction={onAcceptAction}
+            onRunSection={onRunSection}
           />
         ) : null}
       </div>
@@ -658,8 +721,49 @@ function PlanDetail({
             >
               {actionSaving === action.id ? 'Accepting...' : action.status === 'accepted' ? 'Accepted' : 'Accept action'}
             </button>
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={executionSaving === `action:${action.id}`}
+              onClick={() => onExecuteAction(action.id)}
+            >
+              {executionSaving === `action:${action.id}` ? 'Recording...' : 'Execute'}
+            </button>
           </article>
         ))}
+      </div>
+      <div className="planning-view__actions">
+        <h3>Execution history</h3>
+        {(plan.executionRuns ?? []).length === 0 ? <p className="planning-view__muted">No execution runs yet.</p> : null}
+        {(plan.executionRuns ?? []).slice(0, 6).map((run) => (
+          <article key={run.id} className="planning-view__action">
+            <div>
+              <strong>{run.title}</strong>
+              <span>{run.status} · {run.kind} · {run.mode}</span>
+            </div>
+            <span>{run.summary}</span>
+          </article>
+        ))}
+        {(plan.executionArtifacts ?? []).length > 0 ? (
+          <div className="planning-view__task-list">
+            <h3>Artifacts</h3>
+            <ul>
+              {(plan.executionArtifacts ?? []).slice(0, 5).map((artifact) => (
+                <li key={artifact.id}>{artifact.kind}: {artifact.title}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {(plan.toolChecks ?? []).length > 0 ? (
+          <div className="planning-view__task-list">
+            <h3>Tool checks</h3>
+            <ul>
+              {(plan.toolChecks ?? []).map((check) => (
+                <li key={check.id}>{check.toolId}: {check.status}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </div>
       <div className="planning-view__capabilities">
         <div className="planning-view__capability-header">
@@ -678,6 +782,14 @@ function PlanDetail({
             <strong>{snapshot.label}</strong>
             <span>Checked {snapshot.checkedAt}</span>
             <p>{snapshot.planningImplications[0]}</p>
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={executionSaving === `tool:${snapshot.toolId}`}
+              onClick={() => onCheckTool(snapshot.toolId)}
+            >
+              {executionSaving === `tool:${snapshot.toolId}` ? 'Checking...' : 'Check tool'}
+            </button>
           </article>
         ))}
       </div>
@@ -745,15 +857,19 @@ function SectionWorkflowPanel({
   plan,
   saving,
   actionSaving,
+  executionSaving,
   onSave,
   onAcceptAction,
+  onRunSection,
 }: {
   section: ProjectWorkspaceSection;
   plan: ProjectPlan;
   saving: boolean;
   actionSaving: string | null;
+  executionSaving: string | null;
   onSave: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
   onAcceptAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
+  onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
 }) {
   const answer = plan.sectionAnswers[section.id];
   const [answerText, setAnswerText] = useState(answer?.answers.join('\n') ?? '');
@@ -774,6 +890,14 @@ function SectionWorkflowPanel({
       <div>
         <strong>{section.label}</strong>
         <span>{section.purpose}</span>
+        <button
+          type="button"
+          className="planning-view__secondary"
+          disabled={executionSaving === `section:${section.id}`}
+          onClick={() => onRunSection(section.id)}
+        >
+          {executionSaving === `section:${section.id}` ? 'Running...' : 'Run section agent'}
+        </button>
       </div>
       <dl>
         <div>

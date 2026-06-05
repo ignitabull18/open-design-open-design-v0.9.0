@@ -186,6 +186,7 @@ const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
+  'target-dir', 'tool',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4637,6 +4638,14 @@ async function runPlan(args) {
   od plan actions <id> [--json]                  List executable plan actions.
   od plan action <id> --action <name> --confirmed
                                                  Accept a gated execution action.
+  od plan execution <id> [--json]                Show execution runs, artifacts, and tool checks.
+  od plan execute <id> --action <name> --confirmed
+                 [--target-dir <path>] [--json] Execute or record one plan action.
+  od plan run-section <id> --section <name> [--json]
+                                                 Run a section planning agent and store its output.
+  od plan check-tool <id> --tool <tool-id> [--json]
+                                                 Check plan-specific provider evidence for one tool.
+  od plan artifacts <id> [--json]                List generated plan execution artifacts.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
   od plan brainstorm <id> --prompt-file <path|->
@@ -4840,6 +4849,109 @@ Common options:
       console.log(`[plan] accepted action ${actionId} for ${id}`);
       return;
     }
+    case 'execution': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan execution <id> [--json]');
+        process.exit(2);
+      }
+      const data = await fetchPlanExecution(base, id);
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] execution ${id}`);
+      console.log(`Runs: ${(data.runs ?? []).length}\tArtifacts: ${(data.artifacts ?? []).length}\tTool checks: ${(data.toolChecks ?? []).length}`);
+      for (const run of data.runs ?? []) {
+        console.log(`${run.id}\t${run.status}\t${run.kind}\t${run.title}`);
+      }
+      return;
+    }
+    case 'execute': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
+      if (!id || !actionId) {
+        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research> [--confirmed] [--target-dir <path>] [--json]');
+        process.exit(2);
+      }
+      const body = {
+        confirmed: flags.confirmed === true,
+        ...(typeof flags['target-dir'] === 'string' ? { targetDir: flags['target-dir'] } : {}),
+      };
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/actions/${actionId}/execute failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(resp.status === 409 ? 2 : 1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] run ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
+      console.log(data.run?.summary ?? '');
+      return;
+    }
+    case 'run-section': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const sectionId = typeof flags.section === 'string' ? flags.section.trim() : '';
+      if (!id || !sectionId) {
+        console.error('Usage: od plan run-section <id> --section <planning|design|database|integrations|ai|workflows|delivery> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}/runs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/sections/${sectionId}/runs failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] section run ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
+      console.log(data.artifacts?.[0]?.title ?? '');
+      return;
+    }
+    case 'check-tool': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const toolId = typeof flags.tool === 'string' ? flags.tool.trim() : '';
+      if (!id || !toolId) {
+        console.error('Usage: od plan check-tool <id> --tool <tool-id> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/tools/${encodeURIComponent(toolId)}/check`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/tools/${toolId}/check failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] tool check ${data.toolCheck?.toolId ?? toolId}: ${data.toolCheck?.status ?? '-'}`);
+      console.log(data.toolCheck?.summary ?? '');
+      return;
+    }
+    case 'artifacts': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan artifacts <id> [--json]');
+        process.exit(2);
+      }
+      const data = await fetchPlanExecution(base, id);
+      const artifacts = data.artifacts ?? [];
+      if (flags.json) return process.stdout.write(JSON.stringify({ artifacts }, null, 2) + '\n');
+      if (artifacts.length === 0) {
+        console.log('No execution artifacts yet.');
+        return;
+      }
+      for (const artifact of artifacts) {
+        console.log(`${artifact.id}\t${artifact.kind}\t${artifact.title}`);
+      }
+      return;
+    }
     case 'section': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const sectionId = typeof flags.section === 'string' ? flags.section.trim() : '';
@@ -4965,6 +5077,12 @@ function requiredJson(path, flag) {
 
 async function fetchPlan(base, id) {
   const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}`);
+  if (!resp.ok) return structuredHttpFailure(resp);
+  return resp.json();
+}
+
+async function fetchPlanExecution(base, id) {
+  const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/execution`);
   if (!resp.ok) return structuredHttpFailure(resp);
   return resp.json();
 }

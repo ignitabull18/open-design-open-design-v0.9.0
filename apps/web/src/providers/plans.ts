@@ -1,14 +1,19 @@
 import type {
   CreatePlanningSessionRequest,
+  CheckProjectPlanToolRequest,
   CreateProjectPlanRequest,
   ExecuteProjectPlanActionRequest,
   CreateProjectIdeationRequest,
   PlanningSessionResponse,
+  ProjectPlanExecutionResponse,
+  ProjectPlanExecutionRunResponse,
+  ProjectPlanToolCheckResponse,
   ProjectSectionWorkflowResponse,
   ProjectIdeationSessionResponse,
   ProjectIdeationSessionsResponse,
   ProjectSectionAnswers,
   ProjectWorkspaceSection,
+  RunProjectPlanSectionRequest,
   UpdateProjectSectionRequest,
   ProjectToolConnection,
   ProviderCapabilitySnapshotsResponse,
@@ -167,4 +172,50 @@ export function acceptProjectPlanAction(
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+export function getProjectPlanExecution(planId: string): Promise<ProjectPlanExecutionResponse> {
+  return jsonFetch<ProjectPlanExecutionResponse>(`/api/plans/${encodeURIComponent(planId)}/execution`);
+}
+
+export function executeProjectPlanAction(
+  planId: string,
+  input: ExecuteProjectPlanActionRequest,
+): Promise<ProjectPlanExecutionRunResponse> {
+  return jsonFetch<ProjectPlanExecutionRunResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/actions/${encodeURIComponent(input.actionId)}/execute`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: input.confirmed === true,
+        ...(input.targetDir ? { targetDir: input.targetDir } : {}),
+      }),
+    },
+  );
+}
+
+export function runProjectPlanSection(
+  planId: string,
+  input: RunProjectPlanSectionRequest,
+): Promise<ProjectPlanExecutionRunResponse> {
+  return jsonFetch<ProjectPlanExecutionRunResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/sections/${encodeURIComponent(input.sectionId)}/runs`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export function checkProjectPlanTool(
+  planId: string,
+  input: CheckProjectPlanToolRequest,
+): Promise<ProjectPlanToolCheckResponse> {
+  return jsonFetch<ProjectPlanToolCheckResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/tools/${encodeURIComponent(input.toolId)}/check`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
 }

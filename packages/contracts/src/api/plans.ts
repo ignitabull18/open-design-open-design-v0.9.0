@@ -174,6 +174,53 @@ export interface PlanningExecutionAction {
   relatedSectionIds: ProjectWorkspaceSection['id'][];
 }
 
+export interface PlanningExecutionRun {
+  id: string;
+  planId: string;
+  kind: 'action' | 'section-agent' | 'tool-check';
+  status: 'queued' | 'running' | 'completed' | 'blocked' | 'failed';
+  title: string;
+  actionId?: PlanningExecutionAction['id'];
+  sectionId?: ProjectWorkspaceSection['id'];
+  toolId?: PlanningToolId;
+  mode: 'record-only' | 'dry-run' | 'external';
+  summary: string;
+  command?: string;
+  startedAt: number;
+  completedAt?: number;
+  artifactIds: string[];
+  evidence: string[];
+}
+
+export interface PlanningExecutionArtifact {
+  id: string;
+  planId: string;
+  runId?: string;
+  kind: 'provider-research' | 'section-output' | 'database-draft' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'tool-check';
+  title: string;
+  content: string;
+  createdAt: number;
+}
+
+export interface PlanningToolCheck {
+  id: string;
+  planId: string;
+  toolId: PlanningToolId;
+  status: 'connected' | 'blocked' | 'deferred';
+  summary: string;
+  evidence: string[];
+  checkedAt: number;
+}
+
+export interface ScaffoldExecutionPlan {
+  status: 'not_started' | 'planned' | 'blocked' | 'completed';
+  targetDir?: string;
+  lastRunId?: string;
+  lastCommand?: string;
+  notes?: string[];
+  updatedAt?: number;
+}
+
 export interface RepoPlan {
   provider: 'github';
   owner?: string;
@@ -203,6 +250,10 @@ export interface ProjectPlan {
   providerCapabilities: ProviderCapabilitySnapshot[];
   runtimePlan: PlanningRuntimePlan;
   executionActions: PlanningExecutionAction[];
+  executionRuns: PlanningExecutionRun[];
+  executionArtifacts: PlanningExecutionArtifact[];
+  toolChecks: PlanningToolCheck[];
+  scaffoldExecution: ScaffoldExecutionPlan;
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];
@@ -260,6 +311,15 @@ export interface CreateProjectIdeationRequest {
 export interface ExecuteProjectPlanActionRequest {
   actionId: PlanningExecutionAction['id'];
   confirmed?: boolean;
+  targetDir?: string;
+}
+
+export interface RunProjectPlanSectionRequest {
+  sectionId: ProjectWorkspaceSection['id'];
+}
+
+export interface CheckProjectPlanToolRequest {
+  toolId: PlanningToolId;
 }
 
 export interface ProjectPlansResponse {
@@ -273,6 +333,27 @@ export interface ProjectPlanResponse {
 export interface ProjectSectionWorkflowResponse {
   plan: ProjectPlan;
   workflow: ProjectSectionWorkflow;
+}
+
+export interface ProjectPlanExecutionResponse {
+  plan: ProjectPlan;
+  runs: PlanningExecutionRun[];
+  artifacts: PlanningExecutionArtifact[];
+  toolChecks: PlanningToolCheck[];
+  scaffoldExecution: ScaffoldExecutionPlan;
+}
+
+export interface ProjectPlanExecutionRunResponse {
+  plan: ProjectPlan;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}
+
+export interface ProjectPlanToolCheckResponse {
+  plan: ProjectPlan;
+  run: PlanningExecutionRun;
+  toolCheck: PlanningToolCheck;
+  artifacts: PlanningExecutionArtifact[];
 }
 
 export interface PlanningToolOptionsResponse {

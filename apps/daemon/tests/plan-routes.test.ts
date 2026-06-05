@@ -225,6 +225,10 @@ describe('planning routes', () => {
         status: 'ready',
       }),
     ]));
+    expect(response.body.plan.executionRuns).toEqual([]);
+    expect(response.body.plan.executionArtifacts).toEqual([]);
+    expect(response.body.plan.toolChecks).toEqual([]);
+    expect(response.body.plan.scaffoldExecution).toMatchObject({ status: 'not_started' });
     expect(response.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'wanted' }),
       expect.objectContaining({ toolId: 'vercel', status: 'wanted' }),
@@ -253,6 +257,113 @@ describe('planning routes', () => {
     expect(accepted.body.plan.executionActions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'scaffold', status: 'accepted' }),
     ]));
+  });
+
+  it('records plan execution runs, artifacts, tool checks, and section-agent outputs', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Execution Studio',
+        intent: { purpose: 'Turn planning records into execution artifacts.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+        },
+      }),
+    });
+    const planId = created.body.plan.id;
+
+    const missingConfirmation = await jsonFetch(`${baseUrl}/api/plans/${planId}/actions/scaffold/execute`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(missingConfirmation.status).toBe(409);
+    expect(missingConfirmation.body.error).toBe('confirmation required');
+
+    const providerRun = await jsonFetch(`${baseUrl}/api/plans/${planId}/actions/provider-research/execute`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(providerRun.status).toBe(201);
+    expect(providerRun.body.run).toMatchObject({
+      kind: 'action',
+      actionId: 'provider-research',
+      status: 'completed',
+      mode: 'record-only',
+    });
+    expect(providerRun.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'provider-research' }),
+    ]));
+    expect(providerRun.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-research', status: 'completed' }),
+    ]));
+
+    const scaffoldRun = await jsonFetch(`${baseUrl}/api/plans/${planId}/actions/scaffold/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: '/tmp/execution-studio' }),
+    });
+    expect(scaffoldRun.status).toBe(202);
+    expect(scaffoldRun.body.run).toMatchObject({
+      kind: 'action',
+      actionId: 'scaffold',
+      status: 'blocked',
+      mode: 'dry-run',
+    });
+    expect(scaffoldRun.body.plan.scaffoldExecution).toMatchObject({
+      status: 'planned',
+      targetDir: '/tmp/execution-studio',
+      lastRunId: scaffoldRun.body.run.id,
+    });
+
+    const sectionRun = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/database/runs`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(sectionRun.status).toBe(201);
+    expect(sectionRun.body.run).toMatchObject({
+      kind: 'section-agent',
+      sectionId: 'database',
+      status: 'completed',
+    });
+    expect(sectionRun.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'database-draft', content: expect.stringContaining('Database draft') }),
+    ]));
+
+    const toolCheck = await jsonFetch(`${baseUrl}/api/plans/${planId}/tools/cloudflare-hosting/check`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    expect(toolCheck.status).toBe(201);
+    expect(toolCheck.body.toolCheck).toMatchObject({
+      toolId: 'cloudflare-hosting',
+      status: 'connected',
+    });
+    expect(toolCheck.body.run).toMatchObject({
+      kind: 'tool-check',
+      status: 'completed',
+    });
+    expect(toolCheck.body.plan.selectedTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'connected' }),
+    ]));
+
+    const execution = await jsonFetch(`${baseUrl}/api/plans/${planId}/execution`);
+    expect(execution.status).toBe(200);
+    expect(execution.body.runs).toHaveLength(4);
+    expect(execution.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'provider-research' }),
+      expect.objectContaining({ kind: 'scaffold-plan' }),
+      expect.objectContaining({ kind: 'database-draft' }),
+      expect.objectContaining({ kind: 'tool-check' }),
+    ]));
+    expect(execution.body.toolChecks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'cloudflare-hosting', status: 'connected' }),
+    ]));
+    expect(execution.body.scaffoldExecution).toMatchObject({ targetDir: '/tmp/execution-studio' });
   });
 
   it('updates stack decisions and regenerates the scaffold command', async () => {
