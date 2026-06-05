@@ -1,5 +1,5 @@
 import express from 'express';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -439,6 +439,102 @@ describe('planning routes', () => {
       expect.objectContaining({
         kind: 'scaffold-plan',
         content: expect.stringContaining('created scaffold'),
+      }),
+    ]));
+  });
+
+  it('executes confirmed GitHub repo creation from a configured scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'repo-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"repo-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      repoRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'https://github.com/ignitabull/repo-studio',
+          stderr: '',
+          durationMs: 20,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Repo Studio',
+        intent: { purpose: 'Create a GitHub repository from a scaffolded source directory.' },
+        repo: {
+          owner: 'ignitabull',
+          name: 'repo-studio',
+          visibility: 'private',
+        },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          packageManager: 'pnpm',
+        },
+      }),
+    });
+
+    const blockedEscape = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/repo-create/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: path.join(tempDir, '..', 'outside') }),
+    });
+    expect(blockedEscape.status).toBe(400);
+    expect(blockedEscape.body.error).toContain('targetDir must stay inside');
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/repo-create/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true, targetDir: 'workspace/repo-studio' }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]).toMatchObject({
+      command: 'gh',
+      args: [
+        'repo',
+        'create',
+        'ignitabull/repo-studio',
+        '--private',
+        '--source',
+        sourceDir,
+        '--remote',
+        'origin',
+        '--push',
+      ],
+      cwd: sourceDir,
+    });
+    expect(executed.body.run).toMatchObject({
+      actionId: 'repo-create',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('https://github.com/ignitabull/repo-studio'),
+    });
+    expect(executed.body.plan.repo).toMatchObject({
+      owner: 'ignitabull',
+      name: 'repo-studio',
+      visibility: 'private',
+      status: 'created',
+      url: 'https://github.com/ignitabull/repo-studio',
+    });
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'repo-create', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'repo-plan',
+        content: expect.stringContaining('https://github.com/ignitabull/repo-studio'),
       }),
     ]));
   });

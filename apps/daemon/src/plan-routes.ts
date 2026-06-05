@@ -64,9 +64,26 @@ interface ScaffoldCommandResult {
 
 type ScaffoldCommandRunner = (request: ScaffoldCommandRequest) => Promise<ScaffoldCommandResult>;
 
+interface RepoCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
+interface RepoCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type RepoCommandRunner = (request: RepoCommandRequest) => Promise<RepoCommandResult>;
+
 export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   scaffoldRoot?: string;
   scaffoldRunner?: ScaffoldCommandRunner;
+  repoRunner?: RepoCommandRunner;
 }
 
 interface ProjectPlanBuildInput {
@@ -256,6 +273,7 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
 export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const { db } = ctx;
   const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
+  const repoRunner = ctx.repoRunner ?? runRepoCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
@@ -439,6 +457,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const { planPatch, run, artifacts } = await executePlanningAction(existing, action, body, {
         scaffoldRoot,
         scaffoldRunner,
+        repoRunner,
       });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
@@ -866,7 +885,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -874,6 +893,9 @@ async function executePlanningAction(
 }> {
   if (action.id === 'scaffold' && body.targetDir) {
     return executeScaffoldAction(plan, action, body, options);
+  }
+  if (action.id === 'repo-create' && body.targetDir) {
+    return executeRepoCreateAction(plan, action, body, options);
   }
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
@@ -932,6 +954,90 @@ async function executePlanningAction(
       scaffoldExecution,
       repo,
       delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+async function executeRepoCreateAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string; repoRunner: RepoCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const invocation = buildRepoCreateInvocation(plan, sourceDir);
+  let result: RepoCommandResult;
+  let status: PlanningExecutionRun['status'] = 'completed';
+  try {
+    result = await options.repoRunner({
+      command: invocation.command,
+      args: invocation.args,
+      cwd: sourceDir,
+      timeoutMs: 120_000,
+    });
+    if (result.exitCode !== 0) status = 'failed';
+  } catch (err: any) {
+    result = {
+      exitCode: typeof err?.code === 'number' ? err.code : 1,
+      stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+      stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+      durationMs: 0,
+    };
+    status = 'failed';
+  }
+  const artifact = buildRepoArtifact(plan, action, runId, sourceDir, invocation, result, status);
+  const repoUrl = `https://github.com/${invocation.owner}/${invocation.name}`;
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'repo-create',
+    status,
+    title: action.label,
+    mode: 'external',
+    summary: status === 'completed'
+      ? `GitHub repository created at ${repoUrl}.`
+      : 'GitHub repository creation failed; inspect the attached artifact for stdout and stderr.',
+    command: [invocation.command, ...invocation.args].join(' '),
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      `repo: ${invocation.owner}/${invocation.name}`,
+      `visibility: ${invocation.visibility}`,
+      `exitCode: ${result.exitCode}`,
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'repo-create'
+      ? { ...item, status: status === 'completed' ? 'completed' as const : 'accepted' as const }
+      : item,
+  );
+  const repo: RepoPlan = {
+    ...plan.repo,
+    owner: invocation.owner,
+    name: invocation.name,
+    visibility: invocation.visibility,
+    status: status === 'completed' ? 'created' : 'blocked',
+    ...(status === 'completed' ? { url: repoUrl } : {}),
+  };
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo,
+      delivery: plan.delivery,
     },
     run,
     artifacts: [artifact],
@@ -1071,7 +1177,7 @@ function buildScaffoldInvocation(plan: ProjectPlan): { command: string; args: st
   const pm = plan.stack.packageManager ?? 'pnpm';
   const slug = slugify(plan.repo.name ?? plan.name ?? 'new-project');
   const args = [
-    pm === 'npm' ? 'create' : 'create',
+    'create',
     'better-t-stack@latest',
     slug,
     '--frontend',
@@ -1097,6 +1203,32 @@ function buildScaffoldInvocation(plan: ProjectPlan): { command: string; args: st
   };
 }
 
+function buildRepoCreateInvocation(
+  plan: ProjectPlan,
+  sourceDir: string,
+): { command: string; args: string[]; owner: string; name: string; visibility: NonNullable<RepoPlan['visibility']> } {
+  const owner = cleanRepoSegment(plan.repo.owner, 'repo.owner');
+  const name = cleanRepoSegment(plan.repo.name, 'repo.name');
+  const visibility = plan.repo.visibility ?? 'private';
+  return {
+    command: 'gh',
+    args: [
+      'repo',
+      'create',
+      `${owner}/${name}`,
+      `--${visibility}`,
+      '--source',
+      sourceDir,
+      '--remote',
+      'origin',
+      '--push',
+    ],
+    owner,
+    name,
+    visibility,
+  };
+}
+
 async function resolveScaffoldTarget(
   plan: ProjectPlan,
   targetDir: string,
@@ -1118,6 +1250,22 @@ async function resolveScaffoldTarget(
     throw new Error(`scaffold output directory is not empty: ${outputDir}`);
   }
   return { parentDir, outputDir };
+}
+
+async function resolveRepoSourceDir(targetDir: string, scaffoldRoot: string): Promise<string> {
+  const root = path.resolve(scaffoldRoot);
+  const sourceDir = path.isAbsolute(targetDir)
+    ? path.resolve(targetDir)
+    : path.resolve(root, targetDir);
+  assertPathInside(sourceDir, root, 'targetDir must stay inside the configured scaffold root');
+  const entries = await fs.readdir(sourceDir).catch((err: any) => {
+    if (err?.code === 'ENOENT') throw new Error(`repo source directory does not exist: ${sourceDir}`);
+    throw err;
+  });
+  if (entries.length === 0) {
+    throw new Error(`repo source directory is empty: ${sourceDir}`);
+  }
+  return sourceDir;
 }
 
 function assertPathInside(candidate: string, root: string, message: string) {
@@ -1169,7 +1317,75 @@ function buildScaffoldArtifact(
   };
 }
 
+function buildRepoArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  invocation: { command: string; args: string[]; owner: string; name: string; visibility: NonNullable<RepoPlan['visibility']> },
+  result: RepoCommandResult,
+  status: PlanningExecutionRun['status'],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'repo-plan',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Repository: ${invocation.owner}/${invocation.name}`,
+      `Visibility: ${invocation.visibility}`,
+      `Command: ${[invocation.command, ...invocation.args].join(' ')}`,
+      `Source directory: ${sourceDir}`,
+      `Exit code: ${result.exitCode}`,
+      `Duration ms: ${result.durationMs}`,
+      '',
+      'stdout:',
+      result.stdout || '(empty)',
+      '',
+      'stderr:',
+      result.stderr || '(empty)',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function cleanRepoSegment(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${field} is required before creating a GitHub repository`);
+  }
+  const cleaned = value.trim();
+  if (cleaned.startsWith('<') || cleaned.endsWith('>')) {
+    throw new Error(`${field} must be explicit and cannot be a placeholder`);
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(cleaned)) {
+    throw new Error(`${field} may only contain letters, numbers, dots, underscores, and hyphens`);
+  }
+  return cleaned;
+}
+
 function runScaffoldCommand(request: ScaffoldCommandRequest): Promise<ScaffoldCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+function runRepoCommand(request: RepoCommandRequest): Promise<RepoCommandResult> {
   const startedAt = Date.now();
   return new Promise((resolve) => {
     execFile(request.command, request.args, {
