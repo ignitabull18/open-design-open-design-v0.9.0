@@ -551,6 +551,7 @@ describe('planning routes', () => {
     mkdirSync(sourceDir, { recursive: true });
     writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"deploy-studio"}\n');
     const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const healthCalls: string[] = [];
     const baseUrl = await startPlanServer({
       scaffoldRoot,
       deployRunner: async (request) => {
@@ -564,6 +565,16 @@ describe('planning routes', () => {
           stdout: 'Preview: https://deploy-studio.vercel.app',
           stderr: '',
           durationMs: 30,
+        };
+      },
+      deployHealthChecker: async (url) => {
+        healthCalls.push(url);
+        return {
+          url,
+          finalUrl: url,
+          statusCode: 200,
+          ok: true,
+          durationMs: 12,
         };
       },
     });
@@ -600,6 +611,7 @@ describe('planning routes', () => {
       args: ['deploy', '--yes'],
       cwd: sourceDir,
     });
+    expect(healthCalls).toEqual(['https://deploy-studio.vercel.app']);
     expect(executed.body.run).toMatchObject({
       actionId: 'deploy-runtime',
       status: 'completed',
@@ -622,6 +634,11 @@ describe('planning routes', () => {
         content: expect.stringContaining('Preview URL: https://deploy-studio.vercel.app'),
       }),
     ]));
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'healthCheck.ok: yes',
+      'healthCheck.statusCode: 200',
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('Health check: ok');
   });
 
   it('executes a confirmed Cloudflare deployment from a configured scaffold source', async () => {
@@ -630,6 +647,7 @@ describe('planning routes', () => {
     mkdirSync(sourceDir, { recursive: true });
     writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"cloudflare-studio"}\n');
     const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const healthCalls: string[] = [];
     const baseUrl = await startPlanServer({
       scaffoldRoot,
       deployRunner: async (request) => {
@@ -643,6 +661,16 @@ describe('planning routes', () => {
           stdout: 'Uploaded cloudflare-studio\nhttps://cloudflare-studio.ignitabull.workers.dev',
           stderr: '',
           durationMs: 45,
+        };
+      },
+      deployHealthChecker: async (url) => {
+        healthCalls.push(url);
+        return {
+          url,
+          finalUrl: url,
+          statusCode: 204,
+          ok: true,
+          durationMs: 9,
         };
       },
     });
@@ -680,6 +708,7 @@ describe('planning routes', () => {
       args: ['wrangler', 'deploy'],
       cwd: sourceDir,
     });
+    expect(healthCalls).toEqual(['https://cloudflare-studio.ignitabull.workers.dev']);
     expect(executed.body.run).toMatchObject({
       actionId: 'deploy-runtime',
       status: 'completed',
@@ -703,6 +732,77 @@ describe('planning routes', () => {
         content: expect.stringContaining('Command: pnpm wrangler deploy'),
       }),
     ]));
+    expect(executed.body.artifacts[0].content).toContain('Health status: 204');
+  });
+
+  it('blocks a deployment when the post-deploy health check fails', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'unhealthy-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"unhealthy-studio"}\n');
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      deployRunner: async () => ({
+        exitCode: 0,
+        stdout: 'Preview: https://unhealthy-studio.vercel.app',
+        stderr: '',
+        durationMs: 30,
+      }),
+      deployHealthChecker: async (url) => ({
+        url,
+        finalUrl: url,
+        statusCode: 503,
+        ok: false,
+        durationMs: 10,
+      }),
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Unhealthy Studio',
+        intent: { purpose: 'Reject a deployment with a failing preview URL.' },
+        delivery: [{ target: 'vercel', status: 'planned' }],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'node',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['vercel'],
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/deploy-runtime/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/unhealthy-studio',
+        deliveryTarget: 'vercel',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'deploy-runtime',
+      status: 'failed',
+      summary: expect.stringContaining('health check failed'),
+    });
+    expect(executed.body.plan.delivery).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'vercel',
+        status: 'blocked',
+        notes: expect.stringContaining('503'),
+      }),
+    ]));
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deploy-runtime', status: 'accepted' }),
+    ]));
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'healthCheck.ok: no',
+      'healthCheck.statusCode: 503',
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('Health check: failed');
   });
 
   it('materializes database planning files into a scaffold source', async () => {

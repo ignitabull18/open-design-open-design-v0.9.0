@@ -96,6 +96,17 @@ interface DeployCommandResult {
 
 type DeployCommandRunner = (request: DeployCommandRequest) => Promise<DeployCommandResult>;
 
+interface DeploymentHealthCheck {
+  url: string;
+  finalUrl?: string;
+  statusCode?: number;
+  ok: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+type DeploymentHealthChecker = (url: string) => Promise<DeploymentHealthCheck>;
+
 interface ProjectManagementCommandRequest {
   command: string;
   args: string[];
@@ -123,6 +134,7 @@ export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   scaffoldRunner?: ScaffoldCommandRunner;
   repoRunner?: RepoCommandRunner;
   deployRunner?: DeployCommandRunner;
+  deployHealthChecker?: DeploymentHealthChecker;
   projectManagementRunner?: ProjectManagementCommandRunner;
 }
 
@@ -315,6 +327,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
   const repoRunner = ctx.repoRunner ?? runRepoCommand;
   const deployRunner = ctx.deployRunner ?? runDeployCommand;
+  const deployHealthChecker = ctx.deployHealthChecker ?? runDeploymentHealthCheck;
   const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
@@ -501,6 +514,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         scaffoldRunner,
         repoRunner,
         deployRunner,
+        deployHealthChecker,
         projectManagementRunner,
       });
       const updated = updatePlan(db, req.params.id, {
@@ -969,7 +983,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; projectManagementRunner: ProjectManagementCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker; projectManagementRunner: ProjectManagementCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -1214,7 +1228,7 @@ async function executeDeployRuntimeAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; deployRunner: DeployCommandRunner },
+  options: { scaffoldRoot: string; deployRunner: DeployCommandRunner; deployHealthChecker: DeploymentHealthChecker },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -1253,7 +1267,9 @@ async function executeDeployRuntimeAction(
     }
   }
   const previewUrl = status === 'completed' ? extractFirstUrl([result.stdout, result.stderr].join('\n')) : undefined;
-  const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, result, status, previewUrl);
+  const healthCheck = previewUrl ? await options.deployHealthChecker(previewUrl) : undefined;
+  if (healthCheck && !healthCheck.ok) status = 'failed';
+  const artifact = buildDeployArtifact(plan, action, runId, sourceDir, target, invocation, result, status, previewUrl, healthCheck);
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -1263,10 +1279,12 @@ async function executeDeployRuntimeAction(
     title: `${action.label}: ${target}`,
     mode: unsupported ? 'dry-run' : 'external',
     summary: status === 'completed'
-      ? `${target} deployment completed${previewUrl ? ` at ${previewUrl}` : ''}.`
+      ? `${target} deployment completed${previewUrl ? ` at ${previewUrl}` : ''}${healthCheck ? ` and health check returned ${healthCheck.statusCode ?? 'unknown'}` : ''}.`
       : unsupported
         ? `${target} deployment executor is not implemented yet; recorded the blocked target and required source directory.`
-        : `${target} deployment failed; inspect the attached artifact for stdout and stderr.`,
+        : healthCheck && !healthCheck.ok
+          ? `${target} deployment completed but health check failed for ${previewUrl}.`
+          : `${target} deployment failed; inspect the attached artifact for stdout and stderr.`,
     ...(invocation ? { command: [invocation.command, ...invocation.args].join(' ') } : {}),
     startedAt: now,
     completedAt: Date.now(),
@@ -1276,6 +1294,11 @@ async function executeDeployRuntimeAction(
       `deliveryTarget: ${target}`,
       `exitCode: ${result.exitCode}`,
       ...(previewUrl ? [`previewUrl: ${previewUrl}`] : []),
+      ...(healthCheck ? [
+        `healthCheck.ok: ${healthCheck.ok ? 'yes' : 'no'}`,
+        `healthCheck.statusCode: ${healthCheck.statusCode ?? 'unknown'}`,
+        ...(healthCheck.finalUrl ? [`healthCheck.finalUrl: ${healthCheck.finalUrl}`] : []),
+      ] : []),
     ],
   };
   const delivery = plan.delivery.map((item) =>
@@ -1284,8 +1307,11 @@ async function executeDeployRuntimeAction(
         ...item,
         status: status === 'completed' ? 'deployed' as const : 'blocked' as const,
         notes: status === 'completed'
-          ? `Deployment completed${previewUrl ? ` at ${previewUrl}` : ''}.`
-          : result.stderr.slice(0, 500),
+          ? `Deployment completed${previewUrl ? ` at ${previewUrl}` : ''}${healthCheck ? `; health ${healthCheck.statusCode ?? 'unknown'}` : ''}.`
+          : (healthCheck
+            ? `Health check failed${healthCheck.statusCode ? ` with ${healthCheck.statusCode}` : ''}${healthCheck.error ? `: ${healthCheck.error}` : ''}.`
+            : result.stderr
+          ).slice(0, 500),
       }
       : item,
   );
@@ -2137,6 +2163,7 @@ function buildDeployArtifact(
   result: DeployCommandResult,
   status: PlanningExecutionRun['status'],
   previewUrl?: string,
+  healthCheck?: DeploymentHealthCheck,
 ): PlanningExecutionArtifact {
   return {
     id: `plan-artifact-${randomUUID()}`,
@@ -2151,6 +2178,11 @@ function buildDeployArtifact(
       invocation ? `Command: ${[invocation.command, ...invocation.args].join(' ')}` : 'Command: not available for this delivery target yet',
       `Source directory: ${sourceDir}`,
       previewUrl ? `Preview URL: ${previewUrl}` : '',
+      healthCheck ? `Health check: ${healthCheck.ok ? 'ok' : 'failed'}` : '',
+      healthCheck?.statusCode ? `Health status: ${healthCheck.statusCode}` : '',
+      healthCheck?.finalUrl ? `Health final URL: ${healthCheck.finalUrl}` : '',
+      healthCheck?.error ? `Health error: ${healthCheck.error}` : '',
+      healthCheck ? `Health duration ms: ${healthCheck.durationMs}` : '',
       `Exit code: ${result.exitCode}`,
       `Duration ms: ${result.durationMs}`,
       '',
@@ -2313,6 +2345,35 @@ function runDeployCommand(request: DeployCommandRequest): Promise<DeployCommandR
       });
     });
   });
+}
+
+async function runDeploymentHealthCheck(url: string): Promise<DeploymentHealthCheck> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    return {
+      url,
+      finalUrl: response.url,
+      statusCode: response.status,
+      ok: response.ok,
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (err: any) {
+    return {
+      url,
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      error: String(err?.message ?? err),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function runProjectManagementCommand(request: ProjectManagementCommandRequest): Promise<ProjectManagementCommandResult> {
