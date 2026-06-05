@@ -212,6 +212,25 @@ describe('planning routes', () => {
         ]),
       }),
     ]));
+    expect(stored.body.plan.executionRuns).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'action',
+        actionId: 'provider-research',
+        status: 'completed',
+        mode: 'external',
+        summary: expect.stringContaining('Refreshed 2 selected provider capability snapshot'),
+      }),
+    ]));
+    expect(stored.body.plan.executionArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider-research',
+        title: 'Provider capability refresh evidence',
+        content: expect.stringContaining('Title: Supabase Changelog Persisted'),
+      }),
+    ]));
+    expect(stored.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-research', status: 'completed' }),
+    ]));
   });
 
   it('creates a persisted Better-T-Stack scaffold plan from a project brief', async () => {

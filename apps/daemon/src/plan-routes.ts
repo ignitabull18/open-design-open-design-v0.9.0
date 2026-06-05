@@ -1322,17 +1322,73 @@ function persistRefreshedProviderCapabilities(
   let updated = 0;
   for (const plan of listPlans(db) as ProjectPlan[]) {
     const nextProviderCapabilities = buildProviderCapabilitiesFromCatalog(plan.selectedTools, capabilities);
-    const previous = JSON.stringify(plan.providerCapabilities ?? []);
-    const next = JSON.stringify(nextProviderCapabilities);
-    if (previous === next) continue;
+    if (nextProviderCapabilities.length === 0) continue;
+    const { run, artifact } = buildProviderCapabilityRefreshRun(plan, nextProviderCapabilities);
+    const executionActions = plan.executionActions.map((action) =>
+      action.id === 'provider-research' ? { ...action, status: 'completed' as const } : action,
+    );
     const saved = updatePlan(db, plan.id, {
       ...plan,
       providerCapabilities: nextProviderCapabilities,
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
       updatedAt: Date.now(),
     });
     if (saved) updated += 1;
   }
   return updated;
+}
+
+function buildProviderCapabilityRefreshRun(
+  plan: ProjectPlan,
+  capabilities: ProviderCapabilitySnapshot[],
+): { run: PlanningExecutionRun; artifact: PlanningExecutionArtifact } {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceUrls = Array.from(new Set(capabilities.map((snapshot) => snapshot.sourceUrl)));
+  const evidence = capabilities.flatMap((snapshot) => [
+    `${snapshot.toolId}: checked ${snapshot.checkedAt}`,
+    ...(snapshot.refreshEvidence?.slice(0, 5).map((item) => `${snapshot.toolId}: ${item}`) ?? []),
+  ]);
+  const artifact: PlanningExecutionArtifact = {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'provider-research',
+    title: 'Provider capability refresh evidence',
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: completed`,
+      `Selected provider snapshots: ${capabilities.length}`,
+      '',
+      'Source URLs:',
+      ...sourceUrls.map((url) => `- ${url}`),
+      '',
+      'Refresh evidence:',
+      ...evidence.map((item) => `- ${item}`),
+    ].join('\n'),
+    createdAt: now,
+  };
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'provider-research',
+    status: 'completed',
+    title: 'Refresh provider capability snapshots',
+    mode: 'external',
+    summary: `Refreshed ${capabilities.length} selected provider capability snapshot(s) from ${sourceUrls.length} source URL(s).`,
+    startedAt: now,
+    completedAt: now,
+    artifactIds: [artifact.id],
+    evidence: [
+      `snapshots: ${capabilities.length}`,
+      `sources: ${sourceUrls.length}`,
+      ...capabilities.map((snapshot) => `${snapshot.toolId}: ${snapshot.checkedAt}`),
+    ],
+  };
+  return { run, artifact };
 }
 
 async function refreshProviderCapabilities(
