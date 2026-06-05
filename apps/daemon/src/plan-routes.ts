@@ -1320,7 +1320,7 @@ function buildExecutionResponse(plan: ProjectPlan) {
 }
 
 function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport {
-  const items: ProjectPlanReadinessItem[] = [
+  const coreItems: ProjectPlanReadinessItem[] = [
     ...buildSectionReadinessItems(plan),
     buildToolReadinessItem(plan),
     buildScaffoldReadinessItem(plan),
@@ -1331,6 +1331,7 @@ function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport
     buildDeploymentReadinessItem(plan),
     buildProjectManagementReadinessItem(plan),
   ];
+  const items = [...coreItems, buildLaunchPathReadinessItem(coreItems)];
   const completedCount = items.filter((item) => item.status === 'ready').length;
   const blockedCount = items.filter((item) => item.status === 'blocked').length;
   const inProgressCount = items.filter((item) => item.status === 'in_progress').length;
@@ -1354,6 +1355,44 @@ function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport
     ...(next?.actionId ? { nextActionId: next.actionId } : {}),
     nextSummary: next ? `${next.label}: ${next.nextSteps[0] ?? next.summary}` : 'All readiness items are complete.',
     items,
+  };
+}
+
+function buildLaunchPathReadinessItem(coreItems: ProjectPlanReadinessItem[]): ProjectPlanReadinessItem {
+  const incomplete = coreItems.filter((item) => item.status !== 'ready');
+  const blocked = incomplete.filter((item) => item.status === 'blocked');
+  const inProgress = incomplete.filter((item) => item.status === 'in_progress');
+  const completed = coreItems.length - incomplete.length;
+  const status: ProjectPlanReadinessStatus = incomplete.length === 0
+    ? 'ready'
+    : blocked.length > 0
+      ? 'blocked'
+      : completed > 0 || inProgress.length > 0
+        ? 'in_progress'
+        : 'not_started';
+  const next = blocked[0] ?? inProgress[0] ?? incomplete[0];
+  return {
+    id: 'launch:path-proof',
+    label: 'Launch path proof',
+    status,
+    summary: status === 'ready'
+      ? 'The full planning path has proof from decisions through delivery.'
+      : status === 'blocked'
+        ? 'The end-to-end planning path is blocked by one or more failed readiness gates.'
+        : 'The end-to-end planning path still needs proof across the required gates.',
+    evidence: [
+      `ready: ${completed}/${coreItems.length}`,
+      `blocked: ${blocked.map((item) => item.id).join(', ') || 'none'}`,
+      `inProgress: ${inProgress.map((item) => item.id).join(', ') || 'none'}`,
+      `notStarted: ${incomplete.filter((item) => item.status === 'not_started').map((item) => item.id).join(', ') || 'none'}`,
+    ],
+    nextSteps: status === 'ready'
+      ? []
+      : [
+        next
+          ? `${next.label}: ${next.nextSteps[0] ?? next.summary}`
+          : 'Complete every planning, scaffold, provider, database, design, delivery, and handoff gate.',
+      ],
   };
 }
 

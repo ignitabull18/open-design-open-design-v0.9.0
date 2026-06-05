@@ -786,6 +786,14 @@ describe('planning routes', () => {
         id: 'action:deploy-runtime',
         status: 'not_started',
       }),
+      expect.objectContaining({
+        id: 'launch:path-proof',
+        label: 'Launch path proof',
+        status: 'in_progress',
+        evidence: expect.arrayContaining([
+          expect.stringContaining('notStarted:'),
+        ]),
+      }),
     ]));
 
     const artifact = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/artifacts`, {
@@ -803,6 +811,13 @@ describe('planning routes', () => {
         id: 'action:project-management',
         status: 'ready',
         summary: expect.stringContaining('handoff artifact exists'),
+      }),
+      expect.objectContaining({
+        id: 'launch:path-proof',
+        status: 'in_progress',
+        nextSteps: expect.arrayContaining([
+          expect.stringContaining('Selected tool checks'),
+        ]),
       }),
     ]));
   });
@@ -2020,6 +2035,22 @@ describe('planning routes', () => {
       'github exitCode: 1',
     ]));
     expect(executed.body.artifacts[0].content).toContain('stderr:\ngh: not logged in');
+
+    const readiness = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/readiness`);
+    expect(readiness.body.readiness.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'action:provider-setup',
+        status: 'blocked',
+      }),
+      expect.objectContaining({
+        id: 'launch:path-proof',
+        status: 'blocked',
+        summary: expect.stringContaining('blocked by one or more failed readiness gates'),
+        evidence: expect.arrayContaining([
+          expect.stringContaining('action:provider-setup'),
+        ]),
+      }),
+    ]));
   });
 
   it('materializes and deploys Convex database schema files', async () => {
