@@ -1418,6 +1418,85 @@ describe('planning routes', () => {
     expect(acceptance).toContain('Planning, Design, Database, Integrations, AI, Workflows, and Delivery remain visually and functionally distinct.');
   });
 
+  it('materializes provider setup files into a scaffold source', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'provider-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"provider-studio"}\n');
+    const baseUrl = await startPlanServer({ scaffoldRoot });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Provider Studio',
+        intent: {
+          purpose: 'Configure a scaffolded project against the selected provider stack.',
+          audience: 'Builders using Cloudflare, Supabase, Trigger.dev, Composio, Supermemory, and 1Password',
+        },
+        selectedTools: [
+          { toolId: 'onepassword', status: 'wanted', notes: 'Secret source of truth' },
+          { toolId: 'cloudflare-hosting', status: 'wanted' },
+          { toolId: 'cloudflare-ai-gateway', status: 'wanted' },
+          { toolId: 'supabase-database', status: 'wanted' },
+          { toolId: 'trigger-dev', status: 'wanted' },
+          { toolId: 'composio', status: 'wanted' },
+          { toolId: 'supermemory', status: 'wanted' },
+          { toolId: 'stripe', status: 'deferred' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+          hosting: ['cloudflare'],
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/provider-setup/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/provider-studio',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'provider-setup',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Wrote 3 provider setup file'),
+    });
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'wrote docs/provider-setup.md',
+      'wrote docs/provider-checklist.md',
+      'wrote env/planning.providers.env.example',
+    ]));
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-setup', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider-setup',
+        content: expect.stringContaining('Selected providers: onepassword, cloudflare-hosting, cloudflare-ai-gateway'),
+      }),
+    ]));
+    const setup = readFileSync(path.join(sourceDir, 'docs', 'provider-setup.md'), 'utf8');
+    const checklist = readFileSync(path.join(sourceDir, 'docs', 'provider-checklist.md'), 'utf8');
+    const envExample = readFileSync(path.join(sourceDir, 'env', 'planning.providers.env.example'), 'utf8');
+    expect(setup).toContain('Keep Cloudflare hosting, Cloudflare data, and Cloudflare Access as separate setup tracks.');
+    expect(setup).toContain('Secret source of truth');
+    expect(setup).toContain('TRIGGER_SECRET_KEY');
+    expect(setup).toContain('COMPOSIO_API_KEY');
+    expect(setup).toContain('SUPERMEMORY_API_KEY');
+    expect(checklist).toContain('Workflow Automation');
+    expect(checklist).toContain('Verify: Run a dev task or list project environments.');
+    expect(envExample).toContain('CLOUDFLARE_AI_GATEWAY_ID=');
+    expect(envExample).toContain('OP_SERVICE_ACCOUNT_TOKEN=');
+    expect(envExample).toContain('STRIPE_WEBHOOK_SECRET=');
+  });
+
   it('blocks database migration execution when provider identity is missing', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const sourceDir = path.join(scaffoldRoot, 'workspace', 'd1-studio');

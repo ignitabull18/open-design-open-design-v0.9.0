@@ -773,7 +773,7 @@ function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjec
 function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
   if (!isPlanningExecutionActionId(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, database-migrate, or design-materialize');
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, provider-setup, project-management, database-materialize, database-migrate, or design-materialize');
   }
   return {
     actionId,
@@ -787,7 +787,7 @@ function normalizeActionExecutionBody(
 ): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
   if (!isPlanningExecutionActionId(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, project-management, database-materialize, database-migrate, or design-materialize');
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, provider-setup, project-management, database-materialize, database-migrate, or design-materialize');
   }
   return {
     actionId,
@@ -803,7 +803,7 @@ function normalizeActionExecutionBody(
 }
 
 function isPlanningExecutionActionId(value: string): value is PlanningExecutionAction['id'] {
-  return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management', 'database-materialize', 'database-migrate', 'design-materialize'].includes(value);
+  return ['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'provider-setup', 'project-management', 'database-materialize', 'database-migrate', 'design-materialize'].includes(value);
 }
 
 function normalizeCapabilityRefreshBody(body: Record<string, unknown>): RefreshProviderCapabilitySnapshotsRequest {
@@ -1108,6 +1108,24 @@ function buildExecutionActions(
       relatedSectionIds: ['planning', 'integrations', 'ai', 'workflows'],
     },
     {
+      id: 'provider-setup',
+      label: 'Write provider setup files',
+      status: selectedTools.length > 0 ? 'ready' : 'blocked',
+      requiresConfirmation: true,
+      preconditions: [
+        'The scaffold source directory exists inside the configured scaffold root.',
+        'Selected tools are reviewed and marked wanted, connected, deferred, or blocked.',
+        'Provider capability snapshots are refreshed before treating setup assumptions as current.',
+        'Secrets are stored in 1Password or the selected secret manager before local env files are populated.',
+      ],
+      effects: [
+        'Writes docs/provider-setup.md with setup order, provider-specific requirements, and blockers.',
+        'Writes docs/provider-checklist.md with verification steps grouped by tool category.',
+        'Writes env/planning.providers.env.example with non-secret env variable names for selected providers.',
+      ],
+      relatedSectionIds: ['integrations', 'ai', 'workflows', 'delivery', 'planning'],
+    },
+    {
       id: 'repo-create',
       label: 'Create GitHub repository',
       status: 'ready',
@@ -1241,6 +1259,9 @@ async function executePlanningAction(
   }
   if (action.id === 'design-materialize' && body.targetDir) {
     return executeDesignMaterializeAction(plan, action, body, options);
+  }
+  if (action.id === 'provider-setup' && body.targetDir) {
+    return executeProviderSetupAction(plan, action, body, options);
   }
   if (action.id === 'database-migrate' && body.targetDir) {
     return executeDatabaseMigrateAction(plan, action, body, options);
@@ -1484,6 +1505,55 @@ async function executeDesignMaterializeAction(
   };
   const executionActions = plan.executionActions.map((item) =>
     item.id === 'design-materialize' ? { ...item, status: 'completed' as const } : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+async function executeProviderSetupAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
+  const writes = await writeProviderSetupFiles(plan, sourceDir);
+  const artifact = buildProviderSetupArtifact(plan, action, runId, sourceDir, writes);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'provider-setup',
+    status: 'completed',
+    title: action.label,
+    mode: 'external',
+    summary: `Wrote ${writes.length} provider setup file(s) into ${sourceDir}.`,
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `sourceDir: ${sourceDir}`,
+      ...writes.map((write) => `wrote ${write.relativePath}`),
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'provider-setup' ? { ...item, status: 'completed' as const } : item,
   );
   return {
     planPatch: {
@@ -1914,15 +1984,17 @@ function buildActionArtifact(
         ? 'scaffold-plan'
         : action.id === 'repo-create'
           ? 'repo-plan'
-          : action.id === 'database-materialize'
-            ? 'database-materialization'
-            : action.id === 'database-migrate'
-              ? 'database-migration'
-              : action.id === 'design-materialize'
-                ? 'design-materialization'
-                : action.id === 'project-management'
-                  ? 'project-management-plan'
-                  : 'deployment-plan',
+          : action.id === 'provider-setup'
+            ? 'provider-setup'
+            : action.id === 'database-materialize'
+              ? 'database-materialization'
+              : action.id === 'database-migrate'
+                ? 'database-migration'
+                : action.id === 'design-materialize'
+                  ? 'design-materialization'
+                  : action.id === 'project-management'
+                    ? 'project-management-plan'
+                    : 'deployment-plan',
     title: `${action.label} execution note`,
     content,
     createdAt: now,
@@ -2484,6 +2556,14 @@ async function writeDesignPlanningFiles(plan: ProjectPlan, sourceDir: string): P
   return writes;
 }
 
+async function writeProviderSetupFiles(plan: ProjectPlan, sourceDir: string): Promise<ProjectMaterializedWrite[]> {
+  const writes: ProjectMaterializedWrite[] = [];
+  await writeProjectFile(sourceDir, 'docs/provider-setup.md', buildProviderSetupMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'docs/provider-checklist.md', buildProviderChecklistMarkdown(plan), writes);
+  await writeProjectFile(sourceDir, 'env/planning.providers.env.example', buildProviderEnvExample(plan), writes);
+  return writes;
+}
+
 async function writeProjectFile(
   sourceDir: string,
   relativePath: string,
@@ -2604,6 +2684,331 @@ function buildDesignAcceptanceMarkdown(plan: ProjectPlan): string {
       'Long provider names, commands, URLs, and artifact paths wrap without overlapping controls.',
     ]),
   ].join('\n');
+}
+
+interface ProviderSetupSpec {
+  toolId: ProjectToolConnection['toolId'];
+  label: string;
+  kind: PlanningToolOption['kind'];
+  status: ProjectToolConnection['status'];
+  notes?: string;
+  envVars: string[];
+  setupSteps: string[];
+  verification: string[];
+  blockerNotes: string[];
+}
+
+function buildProviderSetupMarkdown(plan: ProjectPlan): string {
+  const specs = buildProviderSetupSpecs(plan);
+  return [
+    '# Provider Setup',
+    '',
+    `Project: ${plan.name}`,
+    `Purpose: ${plan.intent.purpose}`,
+    '',
+    '## Rules',
+    ...formatBullets([
+      'Keep real secrets in 1Password or the selected secret manager; generated files only name required variables.',
+      'Run provider capability refresh before relying on provider-specific behavior, flags, or account features.',
+      'Do not mark a provider connected until a tool check, CLI command, webhook test, or dashboard URL proves it.',
+      'Keep Cloudflare hosting, Cloudflare data, and Cloudflare Access as separate setup tracks.',
+    ]),
+    '',
+    '## Setup Order',
+    ...formatNumbered(buildProviderSetupOrder(specs)),
+    '',
+    '## Selected Providers',
+    ...specs.flatMap((spec) => [
+      `### ${spec.label}`,
+      '',
+      `Tool id: ${spec.toolId}`,
+      `Category: ${spec.kind}`,
+      `Status: ${spec.status}`,
+      spec.notes ? `Notes: ${spec.notes}` : '',
+      '',
+      'Environment names:',
+      ...formatBullets(spec.envVars.length ? spec.envVars : ['No environment variables required by the generated plan.']),
+      '',
+      'Setup steps:',
+      ...formatBullets(spec.setupSteps),
+      '',
+      'Verification:',
+      ...formatBullets(spec.verification),
+      '',
+      'Blockers to keep visible:',
+      ...formatBullets(spec.blockerNotes),
+      '',
+    ]),
+    '## Provider Capability Evidence',
+    ...formatBullets(plan.providerCapabilities.map((snapshot) =>
+      `${snapshot.label}: checked ${snapshot.checkedAt} from ${snapshot.sourceUrl}`,
+    )),
+  ].filter(Boolean).join('\n');
+}
+
+function buildProviderChecklistMarkdown(plan: ProjectPlan): string {
+  const specs = buildProviderSetupSpecs(plan);
+  const grouped = groupProviderSetupSpecs(specs);
+  return [
+    '# Provider Setup Checklist',
+    '',
+    `Project: ${plan.name}`,
+    '',
+    '## Cross-Provider Checks',
+    ...formatBullets([
+      '[ ] 1Password item or vault path exists for every secret-bearing provider.',
+      '[ ] Local env loading is documented before deployment envs are populated.',
+      '[ ] Webhook providers have local, preview, and production callback URLs recorded.',
+      '[ ] Long-running workflow providers have retry, timeout, and idempotency policies recorded.',
+      '[ ] Provider setup blockers are copied into project-management issues before implementation starts.',
+    ]),
+    '',
+    ...Array.from(grouped.entries()).flatMap(([kind, kindSpecs]) => [
+      `## ${providerKindLabel(kind)}`,
+      '',
+      ...kindSpecs.flatMap((spec) => [
+        `### ${spec.label}`,
+        '',
+        ...spec.setupSteps.map((step) => `- [ ] ${step}`),
+        ...spec.verification.map((step) => `- [ ] Verify: ${step}`),
+        '',
+      ]),
+    ]),
+  ].join('\n');
+}
+
+function buildProviderEnvExample(plan: ProjectPlan): string {
+  const specs = buildProviderSetupSpecs(plan);
+  const envVars = uniqueStrings(specs.flatMap((spec) => spec.envVars)).sort();
+  return [
+    '# Generated by Open Design planning provider setup.',
+    '# Copy names into your real env template only after deciding which providers are active.',
+    '# Store values in 1Password or the selected secret manager; do not commit real secrets.',
+    '',
+    ...envVars.map((name) => `${name}=`),
+  ].join('\n');
+}
+
+function buildProviderSetupSpecs(plan: ProjectPlan): ProviderSetupSpec[] {
+  return plan.selectedTools.map((connection) => {
+    const tool = APPROVED_TOOLS.find((item) => item.id === connection.toolId);
+    const base = buildProviderSetupDetails(connection.toolId);
+    return {
+      toolId: connection.toolId,
+      label: tool?.label ?? connection.toolId,
+      kind: tool?.kind ?? 'integrations',
+      status: connection.status,
+      ...(connection.notes ? { notes: connection.notes } : {}),
+      ...base,
+    };
+  });
+}
+
+function buildProviderSetupOrder(specs: ProviderSetupSpec[]): string[] {
+  const orderedKinds: PlanningToolOption['kind'][] = [
+    'secrets',
+    'source-control',
+    'database',
+    'authentication',
+    'hosting',
+    'ai-runtime',
+    'memory',
+    'integrations',
+    'workflow-automation',
+    'payments',
+    'project-management',
+  ];
+  const byKind = groupProviderSetupSpecs(specs);
+  return orderedKinds
+    .filter((kind) => byKind.has(kind))
+    .map((kind) => `${providerKindLabel(kind)}: ${byKind.get(kind)?.map((spec) => spec.label).join(', ')}`);
+}
+
+function groupProviderSetupSpecs(specs: ProviderSetupSpec[]): Map<PlanningToolOption['kind'], ProviderSetupSpec[]> {
+  const grouped = new Map<PlanningToolOption['kind'], ProviderSetupSpec[]>();
+  for (const spec of specs) {
+    const bucket = grouped.get(spec.kind) ?? [];
+    bucket.push(spec);
+    grouped.set(spec.kind, bucket);
+  }
+  return grouped;
+}
+
+function providerKindLabel(kind: PlanningToolOption['kind']): string {
+  return kind.split('-').map((part) => part[0]?.toUpperCase() + part.slice(1)).join(' ');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim()).map((value) => value.trim())));
+}
+
+function buildProviderSetupDetails(toolId: ProjectToolConnection['toolId']): Pick<ProviderSetupSpec, 'envVars' | 'setupSteps' | 'verification' | 'blockerNotes'> {
+  switch (toolId) {
+    case 'github':
+    case 'github-issues':
+      return {
+        envVars: ['GITHUB_TOKEN', 'GITHUB_OWNER', 'GITHUB_REPOSITORY'],
+        setupSteps: ['Authenticate gh for the intended owner or org.', 'Confirm repo visibility, branch policy, issue labels, and project-board expectations.'],
+        verification: ['Run gh auth status and a read-only repo or issue command.', 'Record the created repo or issue URL in execution artifacts.'],
+        blockerNotes: ['Missing owner, repo name, or issue write scope blocks repo and issue automation.'],
+      };
+    case 'cloudflare-hosting':
+      return {
+        envVars: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_PROJECT_NAME'],
+        setupSteps: ['Create or select the Cloudflare account and project.', 'Choose Workers, Pages, or OpenNext deployment path before writing deploy scripts.'],
+        verification: ['Run wrangler whoami or an account-scoped read command.', 'Record preview URL and deployment health check after deploy.'],
+        blockerNotes: ['Cloudflare hosting is separate from D1/R2/Vectorize and Access setup.'],
+      };
+    case 'cloudflare-data':
+      return {
+        envVars: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_D1_DATABASE_ID', 'CLOUDFLARE_R2_BUCKET', 'CLOUDFLARE_VECTORIZE_INDEX'],
+        setupSteps: ['Decide which Cloudflare data products are active: D1, R2, KV, Queues, Durable Objects, or Vectorize.', 'Create data resources before binding them into Workers config.'],
+        verification: ['List each resource with wrangler or the Cloudflare API.', 'Run a read/write smoke for every resource used by the app.'],
+        blockerNotes: ['Do not reuse hosting proof as data-resource proof.'],
+      };
+    case 'cloudflare-access':
+      return {
+        envVars: ['CLOUDFLARE_ACCESS_TEAM_NAME', 'CLOUDFLARE_ACCESS_AUD'],
+        setupSteps: ['Create Access application and policies for admin/private routes.', 'Record allowed users, groups, and service-token needs.'],
+        verification: ['Confirm protected route requires Access in a browser or curl flow.', 'Record Access audience/tag values without storing secrets in app tables.'],
+        blockerNotes: ['Access auth is separate from Better Auth and Supabase Auth user identity.'],
+      };
+    case 'vercel':
+      return {
+        envVars: ['VERCEL_TOKEN', 'VERCEL_PROJECT_ID', 'VERCEL_ORG_ID'],
+        setupSteps: ['Link the project to the intended Vercel team.', 'Map preview and production envs before enabling deploy automation.'],
+        verification: ['Run vercel project ls or a deploy dry-run.', 'Record preview URL and deployment status.'],
+        blockerNotes: ['Vercel is blocked without team/project identity and deploy token scope.'],
+      };
+    case 'coolify':
+      return {
+        envVars: ['COOLIFY_URL', 'COOLIFY_TOKEN', 'COOLIFY_PROJECT_UUID', 'COOLIFY_RESOURCE_UUID'],
+        setupSteps: ['Create or select Coolify project/resource.', 'Decide whether Coolify owns app, Postgres, worker, and background services.'],
+        verification: ['Call the Coolify API for the selected resource.', 'Record deployment status and service URL.'],
+        blockerNotes: ['Coolify deploy and Postgres-on-Coolify are separate setup checks.'],
+      };
+    case 'hostinger':
+      return {
+        envVars: ['HOSTINGER_VPS_HOST', 'HOSTINGER_SSH_USER', 'HOSTINGER_SSH_KEY_REF'],
+        setupSteps: ['Record the VPS host and SSH access path.', 'Decide whether Hostinger runs Coolify, direct Docker, or static hosting.'],
+        verification: ['Run a non-mutating SSH command or provider inventory check.', 'Record server path, user, and deployment target.'],
+        blockerNotes: ['Hostinger is blocked until SSH and target runtime are explicit.'],
+      };
+    case 'supabase-database':
+      return {
+        envVars: ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_PROJECT_REF'],
+        setupSteps: ['Create or select the Supabase project.', 'Review RLS, migrations, storage, realtime, and edge-function needs.'],
+        verification: ['Run a Supabase CLI project/status check.', 'Apply migrations only after reviewing generated database files.'],
+        blockerNotes: ['Service role keys must stay in secret storage and server-only envs.'],
+      };
+    case 'supabase-auth':
+      return {
+        envVars: ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY'],
+        setupSteps: ['Choose Supabase Auth providers, redirect URLs, and email settings.', 'Document user/session ownership versus app-specific authorization tables.'],
+        verification: ['Run a sign-in/sign-out smoke in preview.', 'Confirm redirect URLs for local, preview, and production.'],
+        blockerNotes: ['Supabase Auth should not be conflated with Supabase database migration proof.'],
+      };
+    case 'convex':
+      return {
+        envVars: ['CONVEX_DEPLOYMENT', 'NEXT_PUBLIC_CONVEX_URL'],
+        setupSteps: ['Create or link the Convex deployment.', 'Translate database entities into Convex schema/functions instead of SQL migrations.'],
+        verification: ['Run convex dev or deploy dry-run.', 'Record generated Convex deployment URL.'],
+        blockerNotes: ['Convex remains blocked for SQL migration execution until Convex schema generation exists.'],
+      };
+    case 'postgres-coolify':
+      return {
+        envVars: ['DATABASE_URL', 'POSTGRES_HOST', 'POSTGRES_USER', 'POSTGRES_DATABASE'],
+        setupSteps: ['Create the Coolify Postgres service and backup policy.', 'Decide extension, migration, and connection-pooling requirements.'],
+        verification: ['Run a read-only psql connection check.', 'Record backup and restore procedure before production writes.'],
+        blockerNotes: ['Database credentials must not be stored in app tables or generated docs.'],
+      };
+    case 'stripe':
+      return {
+        envVars: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PRICE_ID', 'STRIPE_CUSTOMER_PORTAL_URL'],
+        setupSteps: ['Create products, prices, and customer portal configuration.', 'Create local, preview, and production webhooks.'],
+        verification: ['Run Stripe CLI webhook forwarding locally.', 'Complete a test checkout and record webhook delivery proof.'],
+        blockerNotes: ['Payments are blocked until webhook signing and price ids are explicit.'],
+      };
+    case 'linear':
+      return {
+        envVars: ['LINEAR_API_KEY', 'LINEAR_TEAM_ID', 'LINEAR_PROJECT_ID'],
+        setupSteps: ['Select team, project, labels, and issue templates.', 'Decide whether planning handoffs create issues directly or draft first.'],
+        verification: ['Run a read-only Linear team/project query.', 'Record created issue URLs when handoff runs.'],
+        blockerNotes: ['Linear writes need explicit team/project ids.'],
+      };
+    case 'google-docs':
+      return {
+        envVars: ['GOOGLE_DOCS_FOLDER_ID', 'GOOGLE_DOCS_TITLE_PREFIX'],
+        setupSteps: ['Select the destination folder and sharing policy.', 'Decide whether generated handoffs are private drafts or shared docs.'],
+        verification: ['Run a read-only folder/doc lookup.', 'Record created document URL after handoff.'],
+        blockerNotes: ['Google Docs writes are blocked until folder and auth scope are explicit.'],
+      };
+    case 'codex':
+      return {
+        envVars: ['CODEX_AGENT_PROFILE', 'CODEX_WORKSPACE_ROOT'],
+        setupSteps: ['Document Codex workspace, allowed tools, and repo entrypoint.', 'Keep autonomous actions bounded by plan actions and execution artifacts.'],
+        verification: ['Record the Codex workspace path and validation commands.', 'Confirm CLI/UI parity for new Open Design capabilities.'],
+        blockerNotes: ['Codex setup is blocked if the workspace path or agent permissions are unclear.'],
+      };
+    case 'cloudflare-ai-gateway':
+      return {
+        envVars: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_AI_GATEWAY_ID', 'CLOUDFLARE_AI_GATEWAY_URL'],
+        setupSteps: ['Create or select AI Gateway and provider routing policies.', 'Document cache, logging, budget, and fallback expectations.'],
+        verification: ['Run a gateway request against a test model.', 'Record gateway URL and provider route proof.'],
+        blockerNotes: ['AI Gateway proof is separate from Cloudflare hosting proof.'],
+      };
+    case 'ollama-cloud':
+      return {
+        envVars: ['OLLAMA_CLOUD_API_KEY', 'OLLAMA_CLOUD_BASE_URL', 'OLLAMA_CLOUD_MODEL'],
+        setupSteps: ['Select hosted Ollama models and fallback policy.', 'Document latency, cost, and local-development behavior.'],
+        verification: ['Run a small model request through the configured base URL.', 'Record model id and response metadata.'],
+        blockerNotes: ['Ollama Cloud is blocked until base URL, key, and model id are explicit.'],
+      };
+    case 'openrouter':
+      return {
+        envVars: ['OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_APP_URL'],
+        setupSteps: ['Select default and fallback models.', 'Document app attribution and budget limits.'],
+        verification: ['Run a low-cost model request and record model/provider metadata.', 'Confirm fallback behavior for unavailable models.'],
+        blockerNotes: ['OpenRouter setup is blocked until routing and spend policy are accepted.'],
+      };
+    case 'trigger-dev':
+      return {
+        envVars: ['TRIGGER_SECRET_KEY', 'TRIGGER_PROJECT_REF', 'TRIGGER_API_URL'],
+        setupSteps: ['Create Trigger.dev project and environments.', 'Map long-running jobs, schedules, retries, and idempotency keys.'],
+        verification: ['Run a dev task or list project environments.', 'Record task run URL after the first workflow execution.'],
+        blockerNotes: ['Long-standing workflows are blocked until retry and payload-retention policy are explicit.'],
+      };
+    case 'onepassword':
+      return {
+        envVars: ['OP_SERVICE_ACCOUNT_TOKEN', 'OP_VAULT', 'OP_CONNECT_HOST'],
+        setupSteps: ['Create vault/items for provider secrets.', 'Map each generated env variable to a 1Password item field.'],
+        verification: ['Run op whoami or read a non-secret item field.', 'Record vault/item names, never secret values.'],
+        blockerNotes: ['Provider setup is blocked until secrets have a durable source of truth.'],
+      };
+    case 'composio':
+      return {
+        envVars: ['COMPOSIO_API_KEY', 'COMPOSIO_ENTITY_ID'],
+        setupSteps: ['Create Composio entity and select external toolkits.', 'Document which provider actions run through Composio versus native CLIs.'],
+        verification: ['Run a toolkit/entity read check.', 'Record connected account status before agent workflows use it.'],
+        blockerNotes: ['Composio is blocked until entity and connected account ownership are explicit.'],
+      };
+    case 'supermemory':
+      return {
+        envVars: ['SUPERMEMORY_API_KEY', 'SUPERMEMORY_PROJECT_ID'],
+        setupSteps: ['Create memory project and retention policy.', 'Decide what project context can be persisted and what must be excluded.'],
+        verification: ['Run a write/read smoke with non-sensitive test content.', 'Record retention and deletion policy.'],
+        blockerNotes: ['Memory setup is blocked until sensitive-data boundaries are accepted.'],
+      };
+    case 'better-auth':
+      return {
+        envVars: ['BETTER_AUTH_SECRET', 'BETTER_AUTH_URL'],
+        setupSteps: ['Choose providers, session storage, and adapter.', 'Confirm Better-T-Stack scaffold flags match selected auth/database decisions.'],
+        verification: ['Run local sign-in/sign-out smoke.', 'Confirm callback URLs for local, preview, and production.'],
+        blockerNotes: ['Auth setup is blocked until session storage and provider redirects are explicit.'],
+      };
+  }
+  const exhaustive: never = toolId;
+  throw new Error(`Unsupported provider setup tool: ${exhaustive}`);
 }
 
 function buildDesignContext(plan: ProjectPlan): {
@@ -3098,6 +3503,37 @@ function buildDesignMaterializeArtifact(
       '- Confirm generated flows match the intended MVP before implementation.',
       '- Keep planning, design, database, integrations, AI, workflows, and delivery as distinct product surfaces.',
       '- Validate responsive and accessibility states before treating the scaffold as ready for users.',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function buildProviderSetupArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  sourceDir: string,
+  writes: ProjectMaterializedWrite[],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'provider-setup',
+    title: `${action.label} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      'Status: completed',
+      `Source directory: ${sourceDir}`,
+      `Selected providers: ${plan.selectedTools.map((tool) => tool.toolId).join(', ') || 'none'}`,
+      '',
+      'Generated files:',
+      ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
+      '',
+      'Review notes:',
+      '- Store secret values in 1Password or the selected secret manager before populating deploy envs.',
+      '- Run provider tool checks or provider-specific CLIs before marking a provider connected.',
+      '- Keep setup blockers visible in the planning UI until live proof exists.',
     ].join('\n'),
     createdAt: Date.now(),
   };

@@ -4842,7 +4842,7 @@ Common options:
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
       if (!id || !actionId) {
-        console.error('Usage: od plan action <id> --action <repo-create|scaffold|deploy-runtime|provider-research|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--json]');
+        console.error('Usage: od plan action <id> --action <repo-create|scaffold|deploy-runtime|provider-research|provider-setup|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--json]');
         process.exit(2);
       }
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions`, {
@@ -4878,7 +4878,7 @@ Common options:
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
       if (!id || !actionId) {
-        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--target-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--json]');
+        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research|provider-setup|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--target-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--json]');
         process.exit(2);
       }
       const body = {
