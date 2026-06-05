@@ -479,16 +479,30 @@ describe('planning routes', () => {
 
     const sectionBatch = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/runs`, {
       method: 'POST',
-      body: JSON.stringify({ onlyReady: true, sectionIds: ['design', 'database', 'integrations'] }),
+      body: JSON.stringify({ onlyReady: true, mode: 'parallel', sectionIds: ['design', 'database', 'integrations'] }),
     });
     expect(sectionBatch.status).toBe(201);
-    expect(sectionBatch.body.runs).toHaveLength(3);
+    expect(sectionBatch.body.runs).toHaveLength(4);
     expect(sectionBatch.body.runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'orchestration',
+        status: 'completed',
+        summary: expect.stringContaining('Coordinated 3 section agent run'),
+        evidence: expect.arrayContaining([
+          'mode: parallel',
+          'sections: design, database, integrations',
+        ]),
+      }),
       expect.objectContaining({ kind: 'section-agent', sectionId: 'design', status: 'completed' }),
       expect.objectContaining({ kind: 'section-agent', sectionId: 'database', status: 'completed' }),
       expect.objectContaining({ kind: 'section-agent', sectionId: 'integrations', status: 'completed' }),
     ]));
     expect(sectionBatch.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'parallel-orchestration',
+        title: expect.stringContaining('Parallel section orchestration'),
+        content: expect.stringContaining('Mode: parallel'),
+      }),
       expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Design') }),
       expect.objectContaining({ kind: 'database-draft', title: expect.stringContaining('Database') }),
       expect.objectContaining({ kind: 'section-output', title: expect.stringContaining('Integrations') }),
@@ -523,10 +537,11 @@ describe('planning routes', () => {
 
     const execution = await jsonFetch(`${baseUrl}/api/plans/${planId}/execution`);
     expect(execution.status).toBe(200);
-    expect(execution.body.runs).toHaveLength(7);
+    expect(execution.body.runs).toHaveLength(8);
     expect(execution.body.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'provider-research' }),
       expect.objectContaining({ kind: 'scaffold-plan' }),
+      expect.objectContaining({ kind: 'parallel-orchestration' }),
       expect.objectContaining({ kind: 'database-draft' }),
       expect.objectContaining({ kind: 'tool-check' }),
     ]));

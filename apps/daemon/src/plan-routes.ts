@@ -965,7 +965,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       if (selectedSections.length === 0) {
         return res.status(400).json({ error: 'no matching plan sections to run' });
       }
-      const { runs, artifacts } = runPlanningSections(existing, selectedSections);
+      const { runs, artifacts } = runPlanningSections(existing, selectedSections, body);
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         executionRuns: [...(existing.executionRuns ?? []), ...runs],
@@ -1163,6 +1163,7 @@ function normalizeSectionsRunBody(body: Record<string, unknown>): RunProjectPlan
   return {
     ...(sectionIds ? { sectionIds: Array.from(new Set(sectionIds)) } : {}),
     onlyReady: body.onlyReady === true,
+    mode: body.mode === 'sequential' ? 'sequential' : 'parallel',
   };
 }
 
@@ -4441,12 +4442,84 @@ function sectionIsReadyForParallelRun(plan: ProjectPlan, section: ProjectWorkspa
 function runPlanningSections(
   plan: ProjectPlan,
   sections: ProjectWorkspaceSection[],
+  input: RunProjectPlanSectionsRequest,
 ): { runs: PlanningExecutionRun[]; artifacts: PlanningExecutionArtifact[] } {
   const results = sections.map((section) => runPlanningSection(plan, section));
+  const orchestration = buildSectionOrchestrationRun(plan, sections, results.map((result) => result.run), input);
   return {
-    runs: results.map((result) => result.run),
-    artifacts: results.flatMap((result) => result.artifacts),
+    runs: [orchestration.run, ...results.map((result) => result.run)],
+    artifacts: [orchestration.artifact, ...results.flatMap((result) => result.artifacts)],
   };
+}
+
+function buildSectionOrchestrationRun(
+  plan: ProjectPlan,
+  sections: ProjectWorkspaceSection[],
+  childRuns: PlanningExecutionRun[],
+  input: RunProjectPlanSectionsRequest,
+): { run: PlanningExecutionRun; artifact: PlanningExecutionArtifact } {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const mode = input.mode ?? 'parallel';
+  const sectionIds = sections.map((section) => section.id);
+  const laneIds = new Set(sections.flatMap((section) => section.relatedLaneIds));
+  const lanes = plan.agentLanes.filter((lane) => laneIds.has(lane.id) || (lane.sectionId && sectionIds.includes(lane.sectionId)));
+  const parallelLanes = lanes.filter((lane) => lane.mode === 'parallel');
+  const blockedDependencies = lanes.flatMap((lane) =>
+    lane.dependsOn.filter((dependencyId) => !lanes.some((candidate) => candidate.id === dependencyId)).map((dependencyId) =>
+      `${lane.id} depends on ${dependencyId} outside this orchestration`,
+    ),
+  );
+  const artifact: PlanningExecutionArtifact = {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'parallel-orchestration',
+    title: `${mode === 'parallel' ? 'Parallel' : 'Sequential'} section orchestration`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Mode: ${mode}`,
+      `Only ready: ${input.onlyReady === true ? 'yes' : 'no'}`,
+      '',
+      'Sections:',
+      ...sections.map((section) => `- ${section.id}: ${section.label}`),
+      '',
+      'Child runs:',
+      ...childRuns.map((run) => `- ${run.sectionId ?? '-'}: ${run.id} (${run.status})`),
+      '',
+      'Lanes:',
+      ...lanes.map((lane) => `- ${lane.id}: ${lane.mode}; depends on ${lane.dependsOn.join(', ') || 'none'}; parallel with ${lane.parallelWith.join(', ') || 'none'}`),
+      '',
+      'Coordination notes:',
+      ...(
+        blockedDependencies.length > 0
+          ? blockedDependencies.map((item) => `- ${item}`)
+          : ['- Selected sections can be coordinated without unresolved lane dependencies inside this run.']
+      ),
+      '- Section-agent outputs remain separate artifacts; this artifact records the orchestration boundary and ordering assumptions.',
+    ].join('\n'),
+    createdAt: now,
+  };
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'orchestration',
+    status: 'completed',
+    title: `${mode === 'parallel' ? 'Parallel' : 'Sequential'} planning section orchestration`,
+    mode: 'record-only',
+    summary: `${mode === 'parallel' ? 'Coordinated' : 'Sequenced'} ${sections.length} section agent run(s) with ${parallelLanes.length} parallel lane(s).`,
+    startedAt: now,
+    completedAt: now,
+    artifactIds: [artifact.id, ...childRuns.flatMap((child) => child.artifactIds)],
+    evidence: [
+      `mode: ${mode}`,
+      `sections: ${sectionIds.join(', ')}`,
+      `childRuns: ${childRuns.length}`,
+      `parallelLanes: ${parallelLanes.map((lane) => lane.id).join(', ') || 'none'}`,
+      ...(blockedDependencies.length > 0 ? blockedDependencies : ['dependencies resolved inside selected run']),
+    ],
+  };
+  return { run, artifact };
 }
 
 function buildDatabaseDraftArtifactContent(plan: ProjectPlan): string {

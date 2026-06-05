@@ -186,7 +186,7 @@ const PLAN_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'intent-json', 'stack-json', 'tools-json',
   'repo-json', 'delivery-json', 'section', 'section-answers-json',
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
-  'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections',
+  'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
 ]);
 const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist']);
 // `od automation …` mirrors the Automations tab. Same surface, same
@@ -4646,7 +4646,7 @@ async function runPlan(args) {
                                                  Execute or record one plan action.
   od plan run-section <id> --section <name> [--json]
                                                  Run a section planning agent and store its output.
-  od plan run-sections <id> [--sections a,b] [--ready] [--json]
+  od plan run-sections <id> [--sections a,b] [--ready] [--mode parallel|sequential] [--json]
                                                  Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
@@ -4927,18 +4927,20 @@ Common options:
     case 'run-sections': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
-        console.error('Usage: od plan run-sections <id> [--sections planning,design,database,integrations,ai,workflows,delivery] [--ready] [--json]');
+        console.error('Usage: od plan run-sections <id> [--sections planning,design,database,integrations,ai,workflows,delivery] [--ready] [--mode parallel|sequential] [--json]');
         process.exit(2);
       }
       const sectionIds = typeof flags.sections === 'string' && flags.sections.trim()
         ? flags.sections.split(',').map((item) => item.trim()).filter(Boolean)
         : undefined;
+      const mode = flags.mode === 'sequential' ? 'sequential' : flags.mode === 'parallel' ? 'parallel' : undefined;
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/runs`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...(sectionIds ? { sectionIds } : {}),
           onlyReady: flags.ready === true,
+          ...(mode ? { mode } : {}),
         }),
       });
       const data = await resp.json().catch(() => ({}));

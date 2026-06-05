@@ -227,6 +227,7 @@ export function runProjectPlanSections(
       body: JSON.stringify({
         ...(input.sectionIds ? { sectionIds: input.sectionIds } : {}),
         onlyReady: input.onlyReady === true,
+        ...(input.mode ? { mode: input.mode } : {}),
       }),
     },
   );

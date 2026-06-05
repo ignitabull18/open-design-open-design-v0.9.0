@@ -303,7 +303,7 @@ export function PlanningView() {
     setExecutionSaving('sections:ready');
     setError(null);
     try {
-      const result = await runProjectPlanSections(selectedPlan.id, { onlyReady: true });
+      const result = await runProjectPlanSections(selectedPlan.id, { onlyReady: true, mode: 'parallel' });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -744,7 +744,7 @@ function PlanDetail({
             disabled={executionSaving === 'sections:ready'}
             onClick={() => onRunReadySections()}
           >
-            {executionSaving === 'sections:ready' ? 'Running...' : 'Run ready sections'}
+            {executionSaving === 'sections:ready' ? 'Running...' : 'Run ready in parallel'}
           </button>
         </div>
         <div className="planning-view__section-tabs" role="tablist" aria-label="Planning workflow sections">

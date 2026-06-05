@@ -178,7 +178,7 @@ export interface PlanningExecutionAction {
 export interface PlanningExecutionRun {
   id: string;
   planId: string;
-  kind: 'action' | 'section-agent' | 'tool-check';
+  kind: 'action' | 'section-agent' | 'orchestration' | 'tool-check';
   status: 'queued' | 'running' | 'completed' | 'blocked' | 'failed';
   title: string;
   actionId?: PlanningExecutionAction['id'];
@@ -197,7 +197,7 @@ export interface PlanningExecutionArtifact {
   id: string;
   planId: string;
   runId?: string;
-  kind: 'provider-research' | 'provider-setup' | 'section-output' | 'database-draft' | 'database-materialization' | 'database-migration' | 'design-materialization' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
+  kind: 'provider-research' | 'provider-setup' | 'section-output' | 'parallel-orchestration' | 'database-draft' | 'database-materialization' | 'database-migration' | 'design-materialization' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
   title: string;
   content: string;
   createdAt: number;
@@ -324,6 +324,7 @@ export interface RunProjectPlanSectionRequest {
 export interface RunProjectPlanSectionsRequest {
   sectionIds?: ProjectWorkspaceSection['id'][];
   onlyReady?: boolean;
+  mode?: 'parallel' | 'sequential';
 }
 
 export interface CheckProjectPlanToolRequest {
