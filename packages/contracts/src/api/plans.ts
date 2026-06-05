@@ -243,7 +243,7 @@ export interface PlanningToolCheck {
   id: string;
   planId: string;
   toolId: PlanningToolId;
-  status: 'connected' | 'blocked' | 'deferred';
+  status: ProjectToolConnection['status'];
   summary: string;
   evidence: string[];
   checkedAt: number;
@@ -378,6 +378,12 @@ export interface RunProjectPlanSectionsRequest {
 
 export interface CheckProjectPlanToolRequest {
   toolId: PlanningToolId;
+}
+
+export interface UpdateProjectPlanToolStatusRequest {
+  toolId: PlanningToolId;
+  status: ProjectToolConnection['status'];
+  notes?: string;
 }
 
 export interface CreateProjectPlanArtifactRequest {
@@ -563,6 +569,11 @@ export interface ProjectPlanToolCheckResponse {
   run: PlanningExecutionRun;
   toolCheck: PlanningToolCheck;
   artifacts: PlanningExecutionArtifact[];
+}
+
+export interface ProjectPlanToolStatusResponse {
+  plan: ProjectPlan;
+  toolCheck: PlanningToolCheck;
 }
 
 export interface PlanningToolOptionsResponse {

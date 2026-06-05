@@ -13,6 +13,7 @@ import type {
   ProjectPlanLaunchPreviewResponse,
   ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
+  ProjectPlanToolStatusResponse,
   ProjectPlanReadinessResponse,
   ProjectLaunchProofResponse,
   ProjectSectionWorkflowResponse,
@@ -33,6 +34,7 @@ import type {
   ProviderCapabilityRefreshScheduleResponse,
   UpdateProviderCapabilityRefreshScheduleRequest,
   ProjectStackDecision,
+  UpdateProjectPlanToolStatusRequest,
 } from '@open-design/contracts';
 
 async function jsonFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
@@ -154,6 +156,22 @@ export function updateProjectPlanTools(
     method: 'PATCH',
     body: JSON.stringify({ selectedTools }),
   });
+}
+
+export function updateProjectPlanToolStatus(
+  id: string,
+  input: UpdateProjectPlanToolStatusRequest,
+): Promise<ProjectPlanToolStatusResponse> {
+  return jsonFetch<ProjectPlanToolStatusResponse>(
+    `/api/plans/${encodeURIComponent(id)}/tools/${encodeURIComponent(input.toolId)}/status`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        status: input.status,
+        ...(input.notes ? { notes: input.notes } : {}),
+      }),
+    },
+  );
 }
 
 export function updateProjectPlanSectionAnswers(

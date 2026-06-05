@@ -54,6 +54,7 @@ import type {
   UpdateProviderCapabilityRefreshScheduleRequest,
   UpdateProjectSectionRequest,
   UpdateProjectPlanRequest,
+  UpdateProjectPlanToolStatusRequest,
 } from '@open-design/contracts';
 import {
   deletePlan,
@@ -1328,6 +1329,45 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/tools/:toolId/status', async (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeToolStatusBody(req.params.toolId, req.body || {});
+      const tool = APPROVED_TOOLS.find((item) => item.id === body.toolId);
+      if (!tool) return res.status(404).json({ error: 'planning tool not found' });
+      if (!existing.selectedTools.some((item) => item.toolId === body.toolId)) {
+        return res.status(400).json({ error: 'tool is not selected for this plan' });
+      }
+      const toolCheck = buildManualToolStatusCheck(existing, body, tool);
+      const selectedTools = existing.selectedTools.map((item) =>
+        item.toolId === body.toolId
+          ? {
+            ...item,
+            status: body.status,
+            ...(body.notes
+              ? { notes: body.notes }
+              : body.status === 'deferred' && !item.notes
+                ? { notes: 'Deferred by planner.' }
+                : body.status === 'blocked' && !item.notes
+                  ? { notes: 'Blocked by planner.' }
+                  : {}),
+          }
+          : item,
+      );
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        selectedTools,
+        toolChecks: [toolCheck, ...(existing.toolChecks ?? []).filter((item) => item.toolId !== body.toolId)],
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(200).json({ plan: updated, toolCheck });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.post('/api/plans/:id/artifacts', (req, res) => {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1578,6 +1618,25 @@ function normalizeToolCheckBody(toolIdParam: string): CheckProjectPlanToolReques
     throw new Error('toolId must be one of the approved planning tool ids');
   }
   return { toolId };
+}
+
+function normalizeToolStatusBody(
+  toolIdParam: string,
+  body: Record<string, unknown>,
+): UpdateProjectPlanToolStatusRequest {
+  const toolId = cleanRequiredString(toolIdParam, 'toolId') as UpdateProjectPlanToolStatusRequest['toolId'];
+  if (!APPROVED_TOOLS.some((tool) => tool.id === toolId)) {
+    throw new Error('toolId must be one of the approved planning tool ids');
+  }
+  const status = cleanRequiredString(body.status, 'status') as UpdateProjectPlanToolStatusRequest['status'];
+  if (!isProjectToolConnectionStatus(status)) {
+    throw new Error('status must be wanted, connected, deferred, or blocked');
+  }
+  return {
+    toolId,
+    status,
+    ...(typeof body.notes === 'string' && body.notes.trim() ? { notes: body.notes.trim() } : {}),
+  };
 }
 
 function buildExecutionResponse(plan: ProjectPlan) {
@@ -7194,6 +7253,30 @@ async function checkPlanningTool(
   return { run, toolCheck, artifacts: [artifact], selectedTools };
 }
 
+function buildManualToolStatusCheck(
+  plan: ProjectPlan,
+  body: UpdateProjectPlanToolStatusRequest,
+  tool: PlanningToolOption,
+): PlanningToolCheck {
+  const evidence = [
+    `Manual status: ${body.status}`,
+    body.notes ? `Notes: ${body.notes}` : 'Notes: (none)',
+  ];
+  return {
+    id: `tool-check-${randomUUID()}`,
+    planId: plan.id,
+    toolId: body.toolId,
+    status: body.status,
+    summary: `${tool.label} was marked ${body.status} by the planner.`,
+    evidence,
+    checkedAt: Date.now(),
+  };
+}
+
+function isProjectToolConnectionStatus(value: string): value is ProjectToolConnection['status'] {
+  return ['wanted', 'connected', 'deferred', 'blocked'].includes(value);
+}
+
 function buildToolCheckInvocation(
   plan: ProjectPlan,
   toolId: PlanningToolCheck['toolId'],
@@ -7917,9 +8000,13 @@ function normalizeToolConnections(value: unknown): ProjectToolConnection[] {
       throw new Error('selectedTools entries must be objects');
     }
     const row = item as Record<string, unknown>;
+    const status = cleanRequiredString(row.status ?? 'wanted', 'selectedTools.status');
+    if (!isProjectToolConnectionStatus(status)) {
+      throw new Error('selectedTools.status must be wanted, connected, deferred, or blocked');
+    }
     return {
       toolId: cleanRequiredString(row.toolId, 'selectedTools.toolId') as ProjectToolConnection['toolId'],
-      status: cleanRequiredString(row.status ?? 'wanted', 'selectedTools.status') as ProjectToolConnection['status'],
+      status,
       ...(typeof row.notes === 'string' ? { notes: row.notes.trim() } : {}),
     };
   });

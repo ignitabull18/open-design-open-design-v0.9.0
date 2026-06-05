@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections, updateProjectPlanTools } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections, updateProjectPlanToolStatus, updateProjectPlanTools } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -105,6 +105,47 @@ describe('plans provider', () => {
         { toolId: 'github', status: 'connected' },
         { toolId: 'linear', status: 'deferred', notes: 'Use GitHub Issues first.' },
       ],
+    });
+  });
+
+  it('records a proof-bearing tool status update through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: {
+        id: 'plan-1',
+        selectedTools: [
+          { toolId: 'linear', status: 'deferred', notes: 'Use GitHub Issues first.' },
+        ],
+      },
+      toolCheck: {
+        id: 'tool-check-1',
+        planId: 'plan-1',
+        toolId: 'linear',
+        status: 'deferred',
+        summary: 'Linear was marked deferred by the planner.',
+        evidence: ['Manual status: deferred', 'Notes: Use GitHub Issues first.'],
+        checkedAt: 1,
+      },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await updateProjectPlanToolStatus('plan-1', {
+      toolId: 'linear',
+      status: 'deferred',
+      notes: 'Use GitHub Issues first.',
+    });
+
+    expect(result.toolCheck).toMatchObject({
+      toolId: 'linear',
+      status: 'deferred',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/tools/linear/status');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      status: 'deferred',
+      notes: 'Use GitHub Issues first.',
     });
   });
 

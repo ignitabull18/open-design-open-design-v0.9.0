@@ -5137,42 +5137,23 @@ Common options:
         console.error('Usage: od plan tool-status <id> --tool <tool-id> --status wanted|connected|deferred|blocked [--notes <text>] [--json]');
         process.exit(2);
       }
-      const current = await fetchPlan(base, id);
-      const plan = current.plan;
-      const selectedTools = Array.isArray(plan?.selectedTools) ? plan.selectedTools : [];
-      if (!selectedTools.some((tool) => tool.toolId === toolId)) {
-        console.error(`tool is not selected for this plan: ${toolId}`);
-        process.exit(2);
-      }
       const notes = typeof flags.notes === 'string' ? flags.notes.trim() : '';
-      const nextTools = selectedTools.map((tool) => {
-        if (tool.toolId !== toolId) return tool;
-        return {
-          ...tool,
-          status,
-          ...(notes
-            ? { notes }
-            : status === 'deferred' && !tool.notes
-              ? { notes: 'Deferred by planner.' }
-              : status === 'blocked' && !tool.notes
-                ? { notes: 'Blocked by planner.' }
-                : {}),
-        };
-      });
-      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/tools/${encodeURIComponent(toolId)}/status`, {
+        method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ selectedTools: nextTools }),
+        body: JSON.stringify({
+          status,
+          ...(notes ? { notes } : {}),
+        }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        console.error(`PATCH /api/plans/${id} failed: ${resp.status} ${JSON.stringify(data)}`);
+        console.error(`POST /api/plans/${id}/tools/${toolId}/status failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-      const updated = data.plan?.selectedTools?.find((tool) => tool.toolId === toolId);
-      console.log(`[plan] tool ${toolId}: ${updated?.status ?? status}`);
-      if (updated?.notes) console.log(updated.notes);
+      console.log(`[plan] tool ${toolId}: ${data.toolCheck?.status ?? status}`);
+      if (data.toolCheck?.summary) console.log(data.toolCheck.summary);
       return;
     }
     case 'artifacts': {

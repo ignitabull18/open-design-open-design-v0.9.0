@@ -39,7 +39,7 @@ import {
   runProjectPlanSection,
   runProjectPlanSections,
   updateProviderCapabilityRefreshSchedule,
-  updateProjectPlanTools,
+  updateProjectPlanToolStatus,
   updateProjectSectionWorkflow,
 } from '../providers/plans';
 
@@ -511,17 +511,7 @@ export function PlanningView() {
     setExecutionSaving(`tool-status:${toolId}`);
     setError(null);
     try {
-      const selectedTools = selectedPlan.selectedTools.map((tool) =>
-        tool.toolId === toolId
-          ? {
-            ...tool,
-            status,
-            ...(status === 'deferred' && !tool.notes ? { notes: 'Deferred by planner.' } : {}),
-            ...(status === 'blocked' && !tool.notes ? { notes: 'Blocked by planner.' } : {}),
-          }
-          : tool,
-      );
-      const result = await updateProjectPlanTools(selectedPlan.id, selectedTools);
+      const result = await updateProjectPlanToolStatus(selectedPlan.id, { toolId, status });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
     } catch (err) {

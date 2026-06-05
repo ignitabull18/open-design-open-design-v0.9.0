@@ -1052,6 +1052,58 @@ describe('planning routes', () => {
     expect(checked.body.artifacts[0].content).toContain('stderr: gh: not logged in');
   });
 
+  it('records manual selected tool status with evidence', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Tool Status Studio',
+        intent: { purpose: 'Track provider setup truth before scaffold execution.' },
+        selectedTools: [
+          { toolId: 'linear', status: 'wanted' },
+          { toolId: 'github-issues', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const updated = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/tools/linear/status`, {
+      method: 'POST',
+      body: JSON.stringify({
+        status: 'deferred',
+        notes: 'Use GitHub Issues first.',
+      }),
+    });
+
+    expect(updated.status).toBe(200);
+    expect(updated.body.plan.selectedTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolId: 'linear',
+        status: 'deferred',
+        notes: 'Use GitHub Issues first.',
+      }),
+      expect.objectContaining({ toolId: 'github-issues', status: 'wanted' }),
+    ]));
+    expect(updated.body.toolCheck).toMatchObject({
+      toolId: 'linear',
+      status: 'deferred',
+      summary: expect.stringContaining('marked deferred'),
+    });
+    expect(updated.body.toolCheck.evidence).toEqual(expect.arrayContaining([
+      'Manual status: deferred',
+      'Notes: Use GitHub Issues first.',
+    ]));
+    expect(updated.body.plan.toolChecks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: 'linear', status: 'deferred' }),
+    ]));
+  });
+
   it('executes a confirmed scaffold inside the configured scaffold root', async () => {
     const scaffoldRoot = path.join(tempDir, 'scaffolds');
     const runnerCalls: Array<{ command: string; args: string[]; cwd: string; outputDir: string }> = [];
