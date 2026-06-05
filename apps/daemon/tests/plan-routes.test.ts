@@ -624,6 +624,105 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('executes a confirmed GitHub Issues project-management handoff', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'handoff-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"handoff-studio"}\n');
+    const runnerCalls: Array<{ command: string; args: string[]; cwd: string }> = [];
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      projectManagementRunner: async (request) => {
+        runnerCalls.push({
+          command: request.command,
+          args: request.args,
+          cwd: request.cwd,
+        });
+        return {
+          exitCode: 0,
+          stdout: `https://github.com/ignitabull/handoff-studio/issues/${runnerCalls.length}`,
+          stderr: '',
+          durationMs: 15,
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Handoff Studio',
+        intent: { purpose: 'Create implementation issues from the accepted planning sections.' },
+        repo: {
+          owner: 'ignitabull',
+          name: 'handoff-studio',
+          visibility: 'private',
+        },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+          { toolId: 'github-issues', status: 'wanted' },
+          { toolId: 'supabase-database', status: 'wanted' },
+        ],
+        sectionAnswers: {
+          planning: {
+            sectionId: 'planning',
+            status: 'answered',
+            answers: ['Implement the planner as the first workflow.'],
+            updatedAt: 1,
+          },
+        },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/project-management/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/handoff-studio',
+        projectManagementTarget: 'github-issues',
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(runnerCalls).toHaveLength(3);
+    const firstRunnerCall = runnerCalls[0];
+    expect(firstRunnerCall).toBeDefined();
+    expect(firstRunnerCall).toMatchObject({
+      command: 'gh',
+      cwd: sourceDir,
+    });
+    expect(firstRunnerCall?.args).toEqual(expect.arrayContaining([
+      'issue',
+      'create',
+      '--repo',
+      'ignitabull/handoff-studio',
+      '--title',
+      'Implement accepted plan: Handoff Studio',
+    ]));
+    expect(firstRunnerCall?.args.join('\n')).toContain('Implement the planner as the first workflow.');
+    expect(executed.body.run).toMatchObject({
+      actionId: 'project-management',
+      status: 'completed',
+      mode: 'external',
+      summary: expect.stringContaining('Created 3 GitHub issue'),
+    });
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'project-management', status: 'completed' }),
+    ]));
+    expect(executed.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'project-management-plan',
+        content: expect.stringContaining('Project-management target: github-issues'),
+      }),
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('https://github.com/ignitabull/handoff-studio/issues/1');
+  });
+
   it('updates stack decisions and regenerates the scaffold command', async () => {
     const baseUrl = await startPlanServer();
     const created = await jsonFetch(`${baseUrl}/api/plans`, {

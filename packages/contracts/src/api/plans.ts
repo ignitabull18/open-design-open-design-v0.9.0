@@ -164,7 +164,7 @@ export interface PlanningRuntimePlan {
 }
 
 export interface PlanningExecutionAction {
-  id: 'repo-create' | 'scaffold' | 'deploy-runtime' | 'provider-research';
+  id: 'repo-create' | 'scaffold' | 'deploy-runtime' | 'provider-research' | 'project-management';
   label: string;
   status: 'blocked' | 'ready' | 'accepted' | 'completed';
   requiresConfirmation: boolean;
@@ -196,7 +196,7 @@ export interface PlanningExecutionArtifact {
   id: string;
   planId: string;
   runId?: string;
-  kind: 'provider-research' | 'section-output' | 'database-draft' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'tool-check';
+  kind: 'provider-research' | 'section-output' | 'database-draft' | 'scaffold-plan' | 'repo-plan' | 'deployment-plan' | 'project-management-plan' | 'tool-check';
   title: string;
   content: string;
   createdAt: number;
@@ -313,6 +313,7 @@ export interface ExecuteProjectPlanActionRequest {
   confirmed?: boolean;
   targetDir?: string;
   deliveryTarget?: DeliveryPlan['target'];
+  projectManagementTarget?: Extract<PlanningToolId, 'github-issues' | 'linear' | 'google-docs'>;
 }
 
 export interface RunProjectPlanSectionRequest {

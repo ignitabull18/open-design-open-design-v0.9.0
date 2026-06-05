@@ -96,11 +96,28 @@ interface DeployCommandResult {
 
 type DeployCommandRunner = (request: DeployCommandRequest) => Promise<DeployCommandResult>;
 
+interface ProjectManagementCommandRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
+interface ProjectManagementCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+type ProjectManagementCommandRunner = (request: ProjectManagementCommandRequest) => Promise<ProjectManagementCommandResult>;
+
 export interface RegisterPlanRoutesDeps extends RouteDeps<'db'> {
   scaffoldRoot?: string;
   scaffoldRunner?: ScaffoldCommandRunner;
   repoRunner?: RepoCommandRunner;
   deployRunner?: DeployCommandRunner;
+  projectManagementRunner?: ProjectManagementCommandRunner;
 }
 
 interface ProjectPlanBuildInput {
@@ -292,6 +309,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
   const repoRunner = ctx.repoRunner ?? runRepoCommand;
   const deployRunner = ctx.deployRunner ?? runDeployCommand;
+  const projectManagementRunner = ctx.projectManagementRunner ?? runProjectManagementCommand;
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
 
   app.get('/api/planning/tools', (_req, res) => {
@@ -477,6 +495,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         scaffoldRunner,
         repoRunner,
         deployRunner,
+        projectManagementRunner,
       });
       const updated = updatePlan(db, req.params.id, {
         ...existing,
@@ -617,8 +636,8 @@ function normalizeSectionUpdateBody(body: Record<string, unknown>): UpdateProjec
 
 function normalizeActionBody(body: Record<string, unknown>): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(body.actionId, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, or provider-research');
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, or project-management');
   }
   return {
     actionId,
@@ -631,8 +650,8 @@ function normalizeActionExecutionBody(
   body: Record<string, unknown>,
 ): ExecuteProjectPlanActionRequest {
   const actionId = cleanRequiredString(actionIdParam, 'actionId') as PlanningExecutionAction['id'];
-  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research'].includes(actionId)) {
-    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, or provider-research');
+  if (!['repo-create', 'scaffold', 'deploy-runtime', 'provider-research', 'project-management'].includes(actionId)) {
+    throw new Error('actionId must be one of repo-create, scaffold, deploy-runtime, provider-research, or project-management');
   }
   return {
     actionId,
@@ -640,6 +659,9 @@ function normalizeActionExecutionBody(
     ...(typeof body.targetDir === 'string' && body.targetDir.trim() ? { targetDir: body.targetDir.trim() } : {}),
     ...(typeof body.deliveryTarget === 'string' && ['cloudflare', 'vercel', 'coolify', 'hostinger'].includes(body.deliveryTarget)
       ? { deliveryTarget: body.deliveryTarget as DeliveryPlan['target'] }
+      : {}),
+    ...(typeof body.projectManagementTarget === 'string' && ['github-issues', 'linear', 'google-docs'].includes(body.projectManagementTarget)
+      ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
       : {}),
   };
 }
@@ -900,6 +922,23 @@ function buildExecutionActions(
       effects: runtimePlan.verification,
       relatedSectionIds: ['delivery', 'integrations'],
     },
+    {
+      id: 'project-management',
+      label: 'Create project-management handoff',
+      status: 'ready',
+      requiresConfirmation: true,
+      command: `gh issue create --repo ${owner}/${slug} --title "Implement accepted project plan" --body "<generated from plan sections>"`,
+      preconditions: [
+        'The repository owner and name are explicit.',
+        'GitHub CLI is authenticated with issue write access when GitHub Issues is selected.',
+        'Planning, database, integrations, workflows, and delivery sections have enough accepted detail to create useful work items.',
+      ],
+      effects: [
+        'Creates implementation issues from the accepted plan when GitHub Issues is selected.',
+        'Records blocked provider handoff notes when Linear or Google Docs is selected before their executor is connected.',
+      ],
+      relatedSectionIds: ['planning', 'database', 'integrations', 'ai', 'workflows', 'delivery'],
+    },
   ];
 }
 
@@ -907,7 +946,7 @@ async function executePlanningAction(
   plan: ProjectPlan,
   action: PlanningExecutionAction,
   body: ExecuteProjectPlanActionRequest,
-  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner },
+  options: { scaffoldRoot: string; scaffoldRunner: ScaffoldCommandRunner; repoRunner: RepoCommandRunner; deployRunner: DeployCommandRunner; projectManagementRunner: ProjectManagementCommandRunner },
 ): Promise<{
   planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
   run: PlanningExecutionRun;
@@ -921,6 +960,9 @@ async function executePlanningAction(
   }
   if (action.id === 'deploy-runtime' && body.targetDir) {
     return executeDeployRuntimeAction(plan, action, body, options);
+  }
+  if (action.id === 'project-management') {
+    return executeProjectManagementAction(plan, action, body, options);
   }
   const now = Date.now();
   const runId = `plan-run-${randomUUID()}`;
@@ -979,6 +1021,114 @@ async function executePlanningAction(
       scaffoldExecution,
       repo,
       delivery,
+    },
+    run,
+    artifacts: [artifact],
+  };
+}
+
+type ProjectManagementTarget = Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'>;
+
+async function executeProjectManagementAction(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  body: ExecuteProjectPlanActionRequest,
+  options: { scaffoldRoot: string; projectManagementRunner: ProjectManagementCommandRunner },
+): Promise<{
+  planPatch: Pick<ProjectPlan, 'executionRuns' | 'executionArtifacts' | 'executionActions' | 'scaffoldExecution' | 'repo' | 'delivery'>;
+  run: PlanningExecutionRun;
+  artifacts: PlanningExecutionArtifact[];
+}> {
+  const now = Date.now();
+  const runId = `plan-run-${randomUUID()}`;
+  const target = resolveProjectManagementTarget(plan, body.projectManagementTarget as ProjectManagementTarget | undefined);
+  const cwd = await resolveProjectManagementCwd(body.targetDir, options.scaffoldRoot);
+  const unsupported = target !== 'github-issues';
+  const repo = target === 'github-issues' ? `${cleanRepoSegment(plan.repo.owner, 'repo.owner')}/${cleanRepoSegment(plan.repo.name, 'repo.name')}` : '';
+  const issueSpecs = buildProjectManagementIssueSpecs(plan);
+  const results: Array<{ title: string; command?: string; result: ProjectManagementCommandResult }> = [];
+  let status: PlanningExecutionRun['status'] = unsupported ? 'blocked' : 'completed';
+
+  if (unsupported) {
+    results.push({
+      title: `${target} handoff`,
+      result: {
+        exitCode: 1,
+        stdout: '',
+        stderr: `${target} project-management execution is not implemented yet.`,
+        durationMs: 0,
+      },
+    });
+  } else {
+    for (const issue of issueSpecs) {
+      const invocation = buildGitHubIssueInvocation(repo, issue);
+      try {
+        const result = await options.projectManagementRunner({
+          command: invocation.command,
+          args: invocation.args,
+          cwd,
+          timeoutMs: 120_000,
+        });
+        if (result.exitCode !== 0) status = 'failed';
+        results.push({
+          title: issue.title,
+          command: [invocation.command, ...invocation.args].join(' '),
+          result,
+        });
+      } catch (err: any) {
+        status = 'failed';
+        results.push({
+          title: issue.title,
+          command: [invocation.command, ...invocation.args].join(' '),
+          result: {
+            exitCode: typeof err?.code === 'number' ? err.code : 1,
+            stdout: typeof err?.stdout === 'string' ? err.stdout : '',
+            stderr: typeof err?.stderr === 'string' ? err.stderr : String(err?.message ?? err),
+            durationMs: 0,
+          },
+        });
+      }
+    }
+  }
+
+  const artifact = buildProjectManagementArtifact(plan, action, runId, target, cwd, issueSpecs, results, status);
+  const run: PlanningExecutionRun = {
+    id: runId,
+    planId: plan.id,
+    kind: 'action',
+    actionId: 'project-management',
+    status,
+    title: `${action.label}: ${target}`,
+    mode: unsupported ? 'dry-run' : 'external',
+    summary: status === 'completed'
+      ? `Created ${issueSpecs.length} GitHub issue handoff item(s) for ${plan.name}.`
+      : unsupported
+        ? `${target} handoff executor is not implemented yet; recorded the blocked provider target.`
+        : 'GitHub issue handoff failed; inspect the attached artifact for stdout and stderr.',
+    ...(results[0]?.command ? { command: results[0].command } : {}),
+    startedAt: now,
+    completedAt: Date.now(),
+    artifactIds: [artifact.id],
+    evidence: [
+      `target: ${target}`,
+      `cwd: ${cwd}`,
+      `issueCount: ${issueSpecs.length}`,
+      ...results.map((item) => `${item.title}: exit ${item.result.exitCode}`),
+    ],
+  };
+  const executionActions = plan.executionActions.map((item) =>
+    item.id === 'project-management'
+      ? { ...item, status: status === 'completed' ? 'completed' as const : 'accepted' as const }
+      : item,
+  );
+  return {
+    planPatch: {
+      executionRuns: [...(plan.executionRuns ?? []), run],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionActions,
+      scaffoldExecution: plan.scaffoldExecution,
+      repo: plan.repo,
+      delivery: plan.delivery,
     },
     run,
     artifacts: [artifact],
@@ -1369,6 +1519,121 @@ function buildDeployInvocation(target: DeliveryPlan['target']): { command: strin
   };
 }
 
+function resolveProjectManagementTarget(plan: ProjectPlan, requested?: ProjectManagementTarget): ProjectManagementTarget {
+  const selected = new Set(plan.selectedTools.map((tool) => tool.toolId));
+  const target = requested
+    ?? (selected.has('github-issues')
+      ? 'github-issues'
+      : selected.has('linear')
+        ? 'linear'
+        : selected.has('google-docs')
+          ? 'google-docs'
+          : undefined);
+  if (!target) throw new Error('projectManagementTarget is required before project-management execution');
+  if (!selected.has(target)) {
+    throw new Error(`projectManagementTarget is not selected for this plan: ${target}`);
+  }
+  return target;
+}
+
+async function resolveProjectManagementCwd(targetDir: string | undefined, scaffoldRoot: string): Promise<string> {
+  if (targetDir?.trim()) return resolveRepoSourceDir(targetDir, scaffoldRoot);
+  const root = path.resolve(scaffoldRoot);
+  await fs.mkdir(root, { recursive: true });
+  return root;
+}
+
+interface ProjectManagementIssueSpec {
+  title: string;
+  body: string;
+  labels: string[];
+}
+
+function buildProjectManagementIssueSpecs(plan: ProjectPlan): ProjectManagementIssueSpec[] {
+  const answeredSections = Object.values(plan.sectionAnswers ?? {})
+    .filter((answer): answer is ProjectSectionAnswer => Boolean(answer));
+  const answerLines = answeredSections.flatMap((answer) =>
+    answer.answers.map((line) => `- ${answer.sectionId}: ${line}`),
+  );
+  const deliveryTargets = plan.delivery.map((item) => `${item.target}: ${item.status}`).join(', ') || 'No delivery targets selected.';
+  return [
+    {
+      title: `Implement accepted plan: ${plan.name}`,
+      labels: ['planning', 'implementation'],
+      body: [
+        `Purpose: ${plan.intent.purpose}`,
+        plan.intent.audience ? `Audience: ${plan.intent.audience}` : '',
+        '',
+        'Accepted section answers:',
+        ...(answerLines.length ? answerLines : ['- No section answers have been accepted yet.']),
+        '',
+        'Stack decision:',
+        `- frontend: ${plan.stack.frontend ?? 'next'}`,
+        `- backend: ${plan.stack.backend ?? 'hono'}`,
+        `- runtime: ${plan.stack.runtime ?? 'workers'}`,
+        `- database: ${plan.stack.database ?? 'supabase'}`,
+        `- auth: ${plan.stack.auth ?? 'better-auth'}`,
+        '',
+        `Scaffold command: ${plan.scaffold.command}`,
+      ].filter(Boolean).join('\n'),
+    },
+    {
+      title: `Design database and migrations: ${plan.name}`,
+      labels: ['database', 'planning'],
+      body: [
+        `Primary store: ${plan.databaseDesign.primaryStore}`,
+        `Mode: ${plan.databaseDesign.mode}`,
+        '',
+        'Entities:',
+        ...plan.databaseDesign.entities.map((item) => `- ${item}`),
+        '',
+        'Relationships:',
+        ...plan.databaseDesign.relationships.map((item) => `- ${item}`),
+        '',
+        'Migration order:',
+        ...plan.databaseDesign.migrations.map((item) => `- ${item}`),
+        '',
+        'Risk notes:',
+        ...plan.databaseDesign.riskNotes.map((item) => `- ${item}`),
+      ].join('\n'),
+    },
+    {
+      title: `Wire integrations, workflows, and delivery: ${plan.name}`,
+      labels: ['integrations', 'delivery'],
+      body: [
+        'Selected tools:',
+        ...plan.selectedTools.map((tool) => `- ${tool.toolId}: ${tool.status}${tool.notes ? ` (${tool.notes})` : ''}`),
+        '',
+        `Delivery targets: ${deliveryTargets}`,
+        '',
+        'Runtime plan:',
+        plan.runtimePlan.summary,
+        '',
+        'Verification:',
+        ...plan.runtimePlan.verification.map((item) => `- ${item}`),
+      ].join('\n'),
+    },
+  ];
+}
+
+function buildGitHubIssueInvocation(repo: string, issue: ProjectManagementIssueSpec): { command: string; args: string[] } {
+  return {
+    command: 'gh',
+    args: [
+      'issue',
+      'create',
+      '--repo',
+      repo,
+      '--title',
+      issue.title,
+      '--body',
+      issue.body,
+      '--label',
+      issue.labels.join(','),
+    ],
+  };
+}
+
 async function resolveScaffoldTarget(
   plan: ProjectPlan,
   targetDir: string,
@@ -1529,6 +1794,51 @@ function buildDeployArtifact(
   };
 }
 
+function buildProjectManagementArtifact(
+  plan: ProjectPlan,
+  action: PlanningExecutionAction,
+  runId: string,
+  target: ProjectManagementTarget,
+  cwd: string,
+  issues: ProjectManagementIssueSpec[],
+  results: Array<{ title: string; command?: string; result: ProjectManagementCommandResult }>,
+  status: PlanningExecutionRun['status'],
+): PlanningExecutionArtifact {
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'project-management-plan',
+    title: `${action.label} ${target} execution log`,
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Project-management target: ${target}`,
+      `Working directory: ${cwd}`,
+      '',
+      'Issue drafts:',
+      ...issues.flatMap((issue) => [
+        `- ${issue.title}`,
+        `  labels: ${issue.labels.join(', ')}`,
+      ]),
+      '',
+      'Command results:',
+      ...results.flatMap((item) => [
+        `Issue: ${item.title}`,
+        item.command ? `Command: ${item.command}` : 'Command: not available for this project-management target yet',
+        `Exit code: ${item.result.exitCode}`,
+        `Duration ms: ${item.result.durationMs}`,
+        'stdout:',
+        item.result.stdout || '(empty)',
+        'stderr:',
+        item.result.stderr || '(empty)',
+        '',
+      ]),
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
 function extractFirstUrl(value: string): string | undefined {
   const match = value.match(/https?:\/\/[^\s)]+/);
   return match?.[0];
@@ -1587,6 +1897,25 @@ function runRepoCommand(request: RepoCommandRequest): Promise<RepoCommandResult>
 }
 
 function runDeployCommand(request: DeployCommandRequest): Promise<DeployCommandResult> {
+  const startedAt = Date.now();
+  return new Promise((resolve) => {
+    execFile(request.command, request.args, {
+      cwd: request.cwd,
+      timeout: request.timeoutMs,
+      maxBuffer: 2 * 1024 * 1024,
+      env: process.env,
+    }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
+        stdout: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+        stderr: typeof stderr === 'string' ? stderr : String(stderr ?? error?.message ?? ''),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+function runProjectManagementCommand(request: ProjectManagementCommandRequest): Promise<ProjectManagementCommandResult> {
   const startedAt = Date.now();
   return new Promise((resolve) => {
     execFile(request.command, request.args, {

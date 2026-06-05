@@ -65,6 +65,7 @@ export function PlanningView() {
   const [executionSaving, setExecutionSaving] = useState<string | null>(null);
   const [executionTargets, setExecutionTargets] = useState<Record<string, string>>({});
   const [deliveryTargets, setDeliveryTargets] = useState<Record<string, ProjectPlan['delivery'][number]['target'] | ''>>({});
+  const [projectManagementTargets, setProjectManagementTargets] = useState<Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>>({});
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -261,6 +262,7 @@ export function PlanningView() {
     actionId: ProjectPlan['executionActions'][number]['id'],
     targetDir?: string,
     deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
+    projectManagementTarget?: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
   ) {
     if (!selectedPlan) return;
     setExecutionSaving(`action:${actionId}`);
@@ -271,6 +273,7 @@ export function PlanningView() {
         confirmed: true,
         ...(targetDir?.trim() ? { targetDir: targetDir.trim() } : {}),
         ...(deliveryTarget ? { deliveryTarget } : {}),
+        ...(projectManagementTarget ? { projectManagementTarget } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
     } catch (err) {
@@ -549,6 +552,10 @@ export function PlanningView() {
               onDeliveryTargetChange={(actionId, deliveryTarget) => {
                 setDeliveryTargets((curr) => ({ ...curr, [actionId]: deliveryTarget }));
               }}
+              projectManagementTargets={projectManagementTargets}
+              onProjectManagementTargetChange={(actionId, projectManagementTarget) => {
+                setProjectManagementTargets((curr) => ({ ...curr, [actionId]: projectManagementTarget }));
+              }}
               onRunSection={handleRunSection}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
@@ -603,6 +610,8 @@ function PlanDetail({
   onExecutionTargetChange,
   deliveryTargets,
   onDeliveryTargetChange,
+  projectManagementTargets,
+  onProjectManagementTargetChange,
   onRunSection,
   onCheckTool,
   onRefreshCapabilities,
@@ -624,11 +633,17 @@ function PlanDetail({
     actionId: ProjectPlan['executionActions'][number]['id'],
     targetDir?: string,
     deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
+    projectManagementTarget?: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
   ) => void;
   executionTargets: Record<string, string>;
   onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
   deliveryTargets: Record<string, ProjectPlan['delivery'][number]['target'] | ''>;
   onDeliveryTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], deliveryTarget: ProjectPlan['delivery'][number]['target'] | '') => void;
+  projectManagementTargets: Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>;
+  onProjectManagementTargetChange: (
+    actionId: ProjectPlan['executionActions'][number]['id'],
+    projectManagementTarget: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
+  ) => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
@@ -647,6 +662,11 @@ function PlanDetail({
   const activeSection = plan.workspaceSections.find((section) => section.id === activeSectionId)
     ?? plan.workspaceSections[0]
     ?? null;
+  const selectedProjectManagementTools = plan.selectedTools
+    .map((tool) => tool.toolId)
+    .filter((toolId): toolId is Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> =>
+      toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
+    );
 
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
@@ -777,6 +797,35 @@ function PlanDetail({
                 </label>
               </div>
             ) : null}
+            {action.id === 'project-management' ? (
+              <div className="planning-view__execution-grid">
+                <label className="planning-view__execution-target">
+                  <span>Working directory</span>
+                  <input
+                    value={executionTargets[action.id] ?? ''}
+                    placeholder="workspace/my-project"
+                    onChange={(event) => onExecutionTargetChange(action.id, event.target.value)}
+                  />
+                </label>
+                <label className="planning-view__execution-target">
+                  <span>Project-management target</span>
+                  <select
+                    value={projectManagementTargets[action.id] ?? selectedProjectManagementTools[0] ?? ''}
+                    onChange={(event) => {
+                      onProjectManagementTargetChange(
+                        action.id,
+                        event.target.value as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
+                      );
+                    }}
+                  >
+                    {selectedProjectManagementTools.length === 0 ? <option value="">No PM targets</option> : null}
+                    {selectedProjectManagementTools.map((toolId) => (
+                      <option key={toolId} value={toolId}>{toolId}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
             <button
               type="button"
               className="planning-view__secondary"
@@ -789,7 +838,12 @@ function PlanDetail({
               type="button"
               className="planning-view__secondary"
               disabled={executionSaving === `action:${action.id}`}
-              onClick={() => onExecuteAction(action.id, executionTargets[action.id], deliveryTargets[action.id] || plan.delivery[0]?.target)}
+              onClick={() => onExecuteAction(
+                action.id,
+                executionTargets[action.id],
+                deliveryTargets[action.id] || plan.delivery[0]?.target,
+                projectManagementTargets[action.id] || selectedProjectManagementTools[0],
+              )}
             >
               {executionSaving === `action:${action.id}` ? 'Recording...' : 'Execute'}
             </button>

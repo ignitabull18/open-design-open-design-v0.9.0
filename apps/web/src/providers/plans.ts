@@ -190,6 +190,7 @@ export function executeProjectPlanAction(
         confirmed: input.confirmed === true,
         ...(input.targetDir ? { targetDir: input.targetDir } : {}),
         ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
+        ...(input.projectManagementTarget ? { projectManagementTarget: input.projectManagementTarget } : {}),
       }),
     },
   );
