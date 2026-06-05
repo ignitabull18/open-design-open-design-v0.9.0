@@ -93,6 +93,7 @@ export function PlanningView() {
   const [executionTargets, setExecutionTargets] = useState<Record<string, string>>({});
   const [deliveryTargets, setDeliveryTargets] = useState<Record<string, ProjectPlan['delivery'][number]['target'] | ''>>({});
   const [projectManagementTargets, setProjectManagementTargets] = useState<Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>>({});
+  const [validateProviderSetup, setValidateProviderSetup] = useState(false);
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -316,6 +317,7 @@ export function PlanningView() {
     targetDir?: string,
     deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
     projectManagementTarget?: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
+    validateProviders?: boolean,
   ) {
     if (!selectedPlan) return;
     setExecutionSaving(`action:${actionId}`);
@@ -327,6 +329,7 @@ export function PlanningView() {
         ...(targetDir?.trim() ? { targetDir: targetDir.trim() } : {}),
         ...(deliveryTarget ? { deliveryTarget } : {}),
         ...(projectManagementTarget ? { projectManagementTarget } : {}),
+        ...(validateProviders ? { validateProviders: true } : {}),
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
@@ -653,6 +656,8 @@ export function PlanningView() {
               onProjectManagementTargetChange={(actionId, projectManagementTarget) => {
                 setProjectManagementTargets((curr) => ({ ...curr, [actionId]: projectManagementTarget }));
               }}
+              validateProviderSetup={validateProviderSetup}
+              onValidateProviderSetupChange={setValidateProviderSetup}
               onRunSection={handleRunSection}
               onRunReadySections={handleRunReadySections}
               onCheckTool={handleCheckTool}
@@ -763,6 +768,8 @@ function PlanDetail({
   onDeliveryTargetChange,
   projectManagementTargets,
   onProjectManagementTargetChange,
+  validateProviderSetup,
+  onValidateProviderSetupChange,
   onRunSection,
   onRunReadySections,
   onCheckTool,
@@ -795,6 +802,7 @@ function PlanDetail({
     targetDir?: string,
     deliveryTarget?: ProjectPlan['delivery'][number]['target'] | '',
     projectManagementTarget?: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
+    validateProviders?: boolean,
   ) => void;
   executionTargets: Record<string, string>;
   onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
@@ -805,6 +813,8 @@ function PlanDetail({
     actionId: ProjectPlan['executionActions'][number]['id'],
     projectManagementTarget: Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | '',
   ) => void;
+  validateProviderSetup: boolean;
+  onValidateProviderSetupChange: (value: boolean) => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
   onRunReadySections: () => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
@@ -999,6 +1009,16 @@ function PlanDetail({
                 </label>
               </div>
             ) : null}
+            {action.id === 'provider-setup' ? (
+              <label className="planning-view__execution-target">
+                <span>Validate selected providers</span>
+                <input
+                  type="checkbox"
+                  checked={validateProviderSetup}
+                  onChange={(event) => onValidateProviderSetupChange(event.target.checked)}
+                />
+              </label>
+            ) : null}
             {action.id === 'project-management' ? (
               <div className="planning-view__execution-grid">
                 <label className="planning-view__execution-target">
@@ -1045,6 +1065,7 @@ function PlanDetail({
                 executionTargets[action.id],
                 deliveryTargets[action.id] || plan.delivery[0]?.target,
                 projectManagementTargets[action.id] || selectedProjectManagementTools[0],
+                action.id === 'provider-setup' ? validateProviderSetup : false,
               )}
             >
               {executionSaving === `action:${action.id}` ? 'Recording...' : 'Execute'}

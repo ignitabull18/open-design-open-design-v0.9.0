@@ -22,6 +22,7 @@ import type {
   ProjectPlanReadinessStatus,
   PlanningToolOption,
   PlanningToolCheck,
+  PlanningToolId,
   ProjectIdeaOption,
   ProjectIdeationSession,
   ProjectIntentBrief,
@@ -167,10 +168,16 @@ interface ProviderSetupCommandResult {
 type ProviderSetupCommandRunner = (request: ProviderSetupCommandRequest) => Promise<ProviderSetupCommandResult>;
 
 interface ProviderSetupCommandInvocation {
+  toolId: PlanningToolId;
   command: string;
   args: string[];
   displayCommand: string;
   env?: Record<string, string>;
+}
+
+interface ProviderSetupCommandExecution {
+  invocation: ProviderSetupCommandInvocation;
+  result: ProviderSetupCommandResult;
 }
 
 interface ProjectManagementCommandRequest {
@@ -1236,6 +1243,7 @@ function normalizeActionExecutionBody(
     ...(typeof body.projectManagementTarget === 'string' && ['github-issues', 'linear', 'google-docs'].includes(body.projectManagementTarget)
       ? { projectManagementTarget: body.projectManagementTarget as Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> }
       : {}),
+    validateProviders: body.validateProviders === true,
   };
 }
 
@@ -2406,10 +2414,11 @@ async function executeProviderSetupAction(
   const runId = `plan-run-${randomUUID()}`;
   const sourceDir = await resolveRepoSourceDir(body.targetDir ?? '', options.scaffoldRoot);
   const writes = await writeProviderSetupFiles(plan, sourceDir);
-  const invocation = buildProviderSetupInvocation(plan);
-  let result: ProviderSetupCommandResult | undefined;
+  const invocations = body.validateProviders ? buildProviderSetupInvocations(plan) : [];
+  const executions: ProviderSetupCommandExecution[] = [];
   let status: PlanningExecutionRun['status'] = 'completed';
-  if (invocation) {
+  for (const invocation of invocations) {
+    let result: ProviderSetupCommandResult;
     try {
       result = await options.providerSetupRunner({
         command: invocation.command,
@@ -2428,8 +2437,10 @@ async function executeProviderSetupAction(
       };
       status = 'failed';
     }
+    executions.push({ invocation, result });
   }
-  const artifact = buildProviderSetupArtifact(plan, action, runId, sourceDir, writes, invocation, result, status);
+  const artifact = buildProviderSetupArtifact(plan, action, runId, sourceDir, writes, invocations, executions, status);
+  const commandDisplay = invocations.map((invocation) => invocation.displayCommand).join(' && ');
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -2439,17 +2450,21 @@ async function executeProviderSetupAction(
     title: action.label,
     mode: 'external',
     summary: status === 'completed'
-      ? `Wrote ${writes.length} provider setup file(s) into ${sourceDir}${result ? ' and verified 1Password vault access.' : '.'}`
-      : 'Provider setup command failed; inspect the attached artifact for stdout and stderr.',
-    ...(invocation ? { command: invocation.displayCommand } : {}),
+      ? `Wrote ${writes.length} provider setup file(s) into ${sourceDir}${executions.length > 0 ? ` and validated ${executions.length} provider connection(s).` : '.'}`
+      : 'Provider setup validation failed; inspect the attached artifact for stdout and stderr.',
+    ...(commandDisplay ? { command: commandDisplay } : {}),
     startedAt: now,
     completedAt: Date.now(),
     artifactIds: [artifact.id],
     evidence: [
       `sourceDir: ${sourceDir}`,
       ...writes.map((write) => `wrote ${write.relativePath}`),
-      ...(invocation ? [`command: ${invocation.displayCommand}`] : ['command: not run; OP_VAULT is required for 1Password validation']),
-      ...(result ? [`exitCode: ${result.exitCode}`] : []),
+      ...(invocations.length > 0
+        ? executions.flatMap(({ invocation, result }) => [
+          `command: ${invocation.displayCommand}`,
+          `${invocation.toolId} exitCode: ${result.exitCode}`,
+        ])
+        : ['provider validation: not requested']),
     ],
   };
   const executionActions = plan.executionActions.map((item) =>
@@ -3422,12 +3437,47 @@ function buildGoogleDocsHandoffMarkdown(plan: ProjectPlan, issues: ProjectManage
   ].filter(Boolean).join('\n');
 }
 
-function buildProviderSetupInvocation(plan: ProjectPlan): ProviderSetupCommandInvocation | null {
-  const wantsOnePassword = plan.selectedTools.some((tool) => tool.toolId === 'onepassword');
-  if (!wantsOnePassword) return null;
-  const vault = process.env.OP_VAULT?.trim();
-  if (!vault) return null;
+function buildProviderSetupInvocations(plan: ProjectPlan): ProviderSetupCommandInvocation[] {
+  const invocations: ProviderSetupCommandInvocation[] = [];
+  const seen = new Set<string>();
+  for (const tool of plan.selectedTools) {
+    if (tool.status === 'deferred') continue;
+    const invocation = buildProviderSetupInvocation(plan, tool.toolId);
+    if (!invocation) continue;
+    const key = `${invocation.toolId}:${invocation.displayCommand}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    invocations.push(invocation);
+  }
+  return invocations;
+}
+
+function buildProviderSetupInvocation(plan: ProjectPlan, toolId: PlanningToolId): ProviderSetupCommandInvocation | null {
+  if (toolId === 'onepassword') {
+    return buildOnePasswordProviderSetupInvocation();
+  }
+  const toolCheck = buildToolCheckInvocation(plan, toolId);
+  if (!toolCheck) return null;
   return {
+    toolId,
+    command: toolCheck.command,
+    args: toolCheck.args,
+    displayCommand: [toolCheck.command, ...toolCheck.args].join(' '),
+  };
+}
+
+function buildOnePasswordProviderSetupInvocation(): ProviderSetupCommandInvocation {
+  const vault = process.env.OP_VAULT?.trim();
+  if (!vault) {
+    return {
+      toolId: 'onepassword',
+      command: 'op',
+      args: ['whoami'],
+      displayCommand: 'op whoami',
+    };
+  }
+  return {
+    toolId: 'onepassword',
     command: 'op',
     args: ['item', 'list', '--vault', vault, '--format', 'json'],
     displayCommand: 'op item list --vault "$OP_VAULT" --format json',
@@ -4810,10 +4860,30 @@ function buildProviderSetupArtifact(
   runId: string,
   sourceDir: string,
   writes: ProjectMaterializedWrite[],
-  invocation: ProviderSetupCommandInvocation | null,
-  result: ProviderSetupCommandResult | undefined,
+  invocations: ProviderSetupCommandInvocation[],
+  executions: ProviderSetupCommandExecution[],
   status: PlanningExecutionRun['status'],
 ): PlanningExecutionArtifact {
+  const executionBlocks = executions.length > 0
+    ? executions.flatMap(({ invocation, result }) => [
+      `Provider: ${invocation.toolId}`,
+      `Command: ${invocation.displayCommand}`,
+      `Exit code: ${result.exitCode}`,
+      `Duration ms: ${result.durationMs}`,
+      '',
+      'stdout:',
+      result.stdout || '(empty)',
+      '',
+      'stderr:',
+      result.stderr || '(empty)',
+      '',
+    ])
+    : [
+      invocations.length > 0
+        ? 'Provider validation was requested, but no command results were recorded.'
+        : 'Provider validation was not requested for this setup run.',
+      '',
+    ];
   return {
     id: `plan-artifact-${randomUUID()}`,
     planId: plan.id,
@@ -4825,18 +4895,13 @@ function buildProviderSetupArtifact(
       `Status: ${status}`,
       `Source directory: ${sourceDir}`,
       `Selected providers: ${plan.selectedTools.map((tool) => tool.toolId).join(', ') || 'none'}`,
-      invocation ? `Command: ${invocation.displayCommand}` : 'Command: not run; set OP_VAULT to validate 1Password vault access.',
-      result ? `Exit code: ${result.exitCode}` : '',
-      result ? `Duration ms: ${result.durationMs}` : '',
+      `Provider validation: ${invocations.length > 0 ? `${invocations.length} command(s)` : 'not requested'}`,
       '',
       'Generated files:',
       ...writes.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`),
       '',
-      'stdout:',
-      result?.stdout || '(empty)',
-      '',
-      'stderr:',
-      result?.stderr || '(empty)',
+      'Validation commands:',
+      ...executionBlocks,
       '',
       'Review notes:',
       '- Store secret values in 1Password or the selected secret manager before populating deploy envs.',

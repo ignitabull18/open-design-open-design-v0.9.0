@@ -315,6 +315,7 @@ export interface ExecuteProjectPlanActionRequest {
   targetDir?: string;
   deliveryTarget?: DeliveryPlan['target'];
   projectManagementTarget?: Extract<PlanningToolId, 'github-issues' | 'linear' | 'google-docs'>;
+  validateProviders?: boolean;
 }
 
 export interface RunProjectPlanSectionRequest {

@@ -1920,6 +1920,7 @@ describe('planning routes', () => {
         body: JSON.stringify({
           confirmed: true,
           targetDir: 'workspace/secrets-studio',
+          validateProviders: true,
         }),
       });
 
@@ -1931,16 +1932,23 @@ describe('planning routes', () => {
           cwd: sourceDir,
           env: expect.objectContaining({ OP_VAULT: 'Engineering' }),
         }),
+        expect.objectContaining({
+          command: 'pnpm',
+          args: ['wrangler', 'whoami'],
+          cwd: sourceDir,
+        }),
       ]);
       expect(executed.body.run).toMatchObject({
         actionId: 'provider-setup',
         status: 'completed',
-        command: 'op item list --vault "$OP_VAULT" --format json',
-        summary: expect.stringContaining('verified 1Password vault access'),
+        command: 'op item list --vault "$OP_VAULT" --format json && pnpm wrangler whoami',
+        summary: expect.stringContaining('validated 2 provider connection'),
       });
       expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
         'command: op item list --vault "$OP_VAULT" --format json',
-        'exitCode: 0',
+        'onepassword exitCode: 0',
+        'command: pnpm wrangler whoami',
+        'cloudflare-hosting exitCode: 0',
       ]));
       expect(executed.body.artifacts).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -1953,6 +1961,65 @@ describe('planning routes', () => {
       if (previousVault === undefined) delete process.env.OP_VAULT;
       else process.env.OP_VAULT = previousVault;
     }
+  });
+
+  it('keeps provider setup accepted when a requested provider validation fails', async () => {
+    const scaffoldRoot = path.join(tempDir, 'scaffolds');
+    const sourceDir = path.join(scaffoldRoot, 'workspace', 'blocked-provider-studio');
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(path.join(sourceDir, 'package.json'), '{"name":"blocked-provider-studio"}\n');
+    const baseUrl = await startPlanServer({
+      scaffoldRoot,
+      providerSetupRunner: async (request) => ({
+        exitCode: request.command === 'gh' ? 1 : 0,
+        stdout: '',
+        stderr: request.command === 'gh' ? 'gh: not logged in' : '',
+        durationMs: 9,
+      }),
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Blocked Provider Studio',
+        intent: { purpose: 'Keep failed provider validation visible before repo execution.' },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+          { toolId: 'onepassword', status: 'deferred' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+
+    const executed = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/actions/provider-setup/execute`, {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmed: true,
+        targetDir: 'workspace/blocked-provider-studio',
+        validateProviders: true,
+      }),
+    });
+
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      actionId: 'provider-setup',
+      status: 'failed',
+      command: 'gh auth status',
+      summary: expect.stringContaining('validation failed'),
+    });
+    expect(executed.body.plan.executionActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider-setup', status: 'accepted' }),
+    ]));
+    expect(executed.body.run.evidence).toEqual(expect.arrayContaining([
+      'command: gh auth status',
+      'github exitCode: 1',
+    ]));
+    expect(executed.body.artifacts[0].content).toContain('stderr:\ngh: not logged in');
   });
 
   it('materializes and deploys Convex database schema files', async () => {

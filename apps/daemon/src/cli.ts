@@ -189,7 +189,7 @@ const PLAN_STRING_FLAGS = new Set([
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
   'kind', 'title', 'content-file',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4644,7 +4644,7 @@ async function runPlan(args) {
   od plan readiness <id> [--json]                Show completed, blocked, and next planning work.
   od plan execute <id> --action <name> --confirmed
                  [--target-dir <path>] [--delivery-target <target>]
-                 [--project-management-target <target>] [--json]
+                 [--project-management-target <target>] [--validate-providers] [--json]
                                                  Execute or record one plan action.
   od plan run-section <id> --section <name> [--json]
                                                  Run a section planning agent and store its output.
@@ -4901,7 +4901,7 @@ Common options:
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
       if (!id || !actionId) {
-        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research|provider-setup|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--target-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--json]');
+        console.error('Usage: od plan execute <id> --action <repo-create|scaffold|deploy-runtime|provider-research|provider-setup|database-materialize|database-migrate|design-materialize|project-management> [--confirmed] [--target-dir <path>] [--delivery-target <cloudflare|vercel|coolify|hostinger>] [--project-management-target <github-issues|linear|google-docs>] [--validate-providers] [--json]');
         process.exit(2);
       }
       const body = {
@@ -4909,6 +4909,7 @@ Common options:
         ...(typeof flags['target-dir'] === 'string' ? { targetDir: flags['target-dir'] } : {}),
         ...(typeof flags['delivery-target'] === 'string' ? { deliveryTarget: flags['delivery-target'] } : {}),
         ...(typeof flags['project-management-target'] === 'string' ? { projectManagementTarget: flags['project-management-target'] } : {}),
+        validateProviders: flags['validate-providers'] === true,
       };
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/execute`, {
         method: 'POST',
