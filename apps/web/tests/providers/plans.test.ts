@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
 
@@ -156,6 +156,47 @@ describe('plans provider', () => {
       deliveryTarget: 'vercel',
       projectManagementTarget: 'github-issues',
       validateProviders: true,
+    });
+  });
+
+  it('runs project plan sections sequentially through the daemon API', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      plan: { id: 'plan-1' },
+      runs: [
+        {
+          id: 'plan-run-1',
+          planId: 'plan-1',
+          kind: 'orchestration',
+          status: 'completed',
+          title: 'Sequential section orchestration',
+          mode: 'record-only',
+          summary: 'Sequenced section runs.',
+          startedAt: 1,
+          artifactIds: [],
+          evidence: [],
+        },
+      ],
+      artifacts: [],
+      toolChecks: [],
+      scaffoldExecution: { status: 'not_started' },
+    }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await runProjectPlanSections('plan-1', {
+      mode: 'sequential',
+      sectionIds: ['planning', 'database'],
+    });
+
+    expect(result.runs).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plans/plan-1/sections/runs');
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      sectionIds: ['planning', 'database'],
+      onlyReady: false,
+      mode: 'sequential',
     });
   });
 

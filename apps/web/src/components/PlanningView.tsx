@@ -11,6 +11,7 @@ import type {
   ProjectLaunchPreview,
   ProjectPlan,
   ProjectPlanReadinessReport,
+  RunProjectPlanSectionsRequest,
   ProjectToolConnection,
   ProjectWorkspaceSection,
   ProjectStackDecision,
@@ -139,6 +140,7 @@ export function PlanningView() {
   const [deliveryTargets, setDeliveryTargets] = useState<Record<string, ProjectPlan['delivery'][number]['target'] | ''>>({});
   const [projectManagementTargets, setProjectManagementTargets] = useState<Record<string, Extract<ProjectToolConnection['toolId'], 'github-issues' | 'linear' | 'google-docs'> | ''>>({});
   const [validateProviderSetup, setValidateProviderSetup] = useState(false);
+  const [sectionRunMode, setSectionRunMode] = useState<NonNullable<RunProjectPlanSectionsRequest['mode']>>('parallel');
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [name, setName] = useState('New product workspace');
   const [purpose, setPurpose] = useState('Plan, scaffold, and ship a web app from an accepted stack decision.');
@@ -467,12 +469,15 @@ export function PlanningView() {
     }
   }
 
-  async function handleRunReadySections() {
+  async function handleRunReadySections(mode: NonNullable<RunProjectPlanSectionsRequest['mode']>) {
     if (!selectedPlan) return;
-    setExecutionSaving('sections:ready');
+    setExecutionSaving(`sections:${mode}`);
     setError(null);
     try {
-      const result = await runProjectPlanSections(selectedPlan.id, { onlyReady: true, mode: 'parallel' });
+      const result = await runProjectPlanSections(selectedPlan.id, {
+        onlyReady: mode === 'parallel',
+        mode,
+      });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
     } catch (err) {
@@ -811,6 +816,8 @@ export function PlanningView() {
               validateProviderSetup={validateProviderSetup}
               onValidateProviderSetupChange={setValidateProviderSetup}
               onRunSection={handleRunSection}
+              sectionRunMode={sectionRunMode}
+              onSectionRunModeChange={setSectionRunMode}
               onRunReadySections={handleRunReadySections}
               onCheckTool={handleCheckTool}
               onRefreshCapabilities={handleRefreshCapabilities}
@@ -974,6 +981,8 @@ function PlanDetail({
   validateProviderSetup,
   onValidateProviderSetupChange,
   onRunSection,
+  sectionRunMode,
+  onSectionRunModeChange,
   onRunReadySections,
   onCheckTool,
   onRefreshCapabilities,
@@ -1026,7 +1035,9 @@ function PlanDetail({
   validateProviderSetup: boolean;
   onValidateProviderSetupChange: (value: boolean) => void;
   onRunSection: (sectionId: ProjectWorkspaceSection['id']) => void;
-  onRunReadySections: () => void;
+  sectionRunMode: NonNullable<RunProjectPlanSectionsRequest['mode']>;
+  onSectionRunModeChange: (mode: NonNullable<RunProjectPlanSectionsRequest['mode']>) => void;
+  onRunReadySections: (mode: NonNullable<RunProjectPlanSectionsRequest['mode']>) => void;
   onCheckTool: (toolId: ProjectToolConnection['toolId']) => void;
   onRefreshCapabilities: () => void;
   onRunDueCapabilityRefresh: (force?: boolean) => void;
@@ -1128,14 +1139,26 @@ function PlanDetail({
             <h3>Workspace sections</h3>
             <span>{activeSection?.label ?? 'No section'} workflow</span>
           </div>
-          <button
-            type="button"
-            className="planning-view__secondary"
-            disabled={executionSaving === 'sections:ready'}
-            onClick={() => onRunReadySections()}
-          >
-            {executionSaving === 'sections:ready' ? 'Running...' : 'Run ready in parallel'}
-          </button>
+          <div className="planning-view__section-run-controls">
+            <label>
+              <span>Agent run mode</span>
+              <select
+                value={sectionRunMode}
+                onChange={(event) => onSectionRunModeChange(event.target.value as NonNullable<RunProjectPlanSectionsRequest['mode']>)}
+              >
+                <option value="parallel">Ready in parallel</option>
+                <option value="sequential">Logical sequence</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="planning-view__secondary"
+              disabled={executionSaving === `sections:${sectionRunMode}`}
+              onClick={() => onRunReadySections(sectionRunMode)}
+            >
+              {executionSaving === `sections:${sectionRunMode}` ? 'Running...' : sectionRunMode === 'parallel' ? 'Run ready in parallel' : 'Run sequence'}
+            </button>
+          </div>
         </div>
         <SectionWorkboardPanel plan={plan} />
         <div className="planning-view__section-tabs" role="tablist" aria-label="Planning workflow sections">
