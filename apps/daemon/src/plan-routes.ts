@@ -1260,11 +1260,23 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const { runs, artifacts } = await runPlanningSections(existing, selectedSections, body, {
         sectionAgentRunner,
         scaffoldRoot,
+        onRunStarted: async (run, startedArtifacts) => {
+          const current = getPlan(db, req.params.id) as ProjectPlan | null;
+          if (!current) return;
+          updatePlan(db, req.params.id, {
+            ...current,
+            executionRuns: upsertPlanningExecutionRuns(current.executionRuns ?? [], [run]),
+            executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], startedArtifacts),
+            updatedAt: Date.now(),
+          });
+        },
       });
+      const current = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!current) return res.status(404).json({ error: 'plan not found' });
       const updated = updatePlan(db, req.params.id, {
-        ...existing,
-        executionRuns: [...(existing.executionRuns ?? []), ...runs],
-        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        ...current,
+        executionRuns: upsertPlanningExecutionRuns(current.executionRuns ?? [], runs),
+        executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], artifacts),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
@@ -1290,11 +1302,23 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const { run, artifacts } = await runPlanningSection(existing, section, {
         sectionAgentRunner,
         scaffoldRoot,
+        onRunStarted: async (startedRun, startedArtifacts) => {
+          const current = getPlan(db, req.params.id) as ProjectPlan | null;
+          if (!current) return;
+          updatePlan(db, req.params.id, {
+            ...current,
+            executionRuns: upsertPlanningExecutionRuns(current.executionRuns ?? [], [startedRun]),
+            executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], startedArtifacts),
+            updatedAt: Date.now(),
+          });
+        },
       });
+      const current = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!current) return res.status(404).json({ error: 'plan not found' });
       const updated = updatePlan(db, req.params.id, {
-        ...existing,
-        executionRuns: [...(existing.executionRuns ?? []), run],
-        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        ...current,
+        executionRuns: upsertPlanningExecutionRuns(current.executionRuns ?? [], [run]),
+        executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], artifacts),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
@@ -6725,6 +6749,23 @@ interface SpecialistAgentManifest {
 interface PlanningSectionRunOptions {
   sectionAgentRunner: SectionAgentRunner | undefined;
   scaffoldRoot: string;
+  onRunStarted?: (run: PlanningExecutionRun, artifacts: PlanningExecutionArtifact[]) => Promise<void> | void;
+}
+
+function upsertPlanningExecutionRuns(
+  current: PlanningExecutionRun[],
+  next: PlanningExecutionRun[],
+): PlanningExecutionRun[] {
+  const nextIds = new Set(next.map((run) => run.id));
+  return [...current.filter((run) => !nextIds.has(run.id)), ...next];
+}
+
+function upsertPlanningExecutionArtifacts(
+  current: PlanningExecutionArtifact[],
+  next: PlanningExecutionArtifact[],
+): PlanningExecutionArtifact[] {
+  const nextIds = new Set(next.map((artifact) => artifact.id));
+  return [...current.filter((artifact) => !nextIds.has(artifact.id)), ...next];
 }
 
 async function runPlanningSection(
@@ -6764,6 +6805,26 @@ async function runPlanningSection(
   };
   const manifestArtifact = buildSpecialistAgentManifestArtifact(plan, section, lanes, questions, answer, runId, now);
   const manifest = JSON.parse(manifestArtifact.content) as SpecialistAgentManifest;
+  if (options.sectionAgentRunner && options.onRunStarted) {
+    await options.onRunStarted({
+      id: runId,
+      planId: plan.id,
+      kind: 'section-agent',
+      sectionId: section.id,
+      status: 'running',
+      title: `${section.label} planning agent run`,
+      mode: 'external',
+      summary: `Running the ${section.label} specialist against the stored plan context.`,
+      startedAt: now,
+      artifactIds: [draftArtifact.id, manifestArtifact.id],
+      evidence: [
+        `${lanes.length} lane(s) considered`,
+        `${questions.length} pointed question(s) attached`,
+        answer ? `section answer status: ${answer.status}` : 'no section answer stored yet',
+        `specialist manifest: ${manifestArtifact.id}`,
+      ],
+    }, [draftArtifact, manifestArtifact]);
+  }
   const runnerResult = options.sectionAgentRunner
     ? await options.sectionAgentRunner({
       plan,

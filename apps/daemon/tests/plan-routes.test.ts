@@ -806,6 +806,81 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('persists a running section-agent record while an external specialist is in flight', async () => {
+    let releaseRunner!: () => void;
+    const runnerReleased = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    let runnerStarted!: () => void;
+    const runnerStartedSignal = new Promise<void>((resolve) => {
+      runnerStarted = resolve;
+    });
+    const baseUrl = await startPlanServer({
+      sectionAgentRunner: async (request) => {
+        runnerStarted();
+        await runnerReleased;
+        return {
+          status: 'completed',
+          summary: `Completed ${request.section.label} after progress was persisted.`,
+          output: 'Final section output.',
+          evidence: ['external runner completed'],
+          durationMs: 24,
+          command: 'codex plan-section',
+        };
+      },
+    });
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Running Section Studio',
+        intent: { purpose: 'Expose durable section-agent progress while specialists run.' },
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+    const planId = created.body.plan.id;
+
+    const request = jsonFetch(`${baseUrl}/api/plans/${planId}/sections/database/runs`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    await runnerStartedSignal;
+
+    const during = await jsonFetch(`${baseUrl}/api/plans/${planId}/execution`);
+    const runningRun = during.body.runs.find((run: { kind: string; sectionId?: string }) =>
+      run.kind === 'section-agent' && run.sectionId === 'database',
+    );
+    expect(runningRun).toMatchObject({
+      status: 'running',
+      mode: 'external',
+      summary: expect.stringContaining('Running the Database specialist'),
+    });
+    expect(during.body.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: expect.stringMatching(/^plan-artifact-/),
+        kind: 'specialist-agent-manifest',
+      }),
+    ]));
+
+    releaseRunner();
+    const executed = await request;
+    expect(executed.status).toBe(201);
+    expect(executed.body.run).toMatchObject({
+      id: runningRun.id,
+      status: 'completed',
+      summary: expect.stringContaining('after progress was persisted'),
+    });
+    const after = await jsonFetch(`${baseUrl}/api/plans/${planId}/execution`);
+    const finalRuns = after.body.runs.filter((run: { id: string }) => run.id === runningRun.id);
+    expect(finalRuns).toHaveLength(1);
+    expect(finalRuns[0]).toMatchObject({ status: 'completed' });
+  });
+
   it('creates standalone plan execution artifacts', async () => {
     const baseUrl = await startPlanServer();
     const created = await jsonFetch(`${baseUrl}/api/plans`, {
