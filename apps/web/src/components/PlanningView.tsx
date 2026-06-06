@@ -1186,6 +1186,13 @@ function PlanDetail({
       toolId === 'github-issues' || toolId === 'linear' || toolId === 'google-docs',
     );
   const toolChecksById = new Map(plan.toolChecks.map((check) => [check.toolId, check]));
+  const toolStatusCounts = plan.selectedTools.reduce<Record<ProjectToolConnection['status'], number>>(
+    (counts, tool) => {
+      counts[tool.status] += 1;
+      return counts;
+    },
+    { wanted: 0, connected: 0, deferred: 0, blocked: 0 },
+  );
 
   return (
     <section className="planning-view__detail" aria-labelledby="selected-plan-title">
@@ -1198,16 +1205,31 @@ function PlanDetail({
       <LaunchProofPanel proof={proof} />
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
       <div className="planning-view__connected-tools">
-        <h3>Tool connections</h3>
+        <div className="planning-view__tool-summary">
+          <div>
+            <h3>Provider status</h3>
+            <p>Selected providers and deployment tools for this plan.</p>
+          </div>
+          <div className="planning-view__tool-status-counts" aria-label="Provider status counts">
+            <span data-status="connected">{toolStatusCounts.connected} connected</span>
+            <span data-status="deferred">{toolStatusCounts.deferred} deferred</span>
+            <span data-status="blocked">{toolStatusCounts.blocked} blocked</span>
+            <span data-status="wanted">{toolStatusCounts.wanted} wanted</span>
+          </div>
+        </div>
         {plan.selectedTools.length === 0 ? <p>No tools selected yet.</p> : null}
         <div>
           {plan.selectedTools.map((tool) => {
             const check = toolChecksById.get(tool.toolId);
             return (
-              <article key={tool.toolId} className="planning-view__tool-connection">
+              <article key={tool.toolId} className={`planning-view__tool-connection is-${tool.status}`}>
                 <div>
                   <strong>{tool.toolId}</strong>
-                  <span>{tool.status}{check ? ` · last check ${check.status}` : ''}{tool.notes ? ` · ${tool.notes}` : ''}</span>
+                  <span>
+                    <mark>{tool.status}</mark>
+                    {check ? ` · last check ${check.status}` : ''}
+                    {tool.notes ? ` · ${tool.notes}` : ''}
+                  </span>
                 </div>
                 <div className="planning-view__tool-actions">
                   <label>

@@ -42,28 +42,61 @@ without a token.
 
 ## Backup and restore
 
-Back up the `open_design_data` volume before image upgrades, token rotations that
-also touch config, or schema migrations:
+Back up the Coolify persistent storage mounted at `/app/.od` before image
+upgrades, token rotations that also touch config, or schema migrations. First
+verify the Coolify app still has the expected persistent storage:
+
+```bash
+node --experimental-strip-types deploy/scripts/check-coolify-backup-readiness.ts
+```
+
+The command prints the current storage UUID/name, mount path, and host-side
+backup/restore commands. On the Ignitabull production app this should report the
+Coolify application `jrdtaush3izl7bz10f9gg9qo` and mount path `/app/.od`.
+
+Run the printed backup command on the Docker host or through the Coolify terminal.
+The command has this shape:
 
 ```bash
 docker run --rm \
-  -v open_design_data:/data:ro \
+  -v <coolify-storage-name>:/data:ro \
   -v "$PWD/backups:/backup" \
   alpine sh -c 'cd /data && tar czf "/backup/open-design-$(date +%Y%m%d-%H%M%S).tgz" .'
 ```
 
-Restore only while the service is stopped:
+Restore only while the service is stopped, then run the hosted smoke before
+calling the restore accepted:
 
 ```bash
-docker compose down
+coolify app stop jrdtaush3izl7bz10f9gg9qo
 docker run --rm \
-  -v open_design_data:/data \
+  -v <coolify-storage-name>:/data \
   -v "$PWD/backups:/backup:ro" \
   alpine sh -c 'rm -rf /data/* && tar xzf /backup/<backup-file>.tgz -C /data'
-docker compose up -d --no-build
+coolify app start jrdtaush3izl7bz10f9gg9qo
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+node --experimental-strip-types deploy/scripts/smoke-hosted-planner.ts
 ```
 
-## Hosted smoke
+## Hosted monitor and smoke
+
+Run the lightweight monitor on a schedule and after Cloudflare/Coolify route
+changes:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+node --experimental-strip-types deploy/scripts/monitor-hosted-planner.ts
+```
+
+It verifies:
+
+- `/api/health` and `/api/daemon/status` are open and daemon-backed.
+- `/api/daemon/status` reports `bindHost=0.0.0.0` and `dataDir=/app/.od`.
+- `/api/plans` returns `401 API_TOKEN_REQUIRED` without a token.
+- When `OD_API_TOKEN` is present, authenticated `/api/plans` and the hosted
+  planning session cookie both work.
 
 Run the smoke after deploy, after token rotation, and after changing Cloudflare
 routes. It creates one persisted plan and one section-agent run.
@@ -88,6 +121,41 @@ Required success shape:
 ```
 
 Any failure is a release blocker unless it is a deliberate token mismatch check.
+
+The single post-deploy gate runs monitor, smoke, provider readiness, and Coolify
+backup readiness:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
+```
+
+## Production logs
+
+Use Coolify as the first log source for the hosted daemon. The app UUID for
+`open-design.ignitabull.org` is `jrdtaush3izl7bz10f9gg9qo`.
+
+```bash
+coolify app logs jrdtaush3izl7bz10f9gg9qo --lines 200
+coolify app logs jrdtaush3izl7bz10f9gg9qo --follow
+```
+
+When diagnosing a routing issue, compare those daemon logs with the Cloudflare
+Tunnel logs on the host that runs `cloudflared`. The production CNAME points at
+the tunnel target `80432e44-51c1-45bc-b6d8-098c423606de.cfargotunnel.com`; a
+healthy request should appear in the daemon logs and should not show tunnel
+origin connection errors.
+
+```bash
+journalctl -u cloudflared --since "30 minutes ago" --no-pager
+journalctl -u cloudflared -f
+```
+
+If Coolify CLI access is unavailable, use the Coolify app terminal/logs screen
+for the same application UUID and keep any copied output free of
+`OD_API_TOKEN`, provider API keys, and session cookies.
 
 ## Provider readiness
 
@@ -147,3 +215,22 @@ Minimum readiness inventory:
   documented in this file and `deploy/README.md`.
 - Full production pass: browser login, plan creation, section run, event display,
   reload persistence, and CLI/API smoke are all green.
+
+## Current provider order
+
+Use this order for the next provider work:
+
+1. Supermemory, because `SUPERMEMORY_API_KEY`/`SUPERMEMORY_CODEX_API_KEY` can be
+   checked from an operator shell and memory-backed planning is user-visible.
+2. Composio, because integration actions depend on connected accounts and
+   webhook/session policy.
+3. Trigger.dev, because long-running workflow execution is valuable only after
+   integrations have real actions to run.
+4. 1Password, because it is the source of truth for secrets but requires local
+   `op` CLI/app authorization to verify.
+5. Cloudflare AI Gateway, because model routing is separate from the hosted
+   planner deployment itself.
+
+Do not mark a provider as ready just because it is selected in a plan. The
+production plan must record each selected provider as `connected` or `deferred`
+with notes, and `deploy/scripts/check-hosted-provider-readiness.ts` must pass.

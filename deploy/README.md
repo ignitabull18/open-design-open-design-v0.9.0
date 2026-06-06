@@ -73,8 +73,15 @@ deployment needs local code-agent CLIs installed in the container.
 
 ## Hosted smoke
 
-After every deployment or token rotation, run the hosted smoke from a trusted
-operator shell. The script prints plan/run ids only; it never prints the token.
+After every deployment or token rotation, run the hosted monitor and smoke from a
+trusted operator shell. These scripts print health, plan, and run identifiers
+only; they never print the token.
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+node --experimental-strip-types deploy/scripts/monitor-hosted-planner.ts
+```
 
 ```bash
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
@@ -101,11 +108,33 @@ OD_PLAN_ID=<production-plan-id> \
 node --experimental-strip-types deploy/scripts/check-hosted-provider-readiness.ts
 ```
 
+The post-deploy wrapper runs monitor, smoke, provider readiness, and Coolify
+backup readiness in one command:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
+```
+
 ## Data, backup, and restore
 
 Runtime state lives in the `open_design_data` Docker volume, mounted at
 `/app/.od` inside the container. That volume contains SQLite (`app.sqlite*`),
 project files, artifacts, installed plugins, and media/provider config.
+
+For Coolify production, verify the actual persistent storage mount before taking
+or restoring a backup:
+
+```bash
+node --experimental-strip-types deploy/scripts/check-coolify-backup-readiness.ts
+```
+
+The command prints the current Coolify storage name and host-side backup/restore
+commands. Use those generated commands for `open-design.ignitabull.org`; the
+local Compose `open_design_data` examples below are only for the local compose
+layout.
 
 Back up before image upgrades and before opening the same data with an older
 checkout:
