@@ -49,7 +49,7 @@ test('provider readiness accepts connected and explicitly deferred tools', async
       { toolId: 'cloudflare-hosting', status: 'deferred', notes: 'Already verified by external route smoke.' },
     ],
     toolChecks: [
-      { toolId: 'github', status: 'connected', summary: 'GitHub connected.' },
+      { toolId: 'github', status: 'connected', summary: 'GitHub connected.', checkedAt: 123 },
     ],
   });
 
@@ -66,6 +66,10 @@ test('provider readiness accepts connected and explicitly deferred tools', async
     checkedToolIds: ['github', 'cloudflare-hosting'],
     connectedToolIds: ['github'],
     deferredToolIds: ['cloudflare-hosting'],
+    evidence: [
+      { toolId: 'github', status: 'connected', source: 'tool-check', checkedAt: 123, summary: 'GitHub connected.' },
+      { toolId: 'cloudflare-hosting', status: 'deferred', source: 'selected-tool', summary: 'Already verified by external route smoke.' },
+    ],
   });
 });
 

@@ -1307,9 +1307,10 @@ function PlanDetail({
                   <strong>{tool.toolId}</strong>
                   <span>
                     <mark>{tool.status}</mark>
-                    {check ? ` · last check ${check.status}` : ''}
+                    {check ? ` · last check ${check.status} · ${formatDateTime(check.checkedAt)}` : ''}
                     {tool.notes ? ` · ${tool.notes}` : ''}
                   </span>
+                  {check?.summary ? <small>{check.summary}</small> : null}
                 </div>
                 <div className="planning-view__tool-actions">
                   <label>
@@ -1638,7 +1639,7 @@ function PlanDetail({
             <h3>Tool checks</h3>
             <ul>
               {(plan.toolChecks ?? []).map((check) => (
-                <li key={check.id}>{check.toolId}: {check.status}</li>
+                <li key={check.id}>{check.toolId}: {check.status} · {formatDateTime(check.checkedAt)}</li>
               ))}
             </ul>
           </div>
@@ -2089,6 +2090,11 @@ function formatSectionRunMeta(run: ProjectPlan['executionRuns'][number]): string
     ? `completed ${new Date(run.completedAt).toLocaleString()}`
     : `started ${new Date(run.startedAt).toLocaleString()}`;
   return evidence ? `${timing} · ${evidence}` : timing;
+}
+
+function formatDateTime(value: number | undefined): string {
+  if (!value) return 'not checked';
+  return new Date(value).toLocaleString();
 }
 
 function eventsForRun(

@@ -43,3 +43,5 @@ Browser proof:
 
 - Screenshot: `/tmp/open-design-hosted-ops-runtime-file.png`
 - SHA-256: `37bb9f72bc3b3b77b9f357125aa4d4fa7f65a005fefb7d83a86554fcf517c6af`
+- Planning acceptance screenshot: `/tmp/open-design-planning-acceptance-20260606.png`
+- Planning acceptance SHA-256: `43c45fd278e76cf9a1a729eedba286daef820e01796c7214b8b7ff327cb3d693`

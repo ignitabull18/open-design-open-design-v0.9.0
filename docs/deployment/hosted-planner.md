@@ -304,6 +304,11 @@ model calls through AI Gateway yet. Narrow the set with
 - Browser acceptance artifact: attach `/tmp/open-design-planning-acceptance.png`
   or a refreshed screenshot to release notes/PRs when UI or hosted route
   behavior changes.
+- Post-deploy gate: run `deploy/scripts/run-hosted-post-deploy.ts` with
+  `OD_REQUIRED_TOOL_IDS=github,cloudflare-hosting,supermemory` and
+  `OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev`.
+- Evidence export: run `deploy/scripts/export-hosted-ops-evidence.ts` after a
+  green post-deploy gate to write the release evidence bundle.
 - Hardening: protected APIs return `401` without auth, monitor alerts have a
   delivery target, backups leave the host, restore drill manifest is current,
   and public-origin changes include a rate-limit/auth review.

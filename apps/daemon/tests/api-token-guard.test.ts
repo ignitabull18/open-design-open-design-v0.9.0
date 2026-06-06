@@ -18,6 +18,8 @@ import { startServer } from '../src/server.js';
 
 const PREVIOUS_TOKEN = process.env.OD_API_TOKEN;
 const PREVIOUS_HOST  = process.env.OD_BIND_HOST;
+const PREVIOUS_RATE_LIMIT_WINDOW = process.env.OD_API_RATE_LIMIT_WINDOW_MS;
+const PREVIOUS_RATE_LIMIT_MAX = process.env.OD_API_RATE_LIMIT_MAX;
 
 let server: http.Server | undefined;
 let baseUrl = '';
@@ -32,6 +34,10 @@ afterEach(async () => {
   else process.env.OD_API_TOKEN = PREVIOUS_TOKEN;
   if (PREVIOUS_HOST === undefined) delete process.env.OD_BIND_HOST;
   else process.env.OD_BIND_HOST = PREVIOUS_HOST;
+  if (PREVIOUS_RATE_LIMIT_WINDOW === undefined) delete process.env.OD_API_RATE_LIMIT_WINDOW_MS;
+  else process.env.OD_API_RATE_LIMIT_WINDOW_MS = PREVIOUS_RATE_LIMIT_WINDOW;
+  if (PREVIOUS_RATE_LIMIT_MAX === undefined) delete process.env.OD_API_RATE_LIMIT_MAX;
+  else process.env.OD_API_RATE_LIMIT_MAX = PREVIOUS_RATE_LIMIT_MAX;
 });
 
 describe('bound-API-token guard', () => {
@@ -82,5 +88,45 @@ describe('bearer middleware', () => {
       const resp = await fetch(`${baseUrl}${path}`);
       expect(resp.status).toBe(200);
     }
+  });
+
+  it('requires a bearer for forwarded public API callers even when the socket is loopback', async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/plans`, {
+      headers: { 'cf-connecting-ip': '203.0.113.10' },
+    });
+    expect(unauthenticated.status).toBe(401);
+
+    const authenticated = await fetch(`${baseUrl}/api/plans`, {
+      headers: {
+        'cf-connecting-ip': '203.0.113.10',
+        authorization: 'Bearer secret-test-token',
+      },
+    });
+    expect(authenticated.status).toBe(200);
+  });
+
+  it('rate-limits forwarded public API callers before auth work can be abused', async () => {
+    process.env.OD_API_RATE_LIMIT_WINDOW_MS = '60000';
+    process.env.OD_API_RATE_LIMIT_MAX = '2';
+    if (shutdown) await Promise.resolve(shutdown());
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    shutdown = undefined;
+
+    const started = (await startServer({ port: 0, host: '127.0.0.1', returnServer: true })) as {
+      url: string;
+      server: http.Server;
+      shutdown?: () => Promise<void> | void;
+    };
+    baseUrl = started.url;
+    server = started.server;
+    shutdown = started.shutdown;
+
+    const headers = { 'cf-connecting-ip': '203.0.113.20' };
+    expect((await fetch(`${baseUrl}/api/plans`, { headers })).status).toBe(401);
+    expect((await fetch(`${baseUrl}/api/plans`, { headers })).status).toBe(401);
+    const limited = await fetch(`${baseUrl}/api/plans`, { headers });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBeTruthy();
   });
 });

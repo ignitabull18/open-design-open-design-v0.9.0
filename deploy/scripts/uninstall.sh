@@ -54,6 +54,22 @@ prompt_confirm() {
   esac
 }
 
+NON_INTERACTIVE=0
+KEEP_DATA=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --non-interactive) NON_INTERACTIVE=1 ;;
+    --keep-data)       KEEP_DATA=1 ;;
+    --help|-h)
+      echo "Usage: uninstall.sh [options]"
+      echo "  --keep-data         Preserve the open_design_data volume"
+      echo "  --non-interactive   Skip confirmation prompts"
+      exit 0
+      ;;
+  esac
+done
+
 # ---------------------------------------------------------------------------
 # Detect container runtime
 # ---------------------------------------------------------------------------
@@ -72,22 +88,6 @@ else
 fi
 
 RUNTIME="${COMPOSE_CMD%% *}"
-
-NON_INTERACTIVE=0
-KEEP_DATA=0
-
-for arg in "$@"; do
-  case "$arg" in
-    --non-interactive) NON_INTERACTIVE=1 ;;
-    --keep-data)       KEEP_DATA=1 ;;
-    --help|-h)
-      echo "Usage: uninstall.sh [options]"
-      echo "  --keep-data         Preserve the open_design_data volume"
-      echo "  --non-interactive   Skip confirmation prompts"
-      exit 0
-      ;;
-  esac
-done
 
 # ---------------------------------------------------------------------------
 # Banner

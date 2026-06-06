@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 import { pathToFileURL } from 'node:url';
 
-type ProviderId = 'supermemory' | 'composio' | 'trigger-dev' | 'cloudflare-ai-gateway';
+export type ProviderId = 'supermemory' | 'composio' | 'trigger-dev' | 'cloudflare-ai-gateway';
 
 export interface HostedProviderConnectionProbe {
   provider: ProviderId;

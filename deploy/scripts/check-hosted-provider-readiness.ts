@@ -20,6 +20,13 @@ export interface HostedProviderReadinessResult {
   checkedToolIds: string[];
   connectedToolIds: string[];
   deferredToolIds: string[];
+  evidence: Array<{
+    toolId: string;
+    status: string;
+    source: 'tool-check' | 'selected-tool';
+    checkedAt?: number;
+    summary: string;
+  }>;
 }
 
 interface HostedProviderReadinessOptions {
@@ -53,12 +60,22 @@ export async function checkHostedProviderReadiness(
   const failures: string[] = [];
   const connectedToolIds: string[] = [];
   const deferredToolIds: string[] = [];
+  const evidence: HostedProviderReadinessResult['evidence'] = [];
 
   for (const toolId of requiredToolIds) {
     const selected = selectedTools.find((tool: JsonObject) => tool.toolId === toolId);
     const check = toolChecks.find((item: JsonObject) => item.toolId === toolId);
     const status = check?.status ?? selected?.status;
     const notes = String(selected?.notes ?? check?.summary ?? '').trim();
+    if (status) {
+      evidence.push({
+        toolId,
+        status: String(status),
+        source: check ? 'tool-check' : 'selected-tool',
+        ...(typeof check?.checkedAt === 'number' ? { checkedAt: check.checkedAt } : {}),
+        summary: String(check?.summary ?? selected?.notes ?? '').trim(),
+      });
+    }
     if (status === 'connected') {
       connectedToolIds.push(toolId);
       continue;
@@ -81,6 +98,7 @@ export async function checkHostedProviderReadiness(
     checkedToolIds: requiredToolIds,
     connectedToolIds,
     deferredToolIds,
+    evidence,
   };
 }
 

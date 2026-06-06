@@ -31,23 +31,6 @@ warn()    { printf "  ${YELLOW}!${RESET} %s\n" "$1" >&2; }
 error()   { printf "  ${RED}✗${RESET} %s\n" "$1" >&2; }
 info()    { printf "  ${CYAN}›${RESET} %s\n" "$1"; }
 
-# ---------------------------------------------------------------------------
-# Detect container runtime
-# ---------------------------------------------------------------------------
-COMPOSE_CMD=""
-if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  COMPOSE_CMD="docker compose"
-elif command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
-  COMPOSE_CMD="podman compose"
-elif command -v podman >/dev/null 2>&1 && command -v podman-compose >/dev/null 2>&1; then
-  COMPOSE_CMD="podman-compose"
-elif command -v docker >/dev/null 2>&1 && command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_CMD="docker-compose"
-else
-  error "No container runtime found. Install Docker or Podman."
-  exit 1
-fi
-
 OPT_IMAGE=""
 NON_INTERACTIVE=0
 
@@ -65,6 +48,23 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# ---------------------------------------------------------------------------
+# Detect container runtime
+# ---------------------------------------------------------------------------
+COMPOSE_CMD=""
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+elif command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="podman compose"
+elif command -v podman >/dev/null 2>&1 && command -v podman-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="podman-compose"
+elif command -v docker >/dev/null 2>&1 && command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+else
+  error "No container runtime found. Install Docker or Podman."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Banner

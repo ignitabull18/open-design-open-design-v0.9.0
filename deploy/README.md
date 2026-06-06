@@ -108,15 +108,43 @@ OD_PLAN_ID=<production-plan-id> \
 node --experimental-strip-types deploy/scripts/check-hosted-provider-readiness.ts
 ```
 
-The post-deploy wrapper runs monitor, smoke, provider readiness, and Coolify
-backup readiness in one command. It also probes live provider credentials when
-their env vars are present.
+The post-deploy wrapper runs monitor, hosted smoke, ops status, CLI ops parity,
+provider readiness, provider connection probes, and Coolify backup readiness in
+one command. It also probes live provider credentials when their env vars are
+present. By default the live provider probe set is Supermemory, Composio, and
+Trigger.dev; set `OD_PROVIDER_CONNECTION_IDS` to override it. Cloudflare AI
+Gateway is intentionally excluded until model traffic routes through a named
+gateway.
 
 ```bash
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
 OD_API_TOKEN="$OD_API_TOKEN" \
 OD_PLAN_ID=<production-plan-id> \
+OD_REQUIRED_TOOL_IDS=github,cloudflare-hosting,supermemory \
+OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev \
 node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
+```
+
+To write release evidence after a green post-deploy run:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+OD_REQUIRED_TOOL_IDS=github,cloudflare-hosting,supermemory \
+OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev \
+node --experimental-strip-types deploy/scripts/export-hosted-ops-evidence.ts
+```
+
+Alert delivery proof is separate from alert configuration. To prove the ntfy or
+webhook path accepts messages, run the monitor with success alerts enabled from
+the host or an operator shell that has `OD_ALERT_WEBHOOK_URL` configured:
+
+```bash
+OD_ALERT_ON_SUCCESS=1 \
+OD_ALERT_WEBHOOK_URL="$OD_ALERT_WEBHOOK_URL" \
+OD_ALERT_WEBHOOK_TOKEN="$OD_ALERT_WEBHOOK_TOKEN" \
+node --experimental-strip-types deploy/scripts/monitor-hosted-planner.ts
 ```
 
 To make a Docker/Compose update fail closed when the hosted gate is missing or
@@ -156,6 +184,46 @@ For the Ignitabull host, the backup job records the latest restore proof in
 OD_BACKUP_DRILL_MANIFEST=/root/open-design-backups/latest-restore-drill.json \
 node --experimental-strip-types deploy/scripts/check-hosted-backup-drill.ts
 ```
+
+## Secret rotation
+
+Rotate deployment secrets one at a time and run the post-deploy wrapper after
+each change:
+
+- `OD_API_TOKEN`: update the Coolify app env, restart the app, update the
+  operator secret source, then verify `/api/planning/session`, `/api/plans`, and
+  `od ops status --json`.
+- `COMPOSIO_API_KEY`: update Coolify from the 1Password `Composio API - Prod`
+  item, restart, then verify
+  `deploy/scripts/check-hosted-provider-connections.ts` with
+  `OD_PROVIDER_CONNECTION_IDS=composio`.
+- `TRIGGER_ACCESS_TOKEN`: update Coolify from the Trigger cloud profile, restart,
+  then verify the projects endpoint probe with
+  `OD_PROVIDER_CONNECTION_IDS=trigger-dev`.
+- Backup Worker token: update the Cloudflare Worker `BACKUP_TOKEN` secret and
+  `/root/open-design-ops.env` on `core1` together, run
+  `/usr/local/sbin/open-design-planner-backup.sh`, and confirm the restore drill
+  reports `sqlite-header-ok`.
+
+## R2 backup Worker
+
+The Ignitabull off-host backup path uses the Cloudflare Worker in
+`deploy/cloudflare/open-design-backup-ingest.ts`, deployed with
+`deploy/cloudflare/wrangler.open-design-backup-ingest.jsonc`.
+
+Recreate it from a fresh checkout:
+
+```bash
+wrangler r2 bucket info backups-postgres-box1
+wrangler deploy -c deploy/cloudflare/wrangler.open-design-backup-ingest.jsonc --dry-run
+wrangler deploy -c deploy/cloudflare/wrangler.open-design-backup-ingest.jsonc
+openssl rand -hex 32 | wrangler secret put BACKUP_TOKEN -c deploy/cloudflare/wrangler.open-design-backup-ingest.jsonc
+curl -fsS https://open-design-backup-ingest.<account-subdomain>.workers.dev/health
+```
+
+Then install the Worker URL and token on `core1` in `/root/open-design-ops.env`
+as `OD_BACKUP_R2_UPLOAD_URL` and `OD_BACKUP_R2_UPLOAD_TOKEN`, run the backup
+script, and verify `/api/ops/status` reports an `r2://` offsite target.
 
 Back up before image upgrades and before opening the same data with an older
 checkout:

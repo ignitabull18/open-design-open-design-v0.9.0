@@ -2867,20 +2867,29 @@ function isLoopbackPeerAddress(address) {
   return false;
 }
 
-const PUBLIC_API_RATE_LIMIT_WINDOW_MS = Math.max(
-  1000,
-  Number.parseInt(process.env.OD_API_RATE_LIMIT_WINDOW_MS ?? '60000', 10) || 60000,
-);
-const PUBLIC_API_RATE_LIMIT_MAX = Math.max(
-  1,
-  Number.parseInt(process.env.OD_API_RATE_LIMIT_MAX ?? '240', 10) || 240,
-);
+function publicApiRateLimitWindowMs() {
+  return Math.max(
+    1000,
+    Number.parseInt(process.env.OD_API_RATE_LIMIT_WINDOW_MS ?? '60000', 10) || 60000,
+  );
+}
+
+function publicApiRateLimitMax() {
+  return Math.max(
+    1,
+    Number.parseInt(process.env.OD_API_RATE_LIMIT_MAX ?? '240', 10) || 240,
+  );
+}
 
 function rateLimitPeerKey(req) {
   const forwarded = String(req.get('cf-connecting-ip') || req.get('x-forwarded-for') || '')
     .split(',')[0]
     .trim();
   return forwarded || req.socket?.remoteAddress || 'unknown';
+}
+
+function hasForwardedPeerHeader(req) {
+  return Boolean(String(req.get('cf-connecting-ip') || req.get('x-forwarded-for') || '').trim());
 }
 
 function localOriginFromHeader(value) {
@@ -3911,6 +3920,8 @@ export async function startServer({
 
   const app = express();
   app.use(express.json({ limit: '4mb' }));
+  const publicApiRateLimitWindow = publicApiRateLimitWindowMs();
+  const publicApiRateLimitLimit = publicApiRateLimitMax();
 
   // Plan §3.K1 — bearer-token middleware.
   //
@@ -3952,16 +3963,16 @@ export async function startServer({
     const publicApiBuckets = new Map();
     app.use('/api', (req, res, next) => {
       if (openProbePaths.has(req.path)) return next();
-      if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      if (isLoopbackPeerAddress(req.socket?.remoteAddress) && !hasForwardedPeerHeader(req)) return next();
       const now = Date.now();
       const key = rateLimitPeerKey(req);
       const bucket = publicApiBuckets.get(key);
       if (!bucket || now >= bucket.resetAt) {
-        publicApiBuckets.set(key, { count: 1, resetAt: now + PUBLIC_API_RATE_LIMIT_WINDOW_MS });
+        publicApiBuckets.set(key, { count: 1, resetAt: now + publicApiRateLimitWindow });
         return next();
       }
       bucket.count += 1;
-      if (bucket.count > PUBLIC_API_RATE_LIMIT_MAX) {
+      if (bucket.count > publicApiRateLimitLimit) {
         const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
         res.set('Retry-After', String(retryAfterSeconds));
         return sendApiError(
@@ -3980,7 +3991,7 @@ export async function startServer({
       // header here because a reverse proxy MUST always forward the
       // bearer; the loopback bypass exists for the localhost desktop
       // UI which has no proxy in the path.
-      if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      if (isLoopbackPeerAddress(req.socket?.remoteAddress) && !hasForwardedPeerHeader(req)) return next();
       const auth = req.get('authorization') ?? '';
       const match = /^Bearer\s+(\S+)\s*$/i.exec(auth);
       if ((!match || match[1] !== apiToken) && !hasValidPlanningSession(req, apiToken)) {
@@ -4540,8 +4551,8 @@ export async function startServer({
         checks: Array.isArray(parsed.checks) ? parsed.checks : [],
         rateLimit: {
           enabled: apiToken.length > 0,
-          windowMs: PUBLIC_API_RATE_LIMIT_WINDOW_MS,
-          maxRequests: PUBLIC_API_RATE_LIMIT_MAX,
+          windowMs: publicApiRateLimitWindow,
+          maxRequests: publicApiRateLimitLimit,
         },
         ...(parsed.backup ? { backup: parsed.backup } : {}),
         ...(parsed.monitor ? { monitor: parsed.monitor } : {}),
@@ -4566,15 +4577,15 @@ export async function startServer({
             label: 'API rate limit',
             status: apiToken.length > 0 ? 'ok' : 'unknown',
             summary: apiToken.length > 0
-              ? `${PUBLIC_API_RATE_LIMIT_MAX} requests per ${PUBLIC_API_RATE_LIMIT_WINDOW_MS}ms per public peer.`
+              ? `${publicApiRateLimitLimit} requests per ${publicApiRateLimitWindow}ms per public peer.`
               : 'OD_API_TOKEN is not set, so hosted public API throttling is inactive.',
             checkedAt: generatedAt,
           },
         ],
         rateLimit: {
           enabled: apiToken.length > 0,
-          windowMs: PUBLIC_API_RATE_LIMIT_WINDOW_MS,
-          maxRequests: PUBLIC_API_RATE_LIMIT_MAX,
+          windowMs: publicApiRateLimitWindow,
+          maxRequests: publicApiRateLimitLimit,
         },
       });
       return res.json(payload);
