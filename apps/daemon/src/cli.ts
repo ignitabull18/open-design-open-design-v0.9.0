@@ -189,7 +189,7 @@ const PLAN_STRING_FLAGS = new Set([
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
   'kind', 'title', 'content-file', 'schedule', 'status', 'notes',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule', 'watch']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4658,9 +4658,9 @@ async function runPlan(args) {
                  [--target-dir <path>] [--delivery-target <target>]
                  [--project-management-target <target>] [--validate-providers] [--json]
                                                  Execute or record one plan action.
-  od plan run-section <id> --section <name> [--json]
+  od plan run-section <id> --section <name> [--watch] [--json]
                                                  Run a section planning agent and store its output.
-  od plan run-sections <id> [--sections a,b] [--ready] [--mode parallel|sequential] [--json]
+  od plan run-sections <id> [--sections a,b] [--ready] [--mode parallel|sequential] [--watch] [--json]
                                                  Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
@@ -5058,20 +5058,26 @@ Common options:
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const sectionId = typeof flags.section === 'string' ? flags.section.trim() : '';
       if (!id || !sectionId) {
-        console.error('Usage: od plan run-section <id> --section <planning|design|database|integrations|ai|workflows|delivery> [--json]');
+        console.error('Usage: od plan run-section <id> --section <planning|design|database|integrations|ai|workflows|delivery> [--watch] [--json]');
         process.exit(2);
       }
-      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}/runs`, {
+      const operation = fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/${encodeURIComponent(sectionId)}/runs`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: '{}',
+      }).then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          console.error(`POST /api/plans/${id}/sections/${sectionId}/runs failed: ${resp.status} ${JSON.stringify(data)}`);
+          process.exit(1);
+        }
+        return data;
       });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        console.error(`POST /api/plans/${id}/sections/${sectionId}/runs failed: ${resp.status} ${JSON.stringify(data)}`);
-        process.exit(1);
-      }
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const data = flags.watch
+        ? await watchPlanningSectionRuns(base, id, (run) => run.kind === 'section-agent' && run.sectionId === sectionId, operation, flags.json === true)
+        : await operation;
+      if (flags.json && !flags.watch) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      if (flags.json && flags.watch) return;
       console.log(`[plan] section run ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
       console.log(data.artifacts?.[0]?.title ?? '');
       return;
@@ -5079,14 +5085,14 @@ Common options:
     case 'run-sections': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
-        console.error('Usage: od plan run-sections <id> [--sections planning,design,database,integrations,ai,workflows,delivery] [--ready] [--mode parallel|sequential] [--json]');
+        console.error('Usage: od plan run-sections <id> [--sections planning,design,database,integrations,ai,workflows,delivery] [--ready] [--mode parallel|sequential] [--watch] [--json]');
         process.exit(2);
       }
       const sectionIds = typeof flags.sections === 'string' && flags.sections.trim()
         ? flags.sections.split(',').map((item) => item.trim()).filter(Boolean)
         : undefined;
       const mode = flags.mode === 'sequential' ? 'sequential' : flags.mode === 'parallel' ? 'parallel' : undefined;
-      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/runs`, {
+      const operation = fetch(`${base}/api/plans/${encodeURIComponent(id)}/sections/runs`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -5094,13 +5100,22 @@ Common options:
           onlyReady: flags.ready === true,
           ...(mode ? { mode } : {}),
         }),
+      }).then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          console.error(`POST /api/plans/${id}/sections/runs failed: ${resp.status} ${JSON.stringify(data)}`);
+          process.exit(1);
+        }
+        return data;
       });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        console.error(`POST /api/plans/${id}/sections/runs failed: ${resp.status} ${JSON.stringify(data)}`);
-        process.exit(1);
-      }
-      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const requestedSectionIds = new Set(sectionIds ?? []);
+      const data = flags.watch
+        ? await watchPlanningSectionRuns(base, id, (run) =>
+          run.kind === 'section-agent' && (requestedSectionIds.size === 0 || requestedSectionIds.has(run.sectionId)),
+        operation, flags.json === true)
+        : await operation;
+      if (flags.json && !flags.watch) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      if (flags.json && flags.watch) return;
       console.log(`[plan] section batch ${(data.runs ?? []).length} run(s)`);
       for (const run of data.runs ?? []) {
         console.log(`${run.sectionId ?? '-'}\t${run.status ?? '-'}\t${run.title ?? '-'}`);
@@ -5334,6 +5349,90 @@ async function fetchPlanExecution(base, id) {
   const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/execution`);
   if (!resp.ok) return structuredHttpFailure(resp);
   return resp.json();
+}
+
+async function watchPlanningSectionRuns(base, planId, matchesRun, operation, emitJson) {
+  const streamedRunIds = new Set();
+  const streamPromises = [];
+  let result;
+  let settled = false;
+  const settledOperation = operation.then((data) => {
+    result = data;
+    settled = true;
+    return data;
+  }, (err) => {
+    settled = true;
+    throw err;
+  });
+
+  const subscribeRun = (run) => {
+    if (!run?.id || streamedRunIds.has(run.id)) return;
+    streamedRunIds.add(run.id);
+    streamPromises.push(streamPlanningRunEvents(base, planId, run.id, emitJson));
+  };
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    let execution = null;
+    try {
+      execution = await fetchPlanExecution(base, planId);
+    } catch (err) {
+      if (settled) throw err;
+    }
+    for (const run of execution?.runs ?? []) {
+      if ((run.status === 'queued' || run.status === 'running') && matchesRun(run)) subscribeRun(run);
+    }
+    if (settled) break;
+    await delay(250);
+  }
+
+  result = await settledOperation;
+  for (const run of [result?.run, ...(result?.runs ?? [])]) {
+    if (run && matchesRun(run)) subscribeRun(run);
+  }
+  await Promise.allSettled(streamPromises);
+  if (emitJson) process.stdout.write(JSON.stringify({ event: 'result', data: result }) + '\n');
+  return result;
+}
+
+async function streamPlanningRunEvents(base, planId, runId, emitJson) {
+  const resp = await fetch(`${base}/api/plans/${encodeURIComponent(planId)}/sections/runs/${encodeURIComponent(runId)}/events`, {
+    headers: { accept: 'text/event-stream' },
+  });
+  if (!resp.ok || !resp.body) {
+    console.error(`plan run watch failed: ${resp.status}`);
+    process.exit(1);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() ?? '';
+    for (const block of blocks) {
+      const lines = block.split('\n');
+      const eventLine = lines.find((line) => line.startsWith('event: '));
+      const dataLine = lines.find((line) => line.startsWith('data: '));
+      const event = eventLine ? eventLine.slice('event: '.length) : 'message';
+      if (event === 'done') return;
+      if (event === 'message' && !dataLine) continue;
+      const dataRaw = dataLine ? dataLine.slice('data: '.length) : '';
+      let parsed;
+      try { parsed = JSON.parse(dataRaw); } catch { parsed = dataRaw; }
+      if (emitJson) {
+        process.stdout.write(JSON.stringify({ event, data: parsed }) + '\n');
+      } else {
+        const section = parsed?.sectionId ? `${parsed.sectionId}\t` : '';
+        console.log(`[plan] ${section}${runId}\t${event}\t${parsed?.message ?? dataRaw}`);
+      }
+    }
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchPlanReadiness(base, id) {

@@ -6,6 +6,7 @@ import type {
   ExecuteProjectPlanActionRequest,
   ExecuteProjectPlanLaunchRequest,
   CreateProjectIdeationRequest,
+  PlanningExecutionEvent,
   PlanningSessionResponse,
   ProjectPlanExecutionResponse,
   ProjectPlanExecutionRunResponse,
@@ -313,6 +314,50 @@ export function runProjectPlanSection(
       body: JSON.stringify({}),
     },
   );
+}
+
+export function subscribeProjectPlanRunEvents(
+  planId: string,
+  runId: string,
+  handlers: {
+    onEvent: (event: PlanningExecutionEvent) => void;
+    onDone?: () => void;
+    onError?: (error: Error) => void;
+  },
+): () => void {
+  if (typeof EventSource === 'undefined') {
+    handlers.onError?.(new Error('EventSource is not available in this environment'));
+    return () => {};
+  }
+  const source = new EventSource(planningApiUrl(
+    `/api/plans/${encodeURIComponent(planId)}/sections/runs/${encodeURIComponent(runId)}/events`,
+  ), { withCredentials: true });
+  const eventTypes: PlanningExecutionEvent['type'][] = [
+    'run_started',
+    'runner_stdout',
+    'runner_stderr',
+    'artifact_created',
+    'status_changed',
+    'run_completed',
+    'run_failed',
+  ];
+  const handleMessage = (message: MessageEvent<string>) => {
+    try {
+      handlers.onEvent(JSON.parse(message.data) as PlanningExecutionEvent);
+    } catch (err) {
+      handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+  for (const type of eventTypes) source.addEventListener(type, handleMessage as EventListener);
+  source.addEventListener('done', () => {
+    handlers.onDone?.();
+    source.close();
+  });
+  source.onerror = () => {
+    handlers.onError?.(new Error('Plan execution event stream disconnected'));
+    source.close();
+  };
+  return () => source.close();
 }
 
 export function runProjectPlanSections(

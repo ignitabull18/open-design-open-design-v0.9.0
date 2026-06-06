@@ -57,6 +57,7 @@ Execution mode is complete only when these surfaces are implemented with UI and 
 Add these durable fields to the plan contract and SQLite JSON payload:
 
 - `executionRuns`: records one accepted action or section-agent run.
+- `executionEvents`: stores redacted section-agent progress events, status transitions, and artifact announcements for reload-safe run timelines.
 - `executionArtifacts`: stores generated issue drafts, PRD outlines, schema drafts, scaffold logs, deployment evidence, and provider-check evidence.
 - `toolChecks`: stores provider connection-check status and redacted evidence.
 - `scaffoldExecution`: stores target directory and scaffold command result.
@@ -71,12 +72,13 @@ Add endpoints beside the existing `/api/plans` routes:
 - `POST /api/plans/:id/actions/:actionId/execute`
 - `POST /api/plans/:id/sections/:sectionId/runs`
 - `POST /api/plans/:id/sections/runs`
+- `GET /api/plans/:id/sections/runs/:runId/events`
 - `POST /api/plans/:id/tools/:toolId/check`
 - `POST /api/plans/:id/artifacts`
 
 Execution endpoints must return structured status, redacted logs, and the updated plan.
 
-Section-agent runs use deterministic record-only drafts when no runner is configured. Operators can set `OD_PLAN_SECTION_AGENT_COMMAND` plus optional `OD_PLAN_SECTION_AGENT_ARGS_JSON` to run an external specialist command. The daemon writes `{ prompt, manifest }` to stdin as JSON, sets `OD_PLAN_ID`, `OD_PLAN_SECTION_ID`, and `OD_PLAN_SECTION_LABEL`, and accepts either plain stdout or JSON stdout shaped like `{ "status": "completed|blocked|failed", "summary": "...", "output": "...", "evidence": ["..."] }`.
+Section-agent runs use deterministic record-only drafts when no runner is configured. Operators can set `OD_PLAN_SECTION_AGENT_COMMAND` plus optional `OD_PLAN_SECTION_AGENT_ARGS_JSON` to run an external specialist command. The daemon writes `{ prompt, manifest }` to stdin as JSON, sets `OD_PLAN_ID`, `OD_PLAN_SECTION_ID`, and `OD_PLAN_SECTION_LABEL`, and accepts either plain stdout or JSON stdout shaped like `{ "status": "completed|blocked|failed", "summary": "...", "output": "...", "evidence": ["..."] }`. While an external or native runner is active, the run-events endpoint returns stored JSON by default or streams `text/event-stream` events for `run_started`, runner stdout/stderr, artifact creation, status changes, and completion/failure.
 
 ## CLI surface
 
@@ -84,11 +86,12 @@ Add CLI parity:
 
 - `od plan execution <id> [--json]`
 - `od plan execute <id> --action <name> --confirmed [--target-dir <path>] [--json]`
-- `od plan run-section <id> --section <name> [--json]`
+- `od plan run-section <id> --section <name> [--watch] [--json]`
+- `od plan run-sections <id> [--sections a,b] [--ready] [--mode parallel|sequential] [--watch] [--json]`
 - `od plan check-tool <id> --tool <tool-id> [--json]`
 - `od plan artifacts <id> [--json]`
 
-CLI output must support `--json`; long prompts or generated text must support `--prompt-file <path|->` when user-provided content is needed.
+CLI output must support `--json`; `--watch --json` emits JSONL progress events plus a final result event. Long prompts or generated text must support `--prompt-file <path|->` when user-provided content is needed.
 
 ## UI surface
 
@@ -101,6 +104,7 @@ The Planning UI should add an Execution panel with:
 - generated issues/PRD/schema drafts,
 - deployment target proof,
 - section-agent run status.
+- live section-agent progress for every running section lane, merged with stored events after reload.
 
 Existing action buttons should call execute endpoints, not just mark actions accepted.
 
@@ -128,7 +132,7 @@ Add Coolify/Vercel/Cloudflare/Hostinger execution paths with verification eviden
 
 ### Phase F: section-agent runs
 
-Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling. The current implementation supports injected or env-backed specialist runners, opt-in native Open Design agent runs through `OD_PLAN_SECTION_AGENT_RUNTIME=native`, durable running records while external/native specialists are in flight, stored runner output/evidence, and multi-section requests in parallel unless the request mode is `sequential`; remaining work is to stream native agent SSE progress directly into the Planning UI.
+Attach real run records to section lanes, with dependency validation and parallelizable lane scheduling. The current implementation supports injected or env-backed specialist runners, opt-in native Open Design agent runs through `OD_PLAN_SECTION_AGENT_RUNTIME=native`, durable running records while external/native specialists are in flight, stored runner output/evidence, event-stream progress in the Planning UI, `od plan run-section(s) --watch`, and multi-section requests in parallel unless the request mode is `sequential`.
 
 ## Acceptance criteria
 

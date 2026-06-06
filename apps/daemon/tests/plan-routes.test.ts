@@ -818,6 +818,7 @@ describe('planning routes', () => {
     const baseUrl = await startPlanServer({
       sectionAgentRunner: async (request) => {
         runnerStarted();
+        request.onEvent?.({ type: 'runner_stdout', message: 'Preparing database draft token=runner-secret' });
         await runnerReleased;
         return {
           status: 'completed',
@@ -864,6 +865,29 @@ describe('planning routes', () => {
       expect.objectContaining({
         id: expect.stringMatching(/^plan-artifact-/),
         kind: 'specialist-agent-manifest',
+      }),
+    ]));
+    expect(during.body.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runId: runningRun.id,
+        type: 'run_started',
+        sectionId: 'database',
+      }),
+      expect.objectContaining({
+        runId: runningRun.id,
+        type: 'runner_stdout',
+        message: 'Preparing database draft token=[redacted]',
+      }),
+    ]));
+
+    const streamed = await jsonFetch(`${baseUrl}/api/plans/${planId}/sections/runs/${runningRun.id}/events`);
+    expect(streamed.status).toBe(200);
+    expect(streamed.body.run).toMatchObject({ id: runningRun.id, status: 'running' });
+    expect(streamed.body.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        runId: runningRun.id,
+        type: 'runner_stdout',
+        message: 'Preparing database draft token=[redacted]',
       }),
     ]));
 

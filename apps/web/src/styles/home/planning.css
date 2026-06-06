@@ -918,6 +918,32 @@
   background: color-mix(in srgb, var(--accent) 8%, var(--bg));
 }
 
+.planning-view__run-events {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.planning-view__run-event {
+  display: grid;
+  grid-template-columns: minmax(90px, max-content) minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.planning-view__run-event strong,
+.planning-view__run-event small {
+  font-size: 10.5px;
+}
+
+.planning-view__run-event span {
+  overflow-wrap: anywhere;
+}
+
 .planning-view__workflow-item code {
   overflow: auto;
   padding: 7px;

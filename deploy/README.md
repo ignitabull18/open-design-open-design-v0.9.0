@@ -4,6 +4,10 @@ This deployment ships Open Design as a single Alpine-based runtime image. The
 daemon serves both the API and the built Next.js static export, so there is no
 separate nginx container.
 
+For the Ignitabull production checklist, including Cloudflare routing,
+provider readiness, backups, and hosted smoke verification, see
+[`docs/deployment/hosted-planner.md`](../docs/deployment/hosted-planner.md).
+
 ## Local compose
 
 Before starting:
@@ -25,8 +29,8 @@ Before starting:
 Then pull and start the service:
 
 ```bash
-OPEN_DESIGN_IMAGE=docker.io/vanjayak/open-design:latest docker compose pull
-OPEN_DESIGN_IMAGE=docker.io/vanjayak/open-design:latest docker compose up -d --no-build
+OPEN_DESIGN_IMAGE=ghcr.io/nexu-io/od:latest docker compose pull
+OPEN_DESIGN_IMAGE=ghcr.io/nexu-io/od:latest docker compose up -d --no-build
 ```
 
 Defaults:
@@ -36,9 +40,11 @@ Defaults:
 - Node heap cap: `--max-old-space-size=192`
 - Compose memory cap: `384m` (`OPEN_DESIGN_MEM_LIMIT=256m` to override)
 
-Do not publish the daemon directly on a public or shared LAN interface. The API is
-unauthenticated for non-browser clients, so remote deployments should keep Compose
-bound to localhost and put an authenticated reverse proxy, SSH tunnel, or VPN in
+Do not publish the daemon directly on a public or shared LAN interface. The daemon
+refuses public binds without `OD_API_TOKEN`, and non-loopback `/api/*` callers must
+authenticate with either `Authorization: Bearer <OD_API_TOKEN>` or the hosted
+planner's httpOnly `od_planning_session` cookie. Keep Compose bound to localhost
+and put Cloudflare Tunnel, an authenticated reverse proxy, SSH tunnel, or VPN in
 front of it.
 
 When exposing the service through an authenticated public IP, domain, or reverse
@@ -49,16 +55,80 @@ allowed to call `/api`:
 OPEN_DESIGN_ALLOWED_ORIGINS=https://od.example.com,http://203.0.113.10:7456 docker compose up -d --no-build
 ```
 
+For the Ignitabull hosted planner, the expected public origin is:
+
+```bash
+OPEN_DESIGN_ALLOWED_ORIGINS=https://open-design.ignitabull.org
+OD_API_TOKEN=<stored in the deployment secret manager>
+```
+
 Pin a specific published image with a digest instead of the mutable `latest` tag:
 
 ```bash
-OPEN_DESIGN_IMAGE=docker.io/vanjayak/open-design@sha256:<digest> docker compose up -d --no-build
+OPEN_DESIGN_IMAGE=ghcr.io/nexu-io/od@sha256:<digest> docker compose up -d --no-build
 ```
 The image intentionally does not bundle Claude/Codex/Gemini CLI binaries. Keep
 those outside the image, or build a separate private runtime layer if a server
 deployment needs local code-agent CLIs installed in the container.
 
-## Publish to Docker Hub
+## Hosted smoke
+
+After every deployment or token rotation, run the hosted smoke from a trusted
+operator shell. The script prints plan/run ids only; it never prints the token.
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+node --experimental-strip-types deploy/scripts/smoke-hosted-planner.ts
+```
+
+The smoke verifies:
+
+- `/api/health` is open and daemon-backed.
+- `/api/plans` is protected without a token.
+- `/api/planning/session` sets the httpOnly planning cookie.
+- plan creation, section answer edits, stack/tool updates, section-agent runs,
+  event replay, SSE streaming, and reload persistence all work against the
+  hosted daemon.
+
+Provider readiness is checked separately because it should inspect the production
+plan's chosen integrations without creating new provider side effects:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+node --experimental-strip-types deploy/scripts/check-hosted-provider-readiness.ts
+```
+
+## Data, backup, and restore
+
+Runtime state lives in the `open_design_data` Docker volume, mounted at
+`/app/.od` inside the container. That volume contains SQLite (`app.sqlite*`),
+project files, artifacts, installed plugins, and media/provider config.
+
+Back up before image upgrades and before opening the same data with an older
+checkout:
+
+```bash
+docker run --rm \
+  -v open_design_data:/data:ro \
+  -v "$PWD/backups:/backup" \
+  alpine sh -c 'cd /data && tar czf "/backup/open-design-$(date +%Y%m%d-%H%M%S).tgz" .'
+```
+
+Restore into a stopped service:
+
+```bash
+docker compose down
+docker run --rm \
+  -v open_design_data:/data \
+  -v "$PWD/backups:/backup:ro" \
+  alpine sh -c 'rm -rf /data/* && tar xzf /backup/<backup-file>.tgz -C /data'
+docker compose up -d --no-build
+```
+
+## Publish images
 
 ```bash
 deploy/scripts/publish-images.sh --image_tag latest
@@ -68,15 +138,15 @@ Useful overrides:
 
 ```bash
 IMAGE_NAMESPACE=your-dockerhub-user deploy/scripts/publish-images.sh --arch arm64
-deploy/scripts/publish-images.sh --image docker.io/your-user/open-design:0.1.0
+deploy/scripts/publish-images.sh --image ghcr.io/your-org/od:0.1.0
 ```
 
 The script defaults to:
 
-- `docker.io/vanjayak/open-design:<tag>`
+- `ghcr.io/nexu-io/od:<tag>`
 - `linux/amd64,linux/arm64`
 - `skopeo` push strategy with Docker credentials read from `~/.docker/config.json`
-- preloading base images through `skopeo` to reduce Docker Hub pull flakiness
+- preloading base images through `skopeo` to reduce registry pull flakiness
 
 If `127.0.0.1:7890` is available and no proxy is already set, the script uses it
 for registry access and passes `host.docker.internal:7890` into Docker builds. The

@@ -1,10 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections, updateProjectPlanToolStatus, updateProjectPlanTools } from '../../src/providers/plans';
+import { createProjectPlanArtifact, executeProjectPlanAction, executeProjectPlanLaunch, getProjectPlanLaunchPreview, getProjectPlanReadiness, runProjectPlanSections, subscribeProjectPlanRunEvents, updateProjectPlanToolStatus, updateProjectPlanTools } from '../../src/providers/plans';
 
 const realFetch = globalThis.fetch;
+const realEventSource = globalThis.EventSource;
 
 afterEach(() => {
   globalThis.fetch = realFetch;
+  if (realEventSource) {
+    globalThis.EventSource = realEventSource;
+  } else {
+    Reflect.deleteProperty(globalThis, 'EventSource');
+  }
   vi.restoreAllMocks();
 });
 
@@ -13,6 +19,34 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+class StubEventSource {
+  static instances: StubEventSource[] = [];
+
+  onerror: (() => void) | null = null;
+  closed = false;
+  listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+
+  constructor(public url: string, public options?: EventSourceInit) {
+    StubEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener as (event: MessageEvent<string>) => void);
+    this.listeners.set(type, listeners);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  emit(type: string, data: unknown = {}): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ data: typeof data === 'string' ? data : JSON.stringify(data) } as MessageEvent<string>);
+    }
+  }
 }
 
 describe('plans provider', () => {
@@ -39,6 +73,44 @@ describe('plans provider', () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('/api/plans/plan-1/readiness');
     expect(init.credentials).toBe('include');
+  });
+
+  it('subscribes to planning section run SSE events', () => {
+    StubEventSource.instances = [];
+    globalThis.EventSource = StubEventSource as unknown as typeof EventSource;
+    const onEvent = vi.fn();
+    const onDone = vi.fn();
+    const onError = vi.fn();
+
+    const unsubscribe = subscribeProjectPlanRunEvents('plan 1', 'run/1', { onEvent, onDone, onError });
+
+    expect(StubEventSource.instances).toHaveLength(1);
+    const source = StubEventSource.instances[0]!;
+    expect(source.url).toBe('/api/plans/plan%201/sections/runs/run%2F1/events');
+    expect(source.options).toEqual({ withCredentials: true });
+
+    source.emit('runner_stdout', {
+      id: 'event-1',
+      planId: 'plan 1',
+      runId: 'run/1',
+      type: 'runner_stdout',
+      message: 'native output',
+      createdAt: 1,
+      sequence: 1,
+    });
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run/1',
+      type: 'runner_stdout',
+      message: 'native output',
+    }));
+
+    source.emit('done', { runId: 'run/1', status: 'completed' });
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(source.closed).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+
+    unsubscribe();
+    expect(source.closed).toBe(true);
   });
 
   it('creates plan execution artifacts through the daemon API', async () => {

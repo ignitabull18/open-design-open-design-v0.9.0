@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   ExecuteProjectPlanLaunchRequest,
   PlanningExecutionArtifact,
+  PlanningExecutionEvent,
   PlanningToolOption,
   ProviderCapabilityRefreshPolicy,
   ProviderCapabilityRefreshSchedule,
@@ -26,6 +27,7 @@ import {
   createProjectPlan,
   executeProjectPlanLaunch,
   executeProjectPlanAction,
+  getProjectPlanExecution,
   getProjectLaunchProof,
   getProjectPlanLaunchPreview,
   getProjectPlanReadiness,
@@ -38,6 +40,7 @@ import {
   runDueProviderCapabilityRefresh,
   runProjectPlanSection,
   runProjectPlanSections,
+  subscribeProjectPlanRunEvents,
   updateProviderCapabilityRefreshSchedule,
   updateProjectPlanToolStatus,
   updateProjectSectionWorkflow,
@@ -133,6 +136,7 @@ export function PlanningView() {
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
   const [actionSaving, setActionSaving] = useState<string | null>(null);
   const [executionSaving, setExecutionSaving] = useState<string | null>(null);
+  const [liveRunEvents, setLiveRunEvents] = useState<Record<string, PlanningExecutionEvent[]>>({});
   const [artifactSaving, setArtifactSaving] = useState(false);
   const [artifactKind, setArtifactKind] = useState<PlanningExecutionArtifact['kind']>('project-management-plan');
   const [artifactTitle, setArtifactTitle] = useState('PRD handoff notes');
@@ -455,17 +459,75 @@ export function PlanningView() {
     }
   }
 
+  function mergeLiveRunEvent(event: PlanningExecutionEvent) {
+    setLiveRunEvents((curr) => {
+      const existing = curr[event.runId] ?? [];
+      if (existing.some((item) => item.id === event.id)) return curr;
+      return {
+        ...curr,
+        [event.runId]: [...existing, event].sort((a, b) => a.sequence - b.sequence || a.createdAt - b.createdAt).slice(-80),
+      };
+    });
+  }
+
+  async function followSectionRunEvents(
+    planId: string,
+    predicate: (run: ProjectPlan['executionRuns'][number]) => boolean,
+  ): Promise<() => void> {
+    const cleanups: Array<() => void> = [];
+    const subscribedRunIds = new Set<string>();
+    let sawMatchingRun = false;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const execution = await getProjectPlanExecution(planId);
+      setPlans((curr) => curr.map((plan) => (plan.id === execution.plan.id ? execution.plan : plan)));
+      for (const event of execution.events ?? []) mergeLiveRunEvent(event);
+      const runningRuns = [...(execution.runs ?? [])].filter((run) =>
+        (run.status === 'running' || run.status === 'queued') && predicate(run),
+      );
+      for (const runningRun of runningRuns) {
+        sawMatchingRun = true;
+        if (subscribedRunIds.has(runningRun.id)) continue;
+        subscribedRunIds.add(runningRun.id);
+        cleanups.push(subscribeProjectPlanRunEvents(planId, runningRun.id, {
+          onEvent: mergeLiveRunEvent,
+          onDone: () => {
+            void getProjectPlanExecution(planId).then((latest) => {
+              setPlans((curr) => curr.map((plan) => (plan.id === latest.plan.id ? latest.plan : plan)));
+              for (const event of latest.events ?? []) mergeLiveRunEvent(event);
+            }).catch(() => undefined);
+          },
+          onError: (err) => setError(err.message),
+        }));
+      }
+      if (sawMatchingRun && runningRuns.length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+    return () => {
+      for (const cleanup of cleanups) cleanup();
+    };
+  }
+
   async function handleRunSection(sectionId: ProjectWorkspaceSection['id']) {
     if (!selectedPlan) return;
     setExecutionSaving(`section:${sectionId}`);
     setError(null);
+    let unsubscribe = () => {};
     try {
+      const follow = followSectionRunEvents(selectedPlan.id, (run) => run.kind === 'section-agent' && run.sectionId === sectionId)
+        .then((cleanup) => {
+          unsubscribe = cleanup;
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
       const result = await runProjectPlanSection(selectedPlan.id, { sectionId });
+      await follow;
+      for (const event of result.events ?? []) mergeLiveRunEvent(event);
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      unsubscribe();
       setExecutionSaving(null);
     }
   }
@@ -474,16 +536,25 @@ export function PlanningView() {
     if (!selectedPlan) return;
     setExecutionSaving(`sections:${mode}`);
     setError(null);
+    let unsubscribe = () => {};
     try {
+      const follow = followSectionRunEvents(selectedPlan.id, (run) => run.kind === 'section-agent')
+        .then((cleanup) => {
+          unsubscribe = cleanup;
+        })
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
       const result = await runProjectPlanSections(selectedPlan.id, {
         onlyReady: mode === 'parallel',
         mode,
       });
+      await follow;
+      for (const event of result.events ?? []) mergeLiveRunEvent(event);
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      unsubscribe();
       setExecutionSaving(null);
     }
   }
@@ -811,6 +882,7 @@ export function PlanningView() {
               sectionSaving={sectionSaving}
               actionSaving={actionSaving}
               executionSaving={executionSaving}
+              liveRunEvents={liveRunEvents}
               capabilities={capabilities}
               capabilityRefreshPolicy={capabilityRefreshPolicy}
               capabilityRefreshSchedule={capabilityRefreshSchedule}
@@ -982,6 +1054,7 @@ function PlanDetail({
   sectionSaving,
   actionSaving,
   executionSaving,
+  liveRunEvents,
   capabilities,
   capabilityRefreshPolicy,
   capabilityRefreshSchedule,
@@ -1028,6 +1101,7 @@ function PlanDetail({
   sectionSaving: string | null;
   actionSaving: string | null;
   executionSaving: string | null;
+  liveRunEvents: Record<string, PlanningExecutionEvent[]>;
   capabilities: ProviderCapabilitySnapshot[];
   capabilityRefreshPolicy: ProviderCapabilityRefreshPolicy | null;
   capabilityRefreshSchedule: ProviderCapabilityRefreshSchedule | null;
@@ -1238,6 +1312,7 @@ function PlanDetail({
             plan={plan}
             saving={sectionSaving === activeSection.id}
             running={runningSectionIds.has(activeSection.id)}
+            liveRunEvents={liveRunEvents}
             actionSaving={actionSaving}
             executionSaving={executionSaving}
             onSave={onSaveSectionAnswer}
@@ -1396,6 +1471,7 @@ function PlanDetail({
               <span>{run.status} · {run.kind} · {run.mode}</span>
             </div>
             <span>{run.summary}</span>
+            <RunEvents events={eventsForRun(plan, liveRunEvents, run.id).slice(-3)} />
             <RunEvidence evidence={run.evidence} />
           </article>
         ))}
@@ -1662,6 +1738,7 @@ function SectionWorkflowPanel({
   plan,
   saving,
   running,
+  liveRunEvents,
   actionSaving,
   executionSaving,
   onSave,
@@ -1672,6 +1749,7 @@ function SectionWorkflowPanel({
   plan: ProjectPlan;
   saving: boolean;
   running: boolean;
+  liveRunEvents: Record<string, PlanningExecutionEvent[]>;
   actionSaving: string | null;
   executionSaving: string | null;
   onSave: (sectionId: ProjectWorkspaceSection['id'], answerText: string, notes: string) => void;
@@ -1698,6 +1776,7 @@ function SectionWorkflowPanel({
         && artifact.title.includes(section.label),
       )
     : undefined;
+  const latestRunEvents = latestRun ? eventsForRun(plan, liveRunEvents, latestRun.id).slice(-5) : [];
   const readyLanes = lanes.filter((lane) => lane.status === 'ready').length;
   const blockedLanes = lanes.filter((lane) => lane.status === 'blocked').length;
   const acceptedActions = actions.filter((action) => action.status === 'accepted' || action.status === 'completed').length;
@@ -1751,14 +1830,16 @@ function SectionWorkflowPanel({
           {running ? (
             <div className="planning-view__workflow-item is-running" aria-live="polite">
               <strong>running · pending</strong>
-              <span>The {section.label} specialist is generating section output and proof.</span>
-              <small>Previous stored run remains visible after completion.</small>
+              <span>{latestRunEvents.at(-1)?.message ?? `The ${section.label} specialist is generating section output and proof.`}</span>
+              <small>{latestRunEvents.at(-1) ? `${latestRunEvents.at(-1)?.type} · ${new Date(latestRunEvents.at(-1)?.createdAt ?? Date.now()).toLocaleTimeString()}` : 'Previous stored run remains visible after completion.'}</small>
+              <RunEvents events={latestRunEvents} />
             </div>
           ) : latestRun ? (
             <div className="planning-view__workflow-item">
               <strong>{latestRun.status} · {latestRun.mode}</strong>
               <span>{latestRun.summary}</span>
               <small>{formatSectionRunMeta(latestRun)}</small>
+              <RunEvents events={latestRunEvents.slice(-3)} />
             </div>
           ) : (
             <span className="planning-view__muted">No specialist run has been recorded for this section yet.</span>
@@ -1906,4 +1987,34 @@ function formatSectionRunMeta(run: ProjectPlan['executionRuns'][number]): string
     ? `completed ${new Date(run.completedAt).toLocaleString()}`
     : `started ${new Date(run.startedAt).toLocaleString()}`;
   return evidence ? `${timing} · ${evidence}` : timing;
+}
+
+function eventsForRun(
+  plan: ProjectPlan,
+  liveRunEvents: Record<string, PlanningExecutionEvent[]>,
+  runId: string,
+): PlanningExecutionEvent[] {
+  const byId = new Map<string, PlanningExecutionEvent>();
+  for (const event of plan.executionEvents ?? []) {
+    if (event.runId === runId) byId.set(event.id, event);
+  }
+  for (const event of liveRunEvents[runId] ?? []) {
+    byId.set(event.id, event);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.sequence - b.sequence || a.createdAt - b.createdAt);
+}
+
+function RunEvents({ events }: { events: PlanningExecutionEvent[] }) {
+  if (events.length === 0) return null;
+  return (
+    <div className="planning-view__run-events">
+      {events.map((event) => (
+        <div key={event.id} className="planning-view__run-event">
+          <strong>{event.type.replaceAll('_', ' ')}</strong>
+          <span>{event.message}</span>
+          <small>{new Date(event.createdAt).toLocaleTimeString()}</small>
+        </div>
+      ))}
+    </div>
+  );
 }

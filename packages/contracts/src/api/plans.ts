@@ -229,6 +229,28 @@ export interface PlanningExecutionRun {
   evidence: string[];
 }
 
+export type PlanningExecutionEventType =
+  | 'run_started'
+  | 'runner_stdout'
+  | 'runner_stderr'
+  | 'artifact_created'
+  | 'status_changed'
+  | 'run_completed'
+  | 'run_failed';
+
+export interface PlanningExecutionEvent {
+  id: string;
+  planId: string;
+  runId: string;
+  type: PlanningExecutionEventType;
+  message: string;
+  createdAt: number;
+  sectionId?: ProjectWorkspaceSection['id'];
+  status?: PlanningExecutionRun['status'];
+  artifactId?: string;
+  sequence: number;
+}
+
 export interface PlanningExecutionArtifact {
   id: string;
   planId: string;
@@ -289,6 +311,7 @@ export interface ProjectPlan {
   runtimePlan: PlanningRuntimePlan;
   executionActions: PlanningExecutionAction[];
   executionRuns: PlanningExecutionRun[];
+  executionEvents: PlanningExecutionEvent[];
   executionArtifacts: PlanningExecutionArtifact[];
   toolChecks: PlanningToolCheck[];
   scaffoldExecution: ScaffoldExecutionPlan;
@@ -522,6 +545,7 @@ export interface ProjectSectionWorkflowResponse {
 export interface ProjectPlanExecutionResponse {
   plan: ProjectPlan;
   runs: PlanningExecutionRun[];
+  events?: PlanningExecutionEvent[];
   artifacts: PlanningExecutionArtifact[];
   toolChecks: PlanningToolCheck[];
   scaffoldExecution: ScaffoldExecutionPlan;
@@ -546,7 +570,14 @@ export interface ProjectPlanLaunchPreviewResponse {
 export interface ProjectPlanExecutionRunResponse {
   plan: ProjectPlan;
   run: PlanningExecutionRun;
+  events?: PlanningExecutionEvent[];
   artifacts: PlanningExecutionArtifact[];
+}
+
+export interface ProjectPlanExecutionEventsResponse {
+  plan: ProjectPlan;
+  run: PlanningExecutionRun;
+  events: PlanningExecutionEvent[];
 }
 
 export interface ProjectPlanLaunchExecutionResponse {

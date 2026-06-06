@@ -366,6 +366,26 @@ Open in your browser:
 http://localhost:7456
 ```
 
+For a hosted single-tenant planner such as
+`https://open-design.ignitabull.org`, keep Docker bound to localhost and expose
+it through Cloudflare Tunnel or an authenticated reverse proxy. Set
+`OPEN_DESIGN_ALLOWED_ORIGINS` to the public browser origin and keep
+`OD_API_TOKEN` in the deployment secret manager. The hosted Planning UI asks for
+the daemon token once, then stores only an httpOnly `od_planning_session` cookie;
+the token is not embedded in the web bundle.
+
+After deploy or token rotation, run:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+node --experimental-strip-types deploy/scripts/smoke-hosted-planner.ts
+```
+
+That smoke verifies protected API access, plan persistence, section answer edits,
+stack/tool updates, section-agent event replay, SSE streaming, and reload
+persistence against the live daemon.
+
 #### Common Commands
 
 ```bash id="gl95kp"
@@ -661,7 +681,7 @@ Open **Settings → MCP server** in the Open Design app for a per-client install
 
 The daemon must be running locally for MCP tool calls to succeed. If the agent was started before Open Design, restart the agent after Open Design is up so it can reach the live daemon. Tool calls made while the daemon is offline return a clear `"daemon not reachable"` error rather than a crash.
 
-**Security model.** The MCP server is read-only; it exposes file reads, file metadata, and search -- nothing that writes to disk or calls an external service. It runs as a child process of the coding agent over stdio, so any MCP client you register inherits read access to your local Open Design projects. Treat it like installing a VS Code extension: only register clients you trust. The daemon binds to `127.0.0.1` by default; LAN-wide exposure requires an explicit `OD_BIND_HOST` opt-in. If you also front the SPA with a non-loopback static server, set `OD_ALLOWED_ORIGINS=<origin1>,<origin2>,...` (comma-separated `scheme://host[:port]` entries) so the daemon's same-origin gate accepts API writes from those origins on both the `Origin` and `Host` checks; without it the browser will see 403s on every PUT/POST (Caddy v2 reverse_proxy preserves the original Host header upstream by default, so loopback alone is not enough). Connector-credential and live-artifact preview routes stay loopback-only regardless.
+**Security model.** The MCP server is read-only; it exposes file reads, file metadata, and search -- nothing that writes to disk or calls an external service. It runs as a child process of the coding agent over stdio, so any MCP client you register inherits read access to your local Open Design projects. Treat it like installing a VS Code extension: only register clients you trust. The daemon binds to `127.0.0.1` by default; LAN-wide exposure requires an explicit `OD_BIND_HOST` opt-in and, for non-loopback binds, `OD_API_TOKEN`. When `OD_API_TOKEN` is set, non-loopback `/api/*` requests must authenticate with `Authorization: Bearer <token>` or the hosted planner's httpOnly session cookie. If you also front the SPA with a non-loopback static server, set `OD_ALLOWED_ORIGINS=<origin1>,<origin2>,...` (comma-separated `scheme://host[:port]` entries) so the daemon's same-origin gate accepts API writes from those origins on both the `Origin` and `Host` checks; without it the browser will see 403s on every PUT/POST (Caddy v2 reverse_proxy preserves the original Host header upstream by default, so loopback alone is not enough). Connector-credential and live-artifact preview routes stay loopback-only regardless.
 
 ## Repository structure
 

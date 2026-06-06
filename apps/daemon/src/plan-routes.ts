@@ -17,6 +17,7 @@ import type {
   PlanningExecutionAction,
   PlanningRuntimePlan,
   PlanningExecutionArtifact,
+  PlanningExecutionEvent,
   PlanningExecutionRun,
   ProjectPlanReadinessItem,
   ProjectPlanReadinessReport,
@@ -261,7 +262,12 @@ interface SectionAgentRunRequest {
   prompt: string;
   cwd: string;
   timeoutMs: number;
+  onEvent?: (event: SectionAgentProgressEvent) => void;
 }
+
+type SectionAgentProgressEvent =
+  | { type: 'runner_stdout' | 'runner_stderr'; message: string }
+  | { type: 'status_changed'; message: string; status: PlanningExecutionRun['status'] };
 
 interface SectionAgentRunResult {
   status: Extract<PlanningExecutionRun['status'], 'completed' | 'blocked' | 'failed'>;
@@ -304,6 +310,7 @@ interface ProjectPlanBuildInput {
   repo?: Partial<RepoPlan>;
   delivery?: DeliveryPlan[];
   executionRuns?: PlanningExecutionRun[];
+  executionEvents?: PlanningExecutionEvent[];
   executionArtifacts?: PlanningExecutionArtifact[];
   toolChecks?: PlanningToolCheck[];
   scaffoldExecution?: ScaffoldExecutionPlan;
@@ -833,6 +840,7 @@ const PROVIDER_CAPABILITIES: ProviderCapabilitySnapshot[] = [
 
 export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const { db } = ctx;
+  const executionEventSubscribers = new Map<string, Set<(event: PlanningExecutionEvent) => void>>();
   const scaffoldRunner = ctx.scaffoldRunner ?? runScaffoldCommand;
   const repoRunner = ctx.repoRunner ?? runRepoCommand;
   const deployRunner = ctx.deployRunner ?? runDeployCommand;
@@ -844,6 +852,125 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
   const databaseMigrationRunner = ctx.databaseMigrationRunner ?? runDatabaseMigrationCommand;
   const sectionAgentRunner = ctx.sectionAgentRunner ?? buildEnvSectionAgentRunner();
   const scaffoldRoot = path.resolve(ctx.scaffoldRoot ?? path.join(process.cwd(), '.od', 'scaffolds'));
+
+  function subscriberKey(planId: string, runId: string): string {
+    return `${planId}:${runId}`;
+  }
+
+  function publishExecutionEvent(event: PlanningExecutionEvent): void {
+    const subscribers = executionEventSubscribers.get(subscriberKey(event.planId, event.runId));
+    if (!subscribers) return;
+    for (const subscriber of subscribers) subscriber(event);
+  }
+
+  function subscribeExecutionEvents(
+    planId: string,
+    runId: string,
+    subscriber: (event: PlanningExecutionEvent) => void,
+  ): () => void {
+    const key = subscriberKey(planId, runId);
+    const subscribers = executionEventSubscribers.get(key) ?? new Set<(event: PlanningExecutionEvent) => void>();
+    subscribers.add(subscriber);
+    executionEventSubscribers.set(key, subscribers);
+    return () => {
+      subscribers.delete(subscriber);
+      if (subscribers.size === 0) executionEventSubscribers.delete(key);
+    };
+  }
+
+  function appendExecutionEvent(
+    planId: string,
+    input: Omit<PlanningExecutionEvent, 'id' | 'planId' | 'createdAt' | 'sequence'>,
+  ): PlanningExecutionEvent | null {
+    const current = getPlan(db, planId) as ProjectPlan | null;
+    if (!current) return null;
+    const previousEvents = current.executionEvents ?? [];
+    const runEvents = previousEvents.filter((event) => event.runId === input.runId);
+    const event: PlanningExecutionEvent = {
+      id: `plan-event-${randomUUID()}`,
+      planId,
+      createdAt: Date.now(),
+      sequence: runEvents.length + 1,
+      ...input,
+      message: redactExecutionEventMessage(input.message),
+    };
+    const events = boundPlanningExecutionEvents([...previousEvents, event]);
+    updatePlan(db, planId, {
+      ...current,
+      executionEvents: events,
+      updatedAt: Date.now(),
+    });
+    publishExecutionEvent(event);
+    return event;
+  }
+
+  function appendRunStartedEvents(
+    planId: string,
+    run: PlanningExecutionRun,
+    artifacts: PlanningExecutionArtifact[],
+  ): PlanningExecutionEvent[] {
+    const events = [
+      appendExecutionEvent(planId, {
+        runId: run.id,
+        type: 'run_started',
+        message: run.summary,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        status: run.status,
+      }),
+      appendExecutionEvent(planId, {
+        runId: run.id,
+        type: 'status_changed',
+        message: `Status changed to ${run.status}.`,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        status: run.status,
+      }),
+      ...artifacts.map((artifact) => appendExecutionEvent(planId, {
+        runId: run.id,
+        type: 'artifact_created' as const,
+        message: `${artifact.kind}: ${artifact.title}`,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        artifactId: artifact.id,
+      })),
+    ];
+    return events.filter((event): event is PlanningExecutionEvent => Boolean(event));
+  }
+
+  function appendRunCompletedEvents(
+    planId: string,
+    run: PlanningExecutionRun,
+    artifacts: PlanningExecutionArtifact[],
+  ): PlanningExecutionEvent[] {
+    const completionType = run.status === 'completed' ? 'run_completed' : 'run_failed';
+    const existingArtifactEventIds = new Set(
+      ((getPlan(db, planId) as ProjectPlan | null)?.executionEvents ?? [])
+        .filter((event) => event.runId === run.id && event.type === 'artifact_created' && event.artifactId)
+        .map((event) => event.artifactId),
+    );
+    const events = [
+      ...artifacts.filter((artifact) => !existingArtifactEventIds.has(artifact.id)).map((artifact) => appendExecutionEvent(planId, {
+        runId: run.id,
+        type: 'artifact_created' as const,
+        message: `${artifact.kind}: ${artifact.title}`,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        artifactId: artifact.id,
+      })),
+      appendExecutionEvent(planId, {
+        runId: run.id,
+        type: 'status_changed',
+        message: `Status changed to ${run.status}.`,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        status: run.status,
+      }),
+      appendExecutionEvent(planId, {
+        runId: run.id,
+        type: completionType,
+        message: run.summary,
+        ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+        status: run.status,
+      }),
+    ];
+    return events.filter((event): event is PlanningExecutionEvent => Boolean(event));
+  }
 
   app.get('/api/planning/tools', (_req, res) => {
     res.json({ tools: APPROVED_TOOLS });
@@ -1035,6 +1162,57 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
     }
+  });
+
+  app.get('/api/plans/:id/sections/runs/:runId/events', (req, res) => {
+    const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+    if (!plan) return res.status(404).json({ error: 'plan not found' });
+    const run = (plan.executionRuns ?? []).find((item) => item.id === req.params.runId);
+    if (!run) return res.status(404).json({ error: 'plan execution run not found' });
+
+    const accept = String(req.headers.accept ?? '');
+    if (!accept.includes('text/event-stream')) {
+      return res.json({ plan, run, events: eventsForRun(plan, req.params.runId) });
+    }
+
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+
+    const writeEvent = (event: PlanningExecutionEvent) => {
+      res.write(`id: ${event.id}\n`);
+      res.write(`event: ${event.type}\n`);
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    for (const event of eventsForRun(plan, req.params.runId)) writeEvent(event);
+
+    if (run.status !== 'running' && run.status !== 'queued') {
+      res.write('event: done\n');
+      res.write(`data: ${JSON.stringify({ runId: run.id, status: run.status })}\n\n`);
+      return res.end();
+    }
+
+    const unsubscribe = subscribeExecutionEvents(req.params.id, req.params.runId, (event) => {
+      writeEvent(event);
+      if (event.type === 'run_completed' || event.type === 'run_failed') {
+        res.write('event: done\n');
+        res.write(`data: ${JSON.stringify({ runId: event.runId, status: event.status ?? 'completed' })}\n\n`);
+        res.end();
+        unsubscribe();
+      }
+    });
+    const keepAlive = setInterval(() => {
+      res.write(': keep-alive\n\n');
+    }, 15_000);
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      unsubscribe();
+    });
+    return undefined;
   });
 
   app.get('/api/plans/:id/readiness', (req, res) => {
@@ -1269,6 +1447,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
             executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], startedArtifacts),
             updatedAt: Date.now(),
           });
+          appendRunStartedEvents(req.params.id, run, startedArtifacts);
+        },
+        onRunEvent: async (run, event) => {
+          appendExecutionEvent(req.params.id, {
+            runId: run.id,
+            type: event.type,
+            message: event.message,
+            ...(run.sectionId ? { sectionId: run.sectionId } : {}),
+            ...(event.type === 'status_changed' ? { status: event.status } : {}),
+          });
         },
       });
       const current = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1280,9 +1468,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
+      for (const run of runs) {
+        if (run.kind === 'section-agent') {
+          appendRunCompletedEvents(req.params.id, run, artifacts.filter((artifact) => run.artifactIds.includes(artifact.id)));
+        }
+      }
+      const eventPlan = getPlan(db, req.params.id) as ProjectPlan | null;
       res.status(201).json({
-        plan: updated,
+        plan: eventPlan ?? updated,
         runs,
+        events: eventPlan?.executionEvents ?? updated.executionEvents ?? [],
         artifacts,
         toolChecks: updated.toolChecks ?? [],
         scaffoldExecution: updated.scaffoldExecution ?? { status: 'not_started' },
@@ -1311,6 +1506,16 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
             executionArtifacts: upsertPlanningExecutionArtifacts(current.executionArtifacts ?? [], startedArtifacts),
             updatedAt: Date.now(),
           });
+          appendRunStartedEvents(req.params.id, startedRun, startedArtifacts);
+        },
+        onRunEvent: async (startedRun, event) => {
+          appendExecutionEvent(req.params.id, {
+            runId: startedRun.id,
+            type: event.type,
+            message: event.message,
+            ...(startedRun.sectionId ? { sectionId: startedRun.sectionId } : {}),
+            ...(event.type === 'status_changed' ? { status: event.status } : {}),
+          });
         },
       });
       const current = getPlan(db, req.params.id) as ProjectPlan | null;
@@ -1322,7 +1527,9 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
-      res.status(201).json({ plan: updated, run, artifacts });
+      appendRunCompletedEvents(req.params.id, run, artifacts);
+      const eventPlan = getPlan(db, req.params.id) as ProjectPlan | null;
+      res.status(201).json({ plan: eventPlan ?? updated, run, events: eventPlan ? eventsForRun(eventPlan, run.id) : [], artifacts });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message ?? err) });
     }
@@ -1667,6 +1874,7 @@ function buildExecutionResponse(plan: ProjectPlan) {
   return {
     plan,
     runs: plan.executionRuns ?? [],
+    events: plan.executionEvents ?? [],
     artifacts: plan.executionArtifacts ?? [],
     toolChecks: plan.toolChecks ?? [],
     scaffoldExecution: plan.scaffoldExecution ?? { status: 'not_started' as const },
@@ -2313,6 +2521,7 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
     runtimePlan: buildRuntimePlan(stack, selectedTools),
     executionActions: buildExecutionActions(input.name, stack, selectedTools, sectionAnswers, repoPatch),
     executionRuns,
+    executionEvents: input.executionEvents ?? [],
     executionArtifacts: input.executionArtifacts ?? [],
     toolChecks: input.toolChecks ?? [],
     scaffoldExecution: input.scaffoldExecution ?? { status: 'not_started' },
@@ -6596,17 +6805,22 @@ function runSectionAgentCommand(request: SectionAgentRunRequest & { command: str
       }
     }, request.timeoutMs);
     child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
+      const text = String(chunk);
+      stdout += text;
       if (stdout.length > 2 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024);
+      request.onEvent?.({ type: 'runner_stdout', message: text });
     });
     child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
+      const text = String(chunk);
+      stderr += text;
       if (stderr.length > 2 * 1024 * 1024) stderr = stderr.slice(-2 * 1024 * 1024);
+      request.onEvent?.({ type: 'runner_stderr', message: text });
     });
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      request.onEvent?.({ type: 'status_changed', status: 'failed', message: `Runner failed to start: ${error.message}` });
       resolve({
         status: 'failed',
         summary: `Section specialist runner failed to start for ${request.section.label}.`,
@@ -6750,6 +6964,7 @@ interface PlanningSectionRunOptions {
   sectionAgentRunner: SectionAgentRunner | undefined;
   scaffoldRoot: string;
   onRunStarted?: (run: PlanningExecutionRun, artifacts: PlanningExecutionArtifact[]) => Promise<void> | void;
+  onRunEvent?: (run: PlanningExecutionRun, event: SectionAgentProgressEvent) => Promise<void> | void;
 }
 
 function upsertPlanningExecutionRuns(
@@ -6766,6 +6981,22 @@ function upsertPlanningExecutionArtifacts(
 ): PlanningExecutionArtifact[] {
   const nextIds = new Set(next.map((artifact) => artifact.id));
   return [...current.filter((artifact) => !nextIds.has(artifact.id)), ...next];
+}
+
+function boundPlanningExecutionEvents(events: PlanningExecutionEvent[]): PlanningExecutionEvent[] {
+  return events.slice(-500);
+}
+
+function redactExecutionEventMessage(message: string): string {
+  return String(message)
+    .replace(/(api[_-]?key|token|secret|password|credential)\s*[:=]\s*['"]?[^'"\s]+/giu, '$1=[redacted]')
+    .slice(0, 2000);
+}
+
+function eventsForRun(plan: ProjectPlan, runId: string): PlanningExecutionEvent[] {
+  return (plan.executionEvents ?? [])
+    .filter((event) => event.runId === runId)
+    .sort((a, b) => a.sequence - b.sequence || a.createdAt - b.createdAt);
 }
 
 async function runPlanningSection(
@@ -6805,8 +7036,7 @@ async function runPlanningSection(
   };
   const manifestArtifact = buildSpecialistAgentManifestArtifact(plan, section, lanes, questions, answer, runId, now);
   const manifest = JSON.parse(manifestArtifact.content) as SpecialistAgentManifest;
-  if (options.sectionAgentRunner && options.onRunStarted) {
-    await options.onRunStarted({
+  const startedRun: PlanningExecutionRun = {
       id: runId,
       planId: plan.id,
       kind: 'section-agent',
@@ -6823,7 +7053,9 @@ async function runPlanningSection(
         answer ? `section answer status: ${answer.status}` : 'no section answer stored yet',
         `specialist manifest: ${manifestArtifact.id}`,
       ],
-    }, [draftArtifact, manifestArtifact]);
+    };
+  if (options.sectionAgentRunner && options.onRunStarted) {
+    await options.onRunStarted(startedRun, [draftArtifact, manifestArtifact]);
   }
   const runnerResult = options.sectionAgentRunner
     ? await options.sectionAgentRunner({
@@ -6833,6 +7065,11 @@ async function runPlanningSection(
       prompt: manifest.prompt,
       cwd: options.scaffoldRoot,
       timeoutMs: 300_000,
+      ...(options.onRunEvent
+        ? { onEvent: (event) => {
+          void options.onRunEvent?.(startedRun, event);
+        } }
+        : {}),
     })
     : undefined;
   if (runnerResult) {
