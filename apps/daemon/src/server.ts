@@ -15,6 +15,7 @@ import {
   defaultScenarioPluginIdForProjectMetadata,
   type OpenDesignGithubLatestReleaseResponse,
   type OpenDesignGithubRepoResponse,
+  type OpsStatusResponse,
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
 } from '@open-design/contracts';
 import {
@@ -2866,6 +2867,22 @@ function isLoopbackPeerAddress(address) {
   return false;
 }
 
+const PUBLIC_API_RATE_LIMIT_WINDOW_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.OD_API_RATE_LIMIT_WINDOW_MS ?? '60000', 10) || 60000,
+);
+const PUBLIC_API_RATE_LIMIT_MAX = Math.max(
+  1,
+  Number.parseInt(process.env.OD_API_RATE_LIMIT_MAX ?? '240', 10) || 240,
+);
+
+function rateLimitPeerKey(req) {
+  const forwarded = String(req.get('cf-connecting-ip') || req.get('x-forwarded-for') || '')
+    .split(',')[0]
+    .trim();
+  return forwarded || req.socket?.remoteAddress || 'unknown';
+}
+
 function localOriginFromHeader(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -3932,6 +3949,31 @@ export async function startServer({
       '/daemon/status',
       '/planning/session',
     ]);
+    const publicApiBuckets = new Map();
+    app.use('/api', (req, res, next) => {
+      if (openProbePaths.has(req.path)) return next();
+      if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      const now = Date.now();
+      const key = rateLimitPeerKey(req);
+      const bucket = publicApiBuckets.get(key);
+      if (!bucket || now >= bucket.resetAt) {
+        publicApiBuckets.set(key, { count: 1, resetAt: now + PUBLIC_API_RATE_LIMIT_WINDOW_MS });
+        return next();
+      }
+      bucket.count += 1;
+      if (bucket.count > PUBLIC_API_RATE_LIMIT_MAX) {
+        const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+        res.set('Retry-After', String(retryAfterSeconds));
+        return sendApiError(
+          res,
+          429,
+          'RATE_LIMITED',
+          'Too many API requests; retry after the current rate-limit window.',
+          { retryAfterSeconds },
+        );
+      }
+      return next();
+    });
     app.use('/api', (req, res, next) => {
       if (openProbePaths.has(req.path)) return next();
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
@@ -4482,6 +4524,61 @@ export async function startServer({
         }
       })(),
     });
+  });
+
+  app.get('/api/ops/status', async (_req, res) => {
+    const statusPath = path.join(RUNTIME_DATA_DIR, 'ops-status.json');
+    const generatedAt = new Date().toISOString();
+    try {
+      const raw = await fs.promises.readFile(statusPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const payload = /** @type {OpsStatusResponse} */ ({
+        ok: true,
+        generatedAt,
+        source: 'runtime-file',
+        service: String(parsed.service || 'open-design-hosted-planner'),
+        checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+        rateLimit: {
+          enabled: apiToken.length > 0,
+          windowMs: PUBLIC_API_RATE_LIMIT_WINDOW_MS,
+          maxRequests: PUBLIC_API_RATE_LIMIT_MAX,
+        },
+        ...(parsed.backup ? { backup: parsed.backup } : {}),
+        ...(parsed.monitor ? { monitor: parsed.monitor } : {}),
+      });
+      return res.json(payload);
+    } catch {
+      const payload = /** @type {OpsStatusResponse} */ ({
+        ok: true,
+        generatedAt,
+        source: 'fallback',
+        service: 'open-design-hosted-planner',
+        checks: [
+          {
+            id: 'ops-status-file',
+            label: 'Ops status file',
+            status: 'unknown',
+            summary: `No ops-status.json found under ${RUNTIME_DATA_DIR}.`,
+            checkedAt: generatedAt,
+          },
+          {
+            id: 'api-rate-limit',
+            label: 'API rate limit',
+            status: apiToken.length > 0 ? 'ok' : 'unknown',
+            summary: apiToken.length > 0
+              ? `${PUBLIC_API_RATE_LIMIT_MAX} requests per ${PUBLIC_API_RATE_LIMIT_WINDOW_MS}ms per public peer.`
+              : 'OD_API_TOKEN is not set, so hosted public API throttling is inactive.',
+            checkedAt: generatedAt,
+          },
+        ],
+        rateLimit: {
+          enabled: apiToken.length > 0,
+          windowMs: PUBLIC_API_RATE_LIMIT_WINDOW_MS,
+          maxRequests: PUBLIC_API_RATE_LIMIT_MAX,
+        },
+      });
+      return res.json(payload);
+    }
   });
 
   // Plan §3.GG1 — `od daemon db status`. Inventory of the SQLite

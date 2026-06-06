@@ -65,14 +65,28 @@ docker run --rm \
 ```
 
 Production backups must also leave the host. The `core1` production timer writes
-local archives under `/root/open-design-backups` and copies the accepted archive
-to the configured offsite target (`OD_BACKUP_OFFSITE_TARGET`, for example an R2
-URI such as `r2://<bucket>/open-design/`). The backup job records its latest
-restore drill manifest at:
+local archives under `/root/open-design-backups`, verifies the accepted archive
+from the off-host copy, and records the latest restore drill manifest at:
 
 ```bash
 /root/open-design-backups/latest-restore-drill.json
 ```
+
+The current hosted planner off-host ladder is:
+
+- Daily backup timer: `open-design-planner-backup.timer` at `03:17 UTC`.
+- Weekly independent restore drill: `open-design-planner-restore-drill.timer` at
+  `04:17 UTC` on Sundays.
+- Current fallback off-host copy: `ssh://heavy1/root/open-design-offsite-backups/open-design/`.
+- Current R2 evidence copy:
+  `r2://backups-postgres-box1/open-design/prod/backups/`.
+
+`core1` does not yet have durable R2 S3/rclone credentials installed. Until that
+credential exists on the host, the backup script keeps `heavy1` as the automated
+off-host fallback and writes R2 as a warning in `.od/ops-status.json` when no R2
+copy was made by the host. Do not remove the heavy1 fallback until
+`/root/open-design-backups/latest-r2-copy.json` is produced by the timer itself,
+not by a one-off local Wrangler upload.
 
 The manifest is intentionally small: backup filename, offsite target, restore
 check, and timestamp. Verify it from an operator shell after backup changes:
@@ -197,6 +211,15 @@ the monitor and backup unit journals:
 TAIL=500 /usr/local/sbin/open-design-planner-logs.sh
 ```
 
+The daemon also exposes live hosted operations state through the protected
+`/api/ops/status` endpoint. The Planning UI reads this endpoint after hosted
+session authentication, and the CLI mirror is:
+
+```bash
+OD_API_TOKEN="$OD_API_TOKEN" \
+od ops status --daemon-url https://open-design.ignitabull.org --json
+```
+
 If Coolify CLI access is unavailable, use the Coolify app terminal/logs screen
 for the same application UUID and keep any copied output free of
 `OD_API_TOKEN`, provider API keys, and session cookies.
@@ -246,7 +269,10 @@ node --experimental-strip-types deploy/scripts/check-hosted-provider-connections
 ```
 
 By default this checks Supermemory, Composio, Trigger.dev, and Cloudflare AI
-Gateway. Narrow the set with `OD_PROVIDER_CONNECTION_IDS=supermemory,composio`.
+Gateway. For the current hosted planner release, AI Gateway is deliberately
+dropped from the required provider set because the hosted daemon does not route
+model calls through AI Gateway yet. Narrow the set with
+`OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev`.
 
 ## Acceptance checklist
 
@@ -282,15 +308,16 @@ Gateway. Narrow the set with `OD_PROVIDER_CONNECTION_IDS=supermemory,composio`.
 
 Use this order for the next provider work:
 
-1. Composio, because Supermemory is already the first connected provider and
-   integration actions depend on connected accounts and
-   webhook/session policy.
-2. Trigger.dev, because long-running workflow execution is valuable only after
-   integrations have real actions to run.
+1. Composio remains blocked until a valid production `COMPOSIO_API_KEY` is
+   available from 1Password. The local `~/.composio/user_data.json` key returned
+   `401 Invalid API key` and must not be installed as production truth.
+2. Trigger.dev is installed in Coolify as `TRIGGER_ACCESS_TOKEN` from the cloud
+   profile; verify it with the read-only projects probe after each deploy.
 3. 1Password, because it is the source of truth for secrets but requires local
    `op` CLI/app authorization to verify.
-4. Cloudflare AI Gateway, because model routing is separate from the hosted
-   planner deployment itself.
+4. Cloudflare AI Gateway is explicitly not required for this hosted planner
+   release. Add it back only when model traffic actually routes through a named
+   gateway and a scoped `CF_AIG_TOKEN` or `CLOUDFLARE_API_TOKEN` is installed.
 5. Additional Supermemory workflows, only after the connection probe remains
    green in the post-deploy gate.
 

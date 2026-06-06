@@ -1227,6 +1227,22 @@
   font-weight: 650;
 }
 
+.planning-view__ops-grid span[data-status="ok"] {
+  border-color: color-mix(in srgb, #15803d 42%, var(--border));
+  color: #15803d;
+}
+
+.planning-view__ops-grid span[data-status="warn"],
+.planning-view__ops-grid span[data-status="unknown"] {
+  border-color: color-mix(in srgb, #a16207 42%, var(--border));
+  color: #a16207;
+}
+
+.planning-view__ops-grid span[data-status="error"] {
+  border-color: color-mix(in srgb, #b91c1c 42%, var(--border));
+  color: #b91c1c;
+}
+
 .planning-view__ops-grid small {
   color: var(--text-muted);
   font-size: 12px;

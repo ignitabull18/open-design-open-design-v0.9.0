@@ -175,6 +175,8 @@ const DAEMON_BOOLEAN_FLAGS = new Set([
 ]);
 const LIBRARY_STRING_FLAGS = new Set(['daemon-url', 'query', 'tag']);
 const LIBRARY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
+const OPS_STRING_FLAGS = new Set(['daemon-url', 'token', 'token-file']);
+const OPS_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const PROJECT_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'skill', 'design-system', 'plugin', 'metadata-json',
   'pending-prompt', 'project', 'conversation', 'message', 'path', 'as',
@@ -266,6 +268,7 @@ const SUBCOMMAND_MAP = {
   'design-systems': runDesignSystems,
   craft: runCraft,
   diagnostics: runDiagnostics,
+  ops: runOps,
   status: runStatus,
   version: runVersion,
   doctor: runDoctor,
@@ -6674,6 +6677,47 @@ async function runVersion(args) {
     ? data.version
     : (data?.version?.version ?? JSON.stringify(data));
   console.log(version);
+}
+
+async function runOps(args) {
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage:
+  od ops status [--json] [--daemon-url <url>] [--token <token>|--token-file <path|->]
+
+Print hosted operations status from /api/ops/status. Use --token or OD_API_TOKEN
+when querying a hosted daemon protected by OD_API_TOKEN.`);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const sub = args[0];
+  if (sub !== 'status') {
+    console.error(`unknown subcommand: od ops ${sub}`);
+    process.exit(2);
+  }
+  const flags = parseFlags(args.slice(1), { string: OPS_STRING_FLAGS, boolean: OPS_BOOLEAN_FLAGS });
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const token = typeof flags.token === 'string'
+    ? flags.token
+    : flags['token-file']
+      ? readTextFlag(flags['token-file'], '--token-file').trim()
+      : (process.env.OD_API_TOKEN || '').trim();
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/ops/status`, {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
+  } catch (err) {
+    return exitWithStructuredError({
+      code: 'daemon-not-running',
+      message: `Cannot reach daemon at ${base}: ${err?.message ?? err}`,
+    });
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  console.log(`[ops] ${data.service ?? 'open-design'} source=${data.source ?? 'unknown'}`);
+  for (const check of Array.isArray(data.checks) ? data.checks : []) {
+    console.log(`  ${check.status ?? 'unknown'}  ${check.label ?? check.id}: ${check.summary ?? ''}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

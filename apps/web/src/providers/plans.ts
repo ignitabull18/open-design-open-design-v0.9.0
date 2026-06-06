@@ -6,6 +6,7 @@ import type {
   ExecuteProjectPlanActionRequest,
   ExecuteProjectPlanLaunchRequest,
   CreateProjectIdeationRequest,
+  OpsStatusResponse,
   PlanningExecutionEvent,
   PlanningSessionResponse,
   ProjectPlanExecutionResponse,
@@ -72,6 +73,10 @@ function planningApiUrl(path: string): string {
 
 export function getPlanningSession(): Promise<PlanningSessionResponse> {
   return jsonFetch<PlanningSessionResponse>('/api/planning/session');
+}
+
+export function getOpsStatus(): Promise<OpsStatusResponse> {
+  return jsonFetch<OpsStatusResponse>('/api/ops/status');
 }
 
 export function createPlanningSession(input: CreatePlanningSessionRequest): Promise<PlanningSessionResponse> {

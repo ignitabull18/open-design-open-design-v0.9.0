@@ -9,6 +9,7 @@ import type {
   ProviderCapabilitySnapshot,
   ProjectIdeationSession,
   ProjectLaunchProofReport,
+  OpsStatusResponse,
   ProjectLaunchPreview,
   ProjectPlan,
   ProjectPlanReadinessReport,
@@ -27,6 +28,7 @@ import {
   createProjectPlan,
   executeProjectPlanLaunch,
   executeProjectPlanAction,
+  getOpsStatus,
   getProjectPlanExecution,
   getProjectLaunchProof,
   getProjectPlanLaunchPreview,
@@ -154,6 +156,7 @@ export function PlanningView() {
   const [readinessByPlanId, setReadinessByPlanId] = useState<Record<string, ProjectPlanReadinessReport>>({});
   const [proofByPlanId, setProofByPlanId] = useState<Record<string, ProjectLaunchProofReport>>({});
   const [launchPreviewByPlanId, setLaunchPreviewByPlanId] = useState<Record<string, ProjectLaunchPreview>>({});
+  const [opsStatus, setOpsStatus] = useState<OpsStatusResponse | null>(null);
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
   const [sectionSaving, setSectionSaving] = useState<string | null>(null);
@@ -224,6 +227,21 @@ export function PlanningView() {
       cancelled = true;
     };
   }, [loadPlanningData]);
+
+  useEffect(() => {
+    if (authRequired) return;
+    let cancelled = false;
+    void getOpsStatus()
+      .then((result) => {
+        if (!cancelled) setOpsStatus(result);
+      })
+      .catch(() => {
+        if (!cancelled) setOpsStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authRequired, loading]);
 
   const selectedPlan = useMemo(
     () => plans.find((plan) => plan.id === selectedId) ?? plans[0] ?? null,
@@ -938,6 +956,7 @@ export function PlanningView() {
               onRefreshCapabilities={handleRefreshCapabilities}
               onRunDueCapabilityRefresh={handleRunDueCapabilityRefresh}
               onToggleCapabilityRefreshSchedule={handleToggleCapabilityRefreshSchedule}
+              opsStatus={opsStatus}
               refreshingCapabilities={refreshingCapabilities}
               artifactSaving={artifactSaving}
               artifactKind={artifactKind}
@@ -1066,22 +1085,34 @@ function LaunchProofPanel({ proof }: { proof: ProjectLaunchProofReport | null })
   );
 }
 
-function HostedOperationsPanel() {
+function HostedOperationsPanel({ opsStatus }: { opsStatus: OpsStatusResponse | null }) {
+  const items: Array<{ label: string; status: string; detail: string; checkedAt?: string }> = opsStatus?.checks.length
+    ? opsStatus.checks.map((check) => ({
+      label: check.label,
+      status: check.status,
+      detail: check.summary,
+      checkedAt: check.checkedAt,
+    }))
+    : HOSTED_OPERATIONS_ITEMS.map((item) => ({ ...item }));
+  const headingDetail = opsStatus
+    ? `${opsStatus.service} · ${opsStatus.generatedAt}`
+    : 'Production checks for open-design.ignitabull.org.';
   return (
     <section className="planning-view__readiness planning-view__ops" aria-label="Hosted operations">
       <div className="planning-view__readiness-head">
         <div>
           <h3>Hosted operations</h3>
-          <p>Production checks for open-design.ignitabull.org.</p>
+          <p>{headingDetail}</p>
         </div>
-        <span>active</span>
+        <span>{opsStatus?.source ?? 'static'}</span>
       </div>
       <div className="planning-view__ops-grid">
-        {HOSTED_OPERATIONS_ITEMS.map((item) => (
+        {items.map((item) => (
           <article key={item.label}>
             <strong>{item.label}</strong>
-            <span>{item.status}</span>
+            <span data-status={item.status}>{item.status}</span>
             <small>{item.detail}</small>
+            {item.checkedAt ? <small>{item.checkedAt}</small> : null}
           </article>
         ))}
       </div>
@@ -1128,6 +1159,7 @@ function PlanDetail({
   onRefreshCapabilities,
   onRunDueCapabilityRefresh,
   onToggleCapabilityRefreshSchedule,
+  opsStatus,
   artifactSaving,
   artifactKind,
   artifactTitle,
@@ -1184,6 +1216,7 @@ function PlanDetail({
   onRefreshCapabilities: () => void;
   onRunDueCapabilityRefresh: (force?: boolean) => void;
   onToggleCapabilityRefreshSchedule: (enabled: boolean) => void;
+  opsStatus: OpsStatusResponse | null;
   artifactSaving: boolean;
   artifactKind: PlanningExecutionArtifact['kind'];
   artifactTitle: string;
@@ -1249,7 +1282,7 @@ function PlanDetail({
       </div>
       <ReadinessPanel readiness={readiness} />
       <LaunchProofPanel proof={proof} />
-      <HostedOperationsPanel />
+      <HostedOperationsPanel opsStatus={opsStatus} />
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
       <div className="planning-view__connected-tools">
         <div className="planning-view__tool-summary">
