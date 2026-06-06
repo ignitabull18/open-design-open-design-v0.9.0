@@ -109,13 +109,25 @@ node --experimental-strip-types deploy/scripts/check-hosted-provider-readiness.t
 ```
 
 The post-deploy wrapper runs monitor, smoke, provider readiness, and Coolify
-backup readiness in one command:
+backup readiness in one command. It also probes live provider credentials when
+their env vars are present.
 
 ```bash
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
 OD_API_TOKEN="$OD_API_TOKEN" \
 OD_PLAN_ID=<production-plan-id> \
 node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
+```
+
+To make a Docker/Compose update fail closed when the hosted gate is missing or
+red, run:
+
+```bash
+OPEN_DESIGN_RUN_POST_DEPLOY_CHECK=1 \
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+deploy/scripts/update.sh --non-interactive
 ```
 
 ## Data, backup, and restore
@@ -135,6 +147,15 @@ The command prints the current Coolify storage name and host-side backup/restore
 commands. Use those generated commands for `open-design.ignitabull.org`; the
 local Compose `open_design_data` examples below are only for the local compose
 layout.
+
+Production backups should be copied off-host after the local archive is created.
+For the Ignitabull host, the backup job records the latest restore proof in
+`/root/open-design-backups/latest-restore-drill.json`. Verify the manifest with:
+
+```bash
+OD_BACKUP_DRILL_MANIFEST=/root/open-design-backups/latest-restore-drill.json \
+node --experimental-strip-types deploy/scripts/check-hosted-backup-drill.ts
+```
 
 Back up before image upgrades and before opening the same data with an older
 checkout:

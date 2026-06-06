@@ -64,6 +64,24 @@ docker run --rm \
   alpine sh -c 'cd /data && tar czf "/backup/open-design-$(date +%Y%m%d-%H%M%S).tgz" .'
 ```
 
+Production backups must also leave the host. The `core1` production timer writes
+local archives under `/root/open-design-backups` and copies the accepted archive
+to the configured offsite target (`OD_BACKUP_OFFSITE_TARGET`, for example an R2
+URI such as `r2://<bucket>/open-design/`). The backup job records its latest
+restore drill manifest at:
+
+```bash
+/root/open-design-backups/latest-restore-drill.json
+```
+
+The manifest is intentionally small: backup filename, offsite target, restore
+check, and timestamp. Verify it from an operator shell after backup changes:
+
+```bash
+OD_BACKUP_DRILL_MANIFEST=/root/open-design-backups/latest-restore-drill.json \
+node --experimental-strip-types deploy/scripts/check-hosted-backup-drill.ts
+```
+
 Restore only while the service is stopped, then run the hosted smoke before
 calling the restore accepted:
 
@@ -89,6 +107,12 @@ OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
 OD_API_TOKEN="$OD_API_TOKEN" \
 node --experimental-strip-types deploy/scripts/monitor-hosted-planner.ts
 ```
+
+Set `OD_ALERT_WEBHOOK_URL` on scheduled monitor runs to send failures to the
+production alert destination. The webhook receives a JSON payload with
+`service`, `ok`, `baseUrl`, `message`, and `checkedAt`. If the destination needs
+a bearer token, set `OD_ALERT_WEBHOOK_TOKEN`; set `OD_ALERT_ON_SUCCESS=1` only
+for one-off delivery tests.
 
 It verifies:
 
@@ -123,13 +147,25 @@ Required success shape:
 Any failure is a release blocker unless it is a deliberate token mismatch check.
 
 The single post-deploy gate runs monitor, smoke, provider readiness, and Coolify
-backup readiness:
+backup readiness. It also runs provider connection probes for configured
+provider credentials:
 
 ```bash
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
 OD_API_TOKEN="$OD_API_TOKEN" \
 OD_PLAN_ID=<production-plan-id> \
 node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
+```
+
+For Docker/Compose style updates, `deploy/scripts/update.sh` can run this gate
+automatically after the local health check:
+
+```bash
+OPEN_DESIGN_RUN_POST_DEPLOY_CHECK=1 \
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+deploy/scripts/update.sh --non-interactive
 ```
 
 ## Production logs
@@ -151,6 +187,14 @@ origin connection errors.
 ```bash
 journalctl -u cloudflared --since "30 minutes ago" --no-pager
 journalctl -u cloudflared -f
+```
+
+On `core1`, the hosted operations helper combines the app container logs with
+the monitor and backup unit journals:
+
+```bash
+/usr/local/sbin/open-design-planner-logs.sh
+TAIL=500 /usr/local/sbin/open-design-planner-logs.sh
 ```
 
 If Coolify CLI access is unavailable, use the Coolify app terminal/logs screen
@@ -192,6 +236,18 @@ Minimum readiness inventory:
 | Supermemory | memory-backed planning | connected or deferred; authentication remains a production-readiness gate |
 | 1Password | secret source of truth | token and provider credentials are stored outside repo and are retrievable by operator |
 
+Provider readiness is plan metadata. Run provider connection probes when a
+credential is meant to be live:
+
+```bash
+SUPERMEMORY_API_KEY="$SUPERMEMORY_API_KEY" \
+COMPOSIO_API_KEY="$COMPOSIO_API_KEY" \
+node --experimental-strip-types deploy/scripts/check-hosted-provider-connections.ts
+```
+
+By default this checks Supermemory, Composio, Trigger.dev, and Cloudflare AI
+Gateway. Narrow the set with `OD_PROVIDER_CONNECTION_IDS=supermemory,composio`.
+
 ## Acceptance checklist
 
 - Hosted auth bridge: Planning UI unlocks with the daemon token and then uses the
@@ -215,21 +271,28 @@ Minimum readiness inventory:
   documented in this file and `deploy/README.md`.
 - Full production pass: browser login, plan creation, section run, event display,
   reload persistence, and CLI/API smoke are all green.
+- Browser acceptance artifact: attach `/tmp/open-design-planning-acceptance.png`
+  or a refreshed screenshot to release notes/PRs when UI or hosted route
+  behavior changes.
+- Hardening: protected APIs return `401` without auth, monitor alerts have a
+  delivery target, backups leave the host, restore drill manifest is current,
+  and public-origin changes include a rate-limit/auth review.
 
 ## Current provider order
 
 Use this order for the next provider work:
 
-1. Supermemory, because `SUPERMEMORY_API_KEY`/`SUPERMEMORY_CODEX_API_KEY` can be
-   checked from an operator shell and memory-backed planning is user-visible.
-2. Composio, because integration actions depend on connected accounts and
+1. Composio, because Supermemory is already the first connected provider and
+   integration actions depend on connected accounts and
    webhook/session policy.
-3. Trigger.dev, because long-running workflow execution is valuable only after
+2. Trigger.dev, because long-running workflow execution is valuable only after
    integrations have real actions to run.
-4. 1Password, because it is the source of truth for secrets but requires local
+3. 1Password, because it is the source of truth for secrets but requires local
    `op` CLI/app authorization to verify.
-5. Cloudflare AI Gateway, because model routing is separate from the hosted
+4. Cloudflare AI Gateway, because model routing is separate from the hosted
    planner deployment itself.
+5. Additional Supermemory workflows, only after the connection probe remains
+   green in the post-deploy gate.
 
 Do not mark a provider as ready just because it is selected in a plan. The
 production plan must record each selected provider as `connected` or `deferred`

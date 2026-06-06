@@ -53,6 +53,29 @@ const HOSTING_OPTIONS: NonNullable<ProjectStackDecision['hosting']> = [
   'hostinger',
 ];
 
+const HOSTED_OPERATIONS_ITEMS = [
+  {
+    label: 'Monitor',
+    status: 'every 5 min',
+    detail: '/api/health and /api/daemon/status with webhook alert delivery',
+  },
+  {
+    label: 'Backup',
+    status: 'daily',
+    detail: '/app/.od SQLite archive with offsite copy and restore drill manifest',
+  },
+  {
+    label: 'Deploy gate',
+    status: 'required',
+    detail: 'post-deploy wrapper runs monitor, smoke, provider probes, and storage checks',
+  },
+  {
+    label: 'Logs',
+    status: 'runbook',
+    detail: 'Coolify app logs plus host monitor, backup, and tunnel journals',
+  },
+];
+
 const INITIAL_STACK: ProjectStackDecision = {
   frontend: 'next',
   backend: 'hono',
@@ -1043,6 +1066,29 @@ function LaunchProofPanel({ proof }: { proof: ProjectLaunchProofReport | null })
   );
 }
 
+function HostedOperationsPanel() {
+  return (
+    <section className="planning-view__readiness planning-view__ops" aria-label="Hosted operations">
+      <div className="planning-view__readiness-head">
+        <div>
+          <h3>Hosted operations</h3>
+          <p>Production checks for open-design.ignitabull.org.</p>
+        </div>
+        <span>active</span>
+      </div>
+      <div className="planning-view__ops-grid">
+        {HOSTED_OPERATIONS_ITEMS.map((item) => (
+          <article key={item.label}>
+            <strong>{item.label}</strong>
+            <span>{item.status}</span>
+            <small>{item.detail}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function PlanDetail({
   plan,
   readiness,
@@ -1203,6 +1249,7 @@ function PlanDetail({
       </div>
       <ReadinessPanel readiness={readiness} />
       <LaunchProofPanel proof={proof} />
+      <HostedOperationsPanel />
       <pre className="planning-view__command"><code>{plan.scaffold.command}</code></pre>
       <div className="planning-view__connected-tools">
         <div className="planning-view__tool-summary">

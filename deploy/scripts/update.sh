@@ -129,6 +129,19 @@ else
   step "Check logs: ${COMPOSE_CMD} \"${COMPOSE_FILES[@]}\" logs"
 fi
 
+if [ "${OPEN_DESIGN_RUN_POST_DEPLOY_CHECK:-0}" = "1" ]; then
+  if [ -n "${OD_HOSTED_BASE_URL:-}" ] && [ -n "${OD_API_TOKEN:-}" ] && [ -n "${OD_PLAN_ID:-}" ]; then
+    step "Running hosted post-deploy verification..."
+    node --experimental-strip-types "${DEPLOY_DIR}/scripts/run-hosted-post-deploy.ts"
+    ok "Hosted post-deploy verification passed."
+  else
+    warn "Skipping hosted post-deploy verification because OD_HOSTED_BASE_URL, OD_API_TOKEN, or OD_PLAN_ID is missing."
+    if [ "$NON_INTERACTIVE" = "1" ]; then
+      exit 1
+    fi
+  fi
+fi
+
 # Clean up dangling images
 step "Cleaning up old images..."
 # shellcheck disable=SC2086

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { monitorHostedPlanner } from '../scripts/monitor-hosted-planner.ts';
+import { monitorHostedPlanner, sendHostedPlannerAlert } from '../scripts/monitor-hosted-planner.ts';
 
 const token = 'test-token';
 let server: http.Server | undefined;
@@ -90,4 +90,33 @@ test('monitor rejects a public API that is not token protected', async () => {
     () => monitorHostedPlanner({ baseUrl: `http://127.0.0.1:${address.port}` }),
     /without auth expected 401/,
   );
+});
+
+test('monitor alert posts a structured webhook payload', async () => {
+  let payload: Record<string, unknown> | undefined;
+  server = http.createServer(async (req, res) => {
+    payload = await readBody(req);
+    res.writeHead(202, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  });
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server!.once('listening', resolve);
+    server!.once('error', reject);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('missing mock server address');
+
+  const result = await sendHostedPlannerAlert({
+    alertWebhookUrl: `http://127.0.0.1:${address.port}/alert`,
+    baseUrl: 'https://open-design.ignitabull.org',
+    ok: false,
+    message: 'monitor failed',
+  });
+
+  assert.deepEqual(result, { ok: true, webhookStatus: 202 });
+  assert.equal(payload?.service, 'open-design-hosted-planner');
+  assert.equal(payload?.ok, false);
+  assert.equal(payload?.baseUrl, 'https://open-design.ignitabull.org');
+  assert.equal(payload?.message, 'monitor failed');
 });

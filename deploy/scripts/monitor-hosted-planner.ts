@@ -14,9 +14,22 @@ export interface HostedPlannerMonitorResult {
   planningSessionAuthenticated?: boolean;
 }
 
+export interface HostedPlannerAlertResult {
+  ok: true;
+  webhookStatus: number;
+}
+
 interface HostedPlannerMonitorOptions {
   baseUrl?: string;
   apiToken?: string;
+}
+
+interface HostedPlannerAlertOptions {
+  alertWebhookUrl?: string;
+  baseUrl?: string;
+  message: string;
+  ok: boolean;
+  service?: string;
 }
 
 export async function monitorHostedPlanner(options: HostedPlannerMonitorOptions = {}): Promise<HostedPlannerMonitorResult> {
@@ -84,6 +97,37 @@ export async function monitorHostedPlanner(options: HostedPlannerMonitorOptions 
   };
 }
 
+export async function sendHostedPlannerAlert(options: HostedPlannerAlertOptions): Promise<HostedPlannerAlertResult | null> {
+  const alertWebhookUrl = (options.alertWebhookUrl || process.env.OD_ALERT_WEBHOOK_URL || '').trim();
+  if (!alertWebhookUrl) return null;
+
+  const service = options.service || process.env.OD_ALERT_SERVICE || 'open-design-hosted-planner';
+  const baseUrl = (options.baseUrl || process.env.OD_HOSTED_BASE_URL || 'https://open-design.ignitabull.org').replace(/\/$/, '');
+  const payload = {
+    service,
+    ok: options.ok,
+    baseUrl,
+    message: options.message,
+    checkedAt: new Date().toISOString(),
+  };
+
+  const response = await fetch(alertWebhookUrl, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(process.env.OD_ALERT_WEBHOOK_TOKEN
+        ? { authorization: `Bearer ${process.env.OD_ALERT_WEBHOOK_TOKEN}` }
+        : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Alert webhook failed with ${response.status}: ${body}`);
+  }
+  return { ok: true, webhookStatus: response.status };
+}
+
 async function getJson(url: string): Promise<{ status: number; body: JsonObject }> {
   const response = await fetch(url);
   const body = await response.json().catch(() => ({}));
@@ -91,8 +135,26 @@ async function getJson(url: string): Promise<{ status: number; body: JsonObject 
 }
 
 async function main() {
-  const result = await monitorHostedPlanner();
-  console.log(JSON.stringify(result, null, 2));
+  const baseUrl = (process.env.OD_HOSTED_BASE_URL || 'https://open-design.ignitabull.org').replace(/\/$/, '');
+  try {
+    const result = await monitorHostedPlanner();
+    if (process.env.OD_ALERT_ON_SUCCESS === '1') {
+      await sendHostedPlannerAlert({
+        baseUrl,
+        ok: true,
+        message: `Hosted planner monitor passed for ${baseUrl}.`,
+      });
+    }
+    console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await sendHostedPlannerAlert({ baseUrl, ok: false, message });
+    } catch (alertError) {
+      console.error(alertError instanceof Error ? alertError.message : String(alertError));
+    }
+    throw error;
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

@@ -1197,6 +1197,42 @@
   line-height: 1.4;
 }
 
+.planning-view__ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.planning-view__ops-grid article {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__ops-grid strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.planning-view__ops-grid span {
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong, var(--accent));
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.planning-view__ops-grid small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .planning-view__action,
 .planning-view__capability {
   display: grid;
@@ -1418,7 +1454,8 @@
   .planning-view__section-agent-summary,
   .planning-view__section-dependency-grid,
   .planning-view__workboard-groups,
-  .planning-view__lane {
+  .planning-view__lane,
+  .planning-view__ops-grid {
     grid-template-columns: 1fr;
   }
 
