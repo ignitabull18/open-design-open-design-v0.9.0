@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "open-design-backup-ingest",
+  "main": "./open-design-backup-ingest.ts",
+  "compatibility_date": "2026-06-06",
+  "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "BACKUP_BUCKET",
+      "bucket_name": "backups-postgres-box1"
+    }
+  ]
+}

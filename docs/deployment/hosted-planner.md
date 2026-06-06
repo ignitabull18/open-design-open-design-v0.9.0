@@ -77,16 +77,20 @@ The current hosted planner off-host ladder is:
 - Daily backup timer: `open-design-planner-backup.timer` at `03:17 UTC`.
 - Weekly independent restore drill: `open-design-planner-restore-drill.timer` at
   `04:17 UTC` on Sundays.
-- Current fallback off-host copy: `ssh://heavy1/root/open-design-offsite-backups/open-design/`.
-- Current R2 evidence copy:
+- Primary off-host copy:
   `r2://backups-postgres-box1/open-design/prod/backups/`.
+- Upload/download path: Cloudflare Worker
+  `open-design-backup-ingest` at
+  `https://open-design-backup-ingest.lingering-rain-68b6.workers.dev`, backed by
+  R2 binding `BACKUP_BUCKET`.
+- Secondary fallback copy:
+  `ssh://heavy1/root/open-design-offsite-backups/open-design/`.
 
-`core1` does not yet have durable R2 S3/rclone credentials installed. Until that
-credential exists on the host, the backup script keeps `heavy1` as the automated
-off-host fallback and writes R2 as a warning in `.od/ops-status.json` when no R2
-copy was made by the host. Do not remove the heavy1 fallback until
-`/root/open-design-backups/latest-r2-copy.json` is produced by the timer itself,
-not by a one-off local Wrangler upload.
+`core1` does not store broad Wrangler OAuth or R2 S3 credentials. It stores only
+the Worker upload token in `/root/open-design-ops.env`; the Worker enforces that
+token and restricts keys to `open-design/prod/backups/open-design-*.tgz`.
+`/root/open-design-backups/latest-r2-copy.json` must be produced by the backup
+timer itself before the restore drill is accepted as R2-backed.
 
 The manifest is intentionally small: backup filename, offsite target, restore
 check, and timestamp. Verify it from an operator shell after backup changes:

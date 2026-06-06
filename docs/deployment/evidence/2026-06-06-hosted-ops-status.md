@@ -24,8 +24,10 @@ Hosted operations:
 - Weekly restore drill timer: `ok`
 - Alerting: `ok`
 - API rate limit: `ok`, `240` requests per `60000ms`
-- R2 evidence copy: `r2://backups-postgres-box1/open-design/prod/backups/open-design-20260606T204706Z.tgz`
-- Automated off-host fallback still active: `ssh://heavy1/root/open-design-offsite-backups/open-design/open-design-20260606T204706Z.tgz`
+- R2 Worker: `open-design-backup-ingest`, version `05d721e4-24c2-4262-bec0-17a37a6893d3`
+- R2 verified timer copy: `r2://backups-postgres-box1/open-design/prod/backups/open-design-20260606T213018Z.tgz`
+- Restore manifest: `restoreCheck=sqlite-header-ok`, `checkedAt=2026-06-06T21:30:24Z`
+- Secondary fallback still retained: `ssh://heavy1/root/open-design-offsite-backups/open-design/`
 
 Provider proof:
 
