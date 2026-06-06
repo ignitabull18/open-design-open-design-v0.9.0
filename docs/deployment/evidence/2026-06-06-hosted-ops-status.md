@@ -37,7 +37,7 @@ Provider proof:
 - Connected: `cloudflare-hosting`, `supermemory`
 - Deferred: `github`
 - Cloudflare AI Gateway: explicitly dropped from required release set because hosted planner traffic is not routed through AI Gateway.
-- Composio: blocked. The local `~/.composio/user_data.json` key returned `401 Invalid API key`; 1Password is signed out, so no valid production key was installed.
+- Composio: connected. `COMPOSIO_API_KEY` is installed in Coolify from the 1Password `Composio API - Prod` item; the read-only connected accounts probe returned `200`.
 
 Browser proof:
 

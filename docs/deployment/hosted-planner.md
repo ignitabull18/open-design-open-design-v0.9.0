@@ -312,13 +312,12 @@ model calls through AI Gateway yet. Narrow the set with
 
 Use this order for the next provider work:
 
-1. Composio remains blocked until a valid production `COMPOSIO_API_KEY` is
-   available from 1Password. The local `~/.composio/user_data.json` key returned
-   `401 Invalid API key` and must not be installed as production truth.
+1. Composio is installed in Coolify as `COMPOSIO_API_KEY` from the 1Password
+   `Composio API - Prod` item. Verify it with the read-only connected accounts
+   probe after each deploy.
 2. Trigger.dev is installed in Coolify as `TRIGGER_ACCESS_TOKEN` from the cloud
    profile; verify it with the read-only projects probe after each deploy.
-3. 1Password, because it is the source of truth for secrets but requires local
-   `op` CLI/app authorization to verify.
+3. 1Password, because it remains the source of truth for provider credentials.
 4. Cloudflare AI Gateway is explicitly not required for this hosted planner
    release. Add it back only when model traffic actually routes through a named
    gateway and a scoped `CF_AIG_TOKEN` or `CLOUDFLARE_API_TOKEN` is installed.
