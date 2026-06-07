@@ -1718,7 +1718,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         ...result.planPatch,
-        metadata: appendLaunchExternalWriteAudit(result.planPatch.metadata ?? existing.metadata, result.runs, existing.executionActions),
+        metadata: appendLaunchExternalWriteAudit(existing.metadata, result.runs, existing.executionActions),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
