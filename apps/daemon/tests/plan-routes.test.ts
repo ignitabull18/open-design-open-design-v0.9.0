@@ -954,6 +954,106 @@ describe('planning routes', () => {
     ]));
   });
 
+  it('records plan ops audit entries for clone, archive, promotion, artifact export, and smoke cleanup', async () => {
+    const baseUrl = await startPlanServer();
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Ops Audit Studio',
+        intent: { purpose: 'Track planning operations as auditable evidence.' },
+        selectedTools: [
+          { toolId: 'github', status: 'wanted' },
+          { toolId: 'cloudflare-hosting', status: 'wanted' },
+        ],
+        stack: {
+          frontend: 'next',
+          backend: 'hono',
+          runtime: 'workers',
+          database: 'supabase',
+          auth: 'better-auth',
+        },
+      }),
+    });
+    const planId = created.body.plan.id;
+
+    const artifact = await jsonFetch(`${baseUrl}/api/plans/${planId}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'deployment-plan',
+        title: 'Hosted evidence packet',
+        content: 'Cloudflare DNS, Coolify deployment, backup, and release checklist proof.',
+      }),
+    });
+    const exported = await fetch(`${baseUrl}/api/plans/${planId}/artifacts?export=json&kind=deployment-plan`);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get('content-type')).toContain('application/json');
+    expect(await exported.json()).toMatchObject({
+      planId,
+      artifacts: [expect.objectContaining({ id: artifact.body.artifact.id })],
+    });
+
+    const cloned = await jsonFetch(`${baseUrl}/api/plans/${planId}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Ops Audit Studio copy' }),
+    });
+    expect(cloned.status).toBe(201);
+    expect(cloned.body.sourcePlan.metadata.externalWriteAudit[0]).toMatchObject({
+      operation: 'clone',
+      target: cloned.body.plan.id,
+      status: 'completed',
+    });
+
+    const archived = await jsonFetch(`${baseUrl}/api/plans/${planId}/archive`, {
+      method: 'POST',
+      body: JSON.stringify({ archived: true, reason: 'Covered by route test.' }),
+    });
+    expect(archived.body.plan.metadata).toMatchObject({
+      archiveReason: 'Covered by route test.',
+    });
+    expect(archived.body.plan.metadata.externalWriteAudit[0]).toMatchObject({
+      operation: 'archive',
+      status: 'completed',
+    });
+
+    const promoted = await jsonFetch(`${baseUrl}/api/plans/${planId}/release-promotion`, {
+      method: 'POST',
+      body: JSON.stringify({
+        tag: 'ops-audit-v1',
+        commit: 'abc123',
+        evidenceArtifactId: artifact.body.artifact.id,
+      }),
+    });
+    expect(promoted.status).toBe(201);
+    expect(promoted.body.releasePromotion).toMatchObject({
+      tag: 'ops-audit-v1',
+      commit: 'abc123',
+      evidenceArtifactId: artifact.body.artifact.id,
+    });
+    expect(promoted.body.plan.metadata.externalWriteAudit[0]).toMatchObject({
+      operation: 'release-promotion',
+      target: 'ops-audit-v1',
+    });
+
+    const nonSmokeDelete = await jsonFetch(`${baseUrl}/api/plans/${planId}`, { method: 'DELETE' });
+    expect(nonSmokeDelete.status).toBe(409);
+
+    const smoke = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Hosted smoke route test',
+        intent: { purpose: 'Hosted smoke cleanup target.' },
+      }),
+    });
+    const cleaned = await jsonFetch(`${baseUrl}/api/plans/smoke/cleanup`, {
+      method: 'POST',
+      body: JSON.stringify({ olderThanMs: 0 }),
+    });
+    expect(cleaned.status).toBe(200);
+    expect(cleaned.body.archivedPlanIds).toContain(smoke.body.plan.id);
+    const deletedSmoke = await jsonFetch(`${baseUrl}/api/plans/${smoke.body.plan.id}`, { method: 'DELETE' });
+    expect(deletedSmoke.status).toBe(200);
+  });
+
   it('reports plan readiness and next execution work from current state', async () => {
     const baseUrl = await startPlanServer();
     const created = await jsonFetch(`${baseUrl}/api/plans`, {
@@ -1684,6 +1784,10 @@ describe('planning routes', () => {
         kind: 'launch-summary',
         title: expect.stringContaining('Launch sequence summary'),
       }),
+    ]));
+    expect(executed.body.plan.metadata.externalWriteAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actionId: 'provider-setup', status: 'completed' }),
+      expect.objectContaining({ actionId: 'repo-create', status: 'blocked' }),
     ]));
   });
 

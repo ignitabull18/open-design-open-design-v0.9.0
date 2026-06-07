@@ -274,6 +274,7 @@ export interface PlanningToolCheck {
 export interface ProjectPlanExternalWriteAuditEntry {
   id: string;
   actionId?: PlanningExecutionAction['id'];
+  operation?: 'clone' | 'archive' | 'unarchive' | 'release-promotion' | 'hard-delete' | 'smoke-cleanup' | 'external-write';
   target: string;
   mode: PlanningExecutionRun['mode'];
   status: PlanningExecutionRun['status'];
@@ -302,6 +303,8 @@ export interface ProjectPlanMetadata {
   clonedFromPlanId?: string;
   archivedAt?: number;
   archiveReason?: string;
+  smokePlan?: boolean;
+  smokeCompletedAt?: number;
   providerPolicy?: ProjectPlanProviderPolicy;
   externalWriteAudit?: ProjectPlanExternalWriteAuditEntry[];
   opsEvidence?: ProjectPlanOpsEvidence[];
@@ -468,6 +471,12 @@ export interface ArchiveProjectPlanRequest {
   reason?: string;
 }
 
+export interface PromoteProjectPlanReleaseRequest {
+  tag?: string;
+  commit?: string;
+  evidenceArtifactId?: string;
+}
+
 export interface UpdateProjectPlanProviderPolicyRequest {
   requiredToolIds?: PlanningToolId[];
   staleAfterMs?: number;
@@ -478,6 +487,7 @@ export interface ProjectPlanArtifactsQuery {
   kind?: PlanningExecutionArtifact['kind'];
   runId?: string;
   search?: string;
+  export?: 'markdown' | 'json';
 }
 
 export type ProjectPlanReadinessStatus = 'ready' | 'in_progress' | 'blocked' | 'not_started';
@@ -670,6 +680,32 @@ export interface ProjectPlanToolCheckResponse {
 export interface ProjectPlanToolStatusResponse {
   plan: ProjectPlan;
   toolCheck: PlanningToolCheck;
+}
+
+export interface ProjectPlanProviderPolicyReport {
+  policy: ProjectPlanProviderPolicy;
+  required: Array<{
+    toolId: PlanningToolId;
+    status: ProjectToolConnection['status'];
+    stale: boolean;
+    checkedAt?: number;
+    summary: string;
+  }>;
+  staleToolIds: PlanningToolId[];
+  missingToolIds: PlanningToolId[];
+  blockedToolIds: PlanningToolId[];
+}
+
+export interface ProjectPlanProviderPolicyResponse {
+  plan: ProjectPlan;
+  providerPolicy: ProjectPlanProviderPolicyReport;
+}
+
+export interface ProjectPlanOpsEvidenceResponse {
+  plan: ProjectPlan;
+  opsEvidence: ProjectPlanOpsEvidence[];
+  externalWriteAudit: ProjectPlanExternalWriteAuditEntry[];
+  providerPolicy: ProjectPlanProviderPolicyReport;
 }
 
 export interface PlanningToolOptionsResponse {

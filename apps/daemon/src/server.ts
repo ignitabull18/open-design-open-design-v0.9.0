@@ -14396,6 +14396,8 @@ function normalizeOpsDeployment(value) {
     ...(typeof deployment.tunnelTarget === 'string' ? { tunnelTarget: deployment.tunnelTarget } : {}),
     ...(typeof deployment.expectedTunnelTarget === 'string' ? { expectedTunnelTarget: deployment.expectedTunnelTarget } : {}),
     ...(typeof deployment.coolifyAppUuid === 'string' ? { coolifyAppUuid: deployment.coolifyAppUuid } : {}),
+    ...(typeof deployment.deploymentUuid === 'string' ? { deploymentUuid: deployment.deploymentUuid } : {}),
+    ...(typeof deployment.commit === 'string' ? { commit: deployment.commit } : {}),
     ...(Array.isArray(deployment.driftChecks) ? { driftChecks: normalizeOpsStatusChecks(deployment.driftChecks) } : {}),
   };
 }

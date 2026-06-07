@@ -11,16 +11,19 @@ export interface HostedPlannerSmokeResult {
   version: unknown;
   eventCount: number;
   sseEventCount: number;
+  archived: boolean;
 }
 
 interface HostedPlannerSmokeOptions {
   baseUrl?: string;
   apiToken?: string;
+  timeoutMs?: number;
 }
 
 export async function runHostedPlannerSmoke(options: HostedPlannerSmokeOptions = {}): Promise<HostedPlannerSmokeResult> {
   const baseUrl = (options.baseUrl || process.env.OD_HOSTED_BASE_URL || 'https://open-design.ignitabull.org').replace(/\/$/, '');
   const apiToken = (options.apiToken || process.env.OD_API_TOKEN || '').trim();
+  const timeoutMs = options.timeoutMs ?? Number(process.env.OD_HOSTED_SMOKE_TIMEOUT_MS || 45_000);
   if (!apiToken) {
     throw Object.assign(
       new Error('OD_API_TOKEN is required. Export the hosted daemon token before running this smoke.'),
@@ -33,14 +36,14 @@ export async function runHostedPlannerSmoke(options: HostedPlannerSmokeOptions =
   }
 
   async function request(path: string, init: RequestInit = {}): Promise<JsonObject> {
-    const response = await fetch(url(path), {
+    const response = await fetchWithTimeout(url(path), {
       ...init,
       headers: {
         authorization: `Bearer ${apiToken}`,
         'content-type': 'application/json',
         ...(init.headers ?? {}),
       },
-    });
+    }, timeoutMs);
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(`${init.method ?? 'GET'} ${path} failed with ${response.status}: ${JSON.stringify(body)}`);
@@ -51,16 +54,16 @@ export async function runHostedPlannerSmoke(options: HostedPlannerSmokeOptions =
   const health = await request('/api/health');
   if (health.ok !== true) throw new Error('health check did not return ok=true');
 
-  const unauthenticated = await fetch(url('/api/plans'));
+  const unauthenticated = await fetchWithTimeout(url('/api/plans'), {}, timeoutMs);
   if (unauthenticated.status !== 401) {
     throw new Error(`protected API check expected 401 without token, got ${unauthenticated.status}`);
   }
 
-  const session = await fetch(url('/api/planning/session'), {
+  const session = await fetchWithTimeout(url('/api/planning/session'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ token: apiToken }),
-  });
+  }, timeoutMs);
   if (!session.ok || !session.headers.get('set-cookie')?.includes('od_planning_session=')) {
     throw new Error(`planning session cookie check failed with ${session.status}`);
   }
@@ -147,6 +150,14 @@ export async function runHostedPlannerSmoke(options: HostedPlannerSmokeOptions =
     throw new Error('reloaded plan did not preserve the section-agent run');
   }
 
+  await request(`/api/plans/${encodeURIComponent(planId)}/archive`, {
+    method: 'POST',
+    body: JSON.stringify({
+      archived: true,
+      reason: 'Hosted smoke completed successfully.',
+    }),
+  });
+
   return {
     ok: true,
     baseUrl,
@@ -155,16 +166,17 @@ export async function runHostedPlannerSmoke(options: HostedPlannerSmokeOptions =
     version: health.version,
     eventCount: runEvents.events.length,
     sseEventCount: sseEvents.length,
+    archived: true,
   };
 }
 
 async function readRunEventStream(streamUrl: string, apiToken: string): Promise<JsonObject[]> {
-  const response = await fetch(streamUrl, {
+  const response = await fetchWithTimeout(streamUrl, {
     headers: {
       accept: 'text/event-stream',
       authorization: `Bearer ${apiToken}`,
     },
-  });
+  }, Number(process.env.OD_HOSTED_SMOKE_SSE_TIMEOUT_MS || 45_000));
   if (!response.ok || !response.body) {
     throw new Error(`section run SSE stream failed with ${response.status}`);
   }
@@ -191,13 +203,25 @@ async function readRunEventStream(streamUrl: string, apiToken: string): Promise<
   return events;
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function main() {
   const result = await runHostedPlannerSmoke();
   console.log(JSON.stringify(result, null, 2));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch((error) => {
+  main().then(() => {
+    process.exit(0);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(typeof error?.exitCode === 'number' ? error.exitCode : 1);
   });

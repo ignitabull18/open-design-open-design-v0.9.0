@@ -16,7 +16,9 @@ import type {
   ProjectPlanArtifactResponse,
   ProjectPlanToolCheckResponse,
   ProjectPlanToolStatusResponse,
+  ProjectPlanOpsEvidenceResponse,
   ProjectPlanReadinessResponse,
+  ProjectPlanProviderPolicyResponse,
   ProjectLaunchProofResponse,
   ProjectSectionWorkflowResponse,
   ProjectIdeationSessionResponse,
@@ -133,8 +135,8 @@ export function runDueProviderCapabilityRefresh(
   });
 }
 
-export function listProjectPlans(): Promise<ProjectPlansResponse> {
-  return jsonFetch<ProjectPlansResponse>('/api/plans');
+export function listProjectPlans(input: { includeArchived?: boolean } = {}): Promise<ProjectPlansResponse> {
+  return jsonFetch<ProjectPlansResponse>(`/api/plans${input.includeArchived ? '?includeArchived=true' : ''}`);
 }
 
 export function cloneProjectPlan(planId: string, input: { name?: string; resetExecution?: boolean } = {}): Promise<ProjectPlanResponse> {
@@ -437,27 +439,27 @@ export function checkProjectPlanTools(
   );
 }
 
-export function getProjectPlanProviderPolicy(planId: string): Promise<any> {
-  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/provider-policy`);
+export function getProjectPlanProviderPolicy(planId: string): Promise<ProjectPlanProviderPolicyResponse> {
+  return jsonFetch<ProjectPlanProviderPolicyResponse>(`/api/plans/${encodeURIComponent(planId)}/provider-policy`);
 }
 
 export function updateProjectPlanProviderPolicy(
   planId: string,
   input: { requiredToolIds?: string[]; staleAfterMs?: number; scheduledChecksEnabled?: boolean },
-): Promise<any> {
-  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/provider-policy`, {
+): Promise<ProjectPlanProviderPolicyResponse> {
+  return jsonFetch<ProjectPlanProviderPolicyResponse>(`/api/plans/${encodeURIComponent(planId)}/provider-policy`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
-export function getProjectPlanOpsEvidence(planId: string): Promise<any> {
-  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/ops-evidence`);
+export function getProjectPlanOpsEvidence(planId: string): Promise<ProjectPlanOpsEvidenceResponse> {
+  return jsonFetch<ProjectPlanOpsEvidenceResponse>(`/api/plans/${encodeURIComponent(planId)}/ops-evidence`);
 }
 
 export function promoteProjectPlanRelease(
   planId: string,
-  input: { tag?: string; commit?: string } = {},
+  input: { tag?: string; commit?: string; evidenceArtifactId?: string } = {},
 ): Promise<ProjectPlanArtifactResponse> {
   return jsonFetch<ProjectPlanArtifactResponse>(
     `/api/plans/${encodeURIComponent(planId)}/release-promotion`,
@@ -474,9 +476,9 @@ export function planningArtifactDownloadUrl(planId: string, artifactId: string):
 
 export function planningArtifactsExportUrl(
   planId: string,
-  query: { kind?: string; runId?: string; search?: string } = {},
+  query: { kind?: string; runId?: string; search?: string; exportFormat?: 'markdown' | 'json' } = {},
 ): string {
-  const params = new URLSearchParams({ export: 'markdown' });
+  const params = new URLSearchParams({ export: query.exportFormat ?? 'markdown' });
   if (query.kind) params.set('kind', query.kind);
   if (query.runId) params.set('runId', query.runId);
   if (query.search) params.set('search', query.search);

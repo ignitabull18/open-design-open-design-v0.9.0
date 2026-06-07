@@ -190,9 +190,10 @@ const PLAN_STRING_FLAGS = new Set([
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
   'kind', 'title', 'content-file', 'schedule', 'status', 'notes',
-  'reason', 'run-id', 'search', 'output', 'required-tools', 'stale-after-ms', 'tag', 'commit', 'artifact',
+  'reason', 'run-id', 'search', 'output', 'output-format', 'required-tools', 'stale-after-ms', 'tag', 'commit', 'artifact', 'evidence-artifact',
+  'action-ids',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule', 'watch', 'include-archived', 'reset-execution', 'unarchive', 'required-only']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule', 'watch', 'include-archived', 'reset-execution', 'unarchive', 'required-only', 'no-stop-on-blocked']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4678,12 +4679,12 @@ async function runPlan(args) {
   od plan launch-preview <id>
                  [--target-dir <path>] [--scaffold-parent-dir <path>]
                  [--delivery-target <target>] [--project-management-target <target>]
-                 [--validate-providers] [--json]
+                 [--action-ids a,b] [--no-stop-on-blocked] [--validate-providers] [--json]
                                                  Show launch sequence inputs before execution.
   od plan launch <id> --confirmed
                  [--target-dir <path>] [--scaffold-parent-dir <path>]
                  [--delivery-target <target>] [--project-management-target <target>]
-                 [--validate-providers] [--json]
+                 [--action-ids a,b] [--no-stop-on-blocked] [--validate-providers] [--json]
                                                  Execute the launch sequence until blocked or complete.
   od plan execute <id> --action <name> --confirmed
                  [--target-dir <path>] [--delivery-target <target>]
@@ -4707,16 +4708,18 @@ async function runPlan(args) {
   od plan artifact <id> --kind <kind> --title <title> --content-file <path|->
                                                  Create one plan execution artifact.
   od plan artifacts <id> [--kind <kind>] [--run-id <id>] [--search <text>]
-                 [--output <path>] [--json]      List or export generated plan execution artifacts.
+                 [--output <path>] [--output-format markdown|json] [--json]
+                                                 List or export generated plan execution artifacts.
   od plan artifact-download <id> --artifact <artifact-id> --output <path>
                                                  Download one artifact as Markdown.
   od plan ops-evidence <id> [--json]             Show ops evidence, provider policy, and write audit.
-  od plan promote <id> [--tag <tag>] [--commit <sha>] [--json]
+  od plan promote <id> [--tag <tag>] [--commit <sha>] [--evidence-artifact <id>] [--json]
                                                  Create a release-promotion evidence bundle artifact.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
   od plan brainstorm <id> --prompt-file <path|->
-  od plan delete <id>
+  od plan cleanup-smoke [--json]                 Archive old hosted smoke plans.
+  od plan delete <id>                            Hard-delete a disposable smoke plan only.
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
@@ -5071,6 +5074,8 @@ Common options:
       if (typeof flags['scaffold-parent-dir'] === 'string') params.set('scaffoldParentDir', flags['scaffold-parent-dir']);
       if (typeof flags['delivery-target'] === 'string') params.set('deliveryTarget', flags['delivery-target']);
       if (typeof flags['project-management-target'] === 'string') params.set('projectManagementTarget', flags['project-management-target']);
+      for (const actionId of splitAutomationIds(flags['action-ids'])) params.append('actionIds', actionId);
+      if (flags['no-stop-on-blocked'] === true) params.set('stopOnBlocked', 'false');
       if (flags['validate-providers'] === true) params.set('validateProviders', 'true');
       const query = params.toString();
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch${query ? `?${query}` : ''}`);
@@ -5150,6 +5155,8 @@ Common options:
         ...(typeof flags['scaffold-parent-dir'] === 'string' ? { scaffoldParentDir: flags['scaffold-parent-dir'] } : {}),
         ...(typeof flags['delivery-target'] === 'string' ? { deliveryTarget: flags['delivery-target'] } : {}),
         ...(typeof flags['project-management-target'] === 'string' ? { projectManagementTarget: flags['project-management-target'] } : {}),
+        ...(splitAutomationIds(flags['action-ids']).length ? { actionIds: splitAutomationIds(flags['action-ids']) } : {}),
+        ...(flags['no-stop-on-blocked'] === true ? { stopOnBlocked: false } : {}),
         validateProviders: flags['validate-providers'] === true,
       };
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/launch/execute`, {
@@ -5351,7 +5358,10 @@ Common options:
       if (typeof flags.kind === 'string') params.set('kind', flags.kind);
       if (typeof flags['run-id'] === 'string') params.set('runId', flags['run-id']);
       if (typeof flags.search === 'string') params.set('search', flags.search);
-      if (typeof flags.output === 'string') params.set('export', 'markdown');
+      if (typeof flags.output === 'string') {
+        const format = flags['output-format'] === 'json' ? 'json' : 'markdown';
+        params.set('export', format);
+      }
       const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/artifacts${params.toString() ? `?${params.toString()}` : ''}`);
       if (!resp.ok) return structuredHttpFailure(resp);
       if (typeof flags.output === 'string') {
@@ -5412,6 +5422,7 @@ Common options:
         body: JSON.stringify({
           ...(typeof flags.tag === 'string' ? { tag: flags.tag } : {}),
           ...(typeof flags.commit === 'string' ? { commit: flags.commit } : {}),
+          ...(typeof flags['evidence-artifact'] === 'string' ? { evidenceArtifactId: flags['evidence-artifact'] } : {}),
         }),
       });
       const data = await resp.json().catch(() => ({}));
@@ -5522,6 +5533,18 @@ Common options:
         console.log(`\n${option.title}`);
         console.log(`  ${option.rationale}`);
       }
+      return;
+    }
+    case 'cleanup-smoke': {
+      const resp = await fetch(`${base}/api/plans/smoke/cleanup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json().catch(() => ({}));
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] archived ${data.archivedCount ?? 0} smoke plan(s)`);
       return;
     }
     case 'delete': {

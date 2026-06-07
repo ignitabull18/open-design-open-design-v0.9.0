@@ -37,6 +37,7 @@ import type {
   ProjectPlanExternalWriteAuditEntry,
   ProjectPlanMetadata,
   ProjectPlanOpsEvidence,
+  PromoteProjectPlanReleaseRequest,
   ProjectPlanProviderPolicy,
   ProjectIdeaOption,
   ProjectIdeationSession,
@@ -1185,7 +1186,18 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const body = normalizeCloneBody(req.body || {});
       const clone = clonePlanForRequest(existing, body);
       const inserted = insertPlan(db, clone);
-      res.status(201).json({ plan: inserted, clonedFromPlanId: existing.id });
+      if (!inserted) return res.status(500).json({ error: 'failed to insert cloned plan' });
+      const sourcePlan = updatePlan(db, existing.id, {
+        ...existing,
+        metadata: appendPlanOperationAudit(existing.metadata, {
+          operation: 'clone',
+          target: inserted.id,
+          summary: `Cloned plan to ${inserted.id}.`,
+          status: 'completed',
+        }),
+        updatedAt: Date.now(),
+      });
+      res.status(201).json({ plan: inserted, sourcePlan, clonedFromPlanId: existing.id });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message ?? err) });
     }
@@ -1208,7 +1220,14 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       };
       const updated = updatePlan(db, req.params.id, {
         ...existing,
-        metadata,
+        metadata: appendPlanOperationAudit(metadata, {
+          operation: body.archived === false ? 'unarchive' : 'archive',
+          target: existing.id,
+          summary: body.archived === false
+            ? 'Plan was unarchived.'
+            : `Plan was archived${body.reason ? `: ${body.reason}` : '.'}`,
+          status: 'completed',
+        }),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
@@ -1244,7 +1263,18 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       if (!plan) return res.status(404).json({ error: 'plan not found' });
       const query = normalizeArtifactsQuery(req.query as Record<string, unknown>);
       const artifacts = filterPlanArtifacts(plan, query);
-      if (req.query.export === 'markdown') {
+      if (query.export === 'json') {
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.setHeader('content-disposition', `attachment; filename="${slugify(plan.name)}-planning-artifacts.json"`);
+        return res.send(JSON.stringify({
+          planId: plan.id,
+          planName: plan.name,
+          exportedAt: new Date().toISOString(),
+          filters: query,
+          artifacts,
+        }, null, 2));
+      }
+      if (query.export === 'markdown') {
         res.setHeader('content-type', 'text/markdown; charset=utf-8');
         res.setHeader('content-disposition', `attachment; filename="${slugify(plan.name)}-planning-artifacts.md"`);
         return res.send(buildArtifactExport(artifacts));
@@ -1394,8 +1424,12 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     try {
       const existing = getPlan(db, req.params.id) as ProjectPlan | null;
       if (!existing) return res.status(404).json({ error: 'plan not found' });
-      const tag = typeof req.body?.tag === 'string' && req.body.tag.trim() ? req.body.tag.trim() : `planning-${slugify(existing.name)}-${new Date().toISOString().slice(0, 10)}`;
-      const commit = typeof req.body?.commit === 'string' && req.body.commit.trim() ? req.body.commit.trim() : undefined;
+      const body = normalizeReleasePromotionBody(req.body || {}, existing);
+      const tag = body.tag ?? `planning-${slugify(existing.name)}-${new Date().toISOString().slice(0, 10)}`;
+      const commit = body.commit;
+      const selectedEvidenceArtifact = body.evidenceArtifactId
+        ? (existing.executionArtifacts ?? []).find((item) => item.id === body.evidenceArtifactId)
+        : undefined;
       const artifact: PlanningExecutionArtifact = {
         id: `plan-artifact-${randomUUID()}`,
         planId: existing.id,
@@ -1411,15 +1445,23 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
           '',
           'Ops evidence:',
           ...buildPlanOpsEvidence(existing).map((item) => `- ${item.kind}: ${item.status} - ${item.summary}`),
+          selectedEvidenceArtifact ? '' : '',
+          selectedEvidenceArtifact ? 'Selected evidence artifact:' : '',
+          selectedEvidenceArtifact ? `- ${selectedEvidenceArtifact.id}: ${selectedEvidenceArtifact.title}` : '',
         ].filter(Boolean).join('\n'),
         createdAt: Date.now(),
       };
       const metadata: ProjectPlanMetadata = {
-        ...(existing.metadata ?? {}),
+        ...appendPlanOperationAudit(existing.metadata, {
+          operation: 'release-promotion',
+          target: tag,
+          summary: `Release promotion evidence bundle generated for ${tag}.`,
+          status: 'completed',
+        }),
         releasePromotion: {
           tag,
           ...(commit ? { commit } : {}),
-          evidenceArtifactId: artifact.id,
+          evidenceArtifactId: selectedEvidenceArtifact?.id ?? artifact.id,
           promotedAt: artifact.createdAt,
         },
         opsEvidence: [
@@ -1676,6 +1718,7 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         ...result.planPatch,
+        metadata: appendLaunchExternalWriteAudit(result.planPatch.metadata ?? existing.metadata, result.runs, existing.executionActions),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
@@ -1969,11 +2012,48 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
 
   app.delete('/api/plans/:id', (req, res) => {
     try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      if (!isDisposableSmokePlan(existing)) {
+        return res.status(409).json({ error: 'hard delete is limited to disposable smoke plans; archive this plan instead' });
+      }
       const deleted = deletePlan(db, req.params.id);
       if (!deleted) return res.status(404).json({ error: 'plan not found' });
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/smoke/cleanup', (req, res) => {
+    try {
+      const olderThanMs = typeof req.body?.olderThanMs === 'number' && req.body.olderThanMs >= 0 ? req.body.olderThanMs : 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const plans = listPlans(db) as ProjectPlan[];
+      const archived: ProjectPlan[] = [];
+      for (const plan of plans) {
+        if (!isDisposableSmokePlan(plan)) continue;
+        const completedAt = plan.metadata?.smokeCompletedAt ?? plan.updatedAt ?? plan.createdAt;
+        if (now - completedAt < olderThanMs || plan.metadata?.archivedAt) continue;
+        const updated = updatePlan(db, plan.id, {
+          ...plan,
+          metadata: appendPlanOperationAudit({
+            ...(plan.metadata ?? {}),
+            archivedAt: now,
+            archiveReason: 'Archived by smoke cleanup job.',
+          }, {
+            operation: 'smoke-cleanup',
+            target: plan.id,
+            summary: 'Archived old hosted smoke plan.',
+            status: 'completed',
+          }),
+          updatedAt: now,
+        }) as ProjectPlan | null;
+        if (updated) archived.push(updated);
+      }
+      res.json({ ok: true, archivedCount: archived.length, archivedPlanIds: archived.map((plan) => plan.id) });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
     }
   });
 }
@@ -8897,6 +8977,8 @@ function normalizePlanMetadata(value: unknown, selectedTools: ProjectToolConnect
     ...(typeof row.clonedFromPlanId === 'string' && row.clonedFromPlanId.trim() ? { clonedFromPlanId: row.clonedFromPlanId.trim() } : {}),
     ...(typeof row.archivedAt === 'number' ? { archivedAt: row.archivedAt } : {}),
     ...(typeof row.archiveReason === 'string' && row.archiveReason.trim() ? { archiveReason: row.archiveReason.trim() } : {}),
+    ...(row.smokePlan === true ? { smokePlan: true } : {}),
+    ...(typeof row.smokeCompletedAt === 'number' ? { smokeCompletedAt: row.smokeCompletedAt } : {}),
     providerPolicy: normalizeProviderPolicy(row.providerPolicy, defaultRequired),
     externalWriteAudit: Array.isArray(row.externalWriteAudit) ? row.externalWriteAudit.slice(0, 100) : [],
     opsEvidence: Array.isArray(row.opsEvidence) ? row.opsEvidence.slice(0, 100) : [],
@@ -8946,14 +9028,30 @@ function normalizeArchiveBody(body: Record<string, unknown>): ArchiveProjectPlan
   };
 }
 
+function normalizeReleasePromotionBody(body: Record<string, unknown>, plan: ProjectPlan): PromoteProjectPlanReleaseRequest {
+  const evidenceArtifactId = typeof body.evidenceArtifactId === 'string' && body.evidenceArtifactId.trim()
+    ? body.evidenceArtifactId.trim()
+    : undefined;
+  if (evidenceArtifactId && !(plan.executionArtifacts ?? []).some((artifact) => artifact.id === evidenceArtifactId)) {
+    throw new Error('evidenceArtifactId must reference an execution artifact on this plan');
+  }
+  return {
+    ...(typeof body.tag === 'string' && body.tag.trim() ? { tag: body.tag.trim() } : {}),
+    ...(typeof body.commit === 'string' && body.commit.trim() ? { commit: body.commit.trim() } : {}),
+    ...(evidenceArtifactId ? { evidenceArtifactId } : {}),
+  };
+}
+
 function normalizeArtifactsQuery(query: Record<string, unknown>): ProjectPlanArtifactsQuery {
   const kind = typeof query.kind === 'string' && query.kind.trim()
     ? query.kind.trim() as PlanningExecutionArtifact['kind']
     : undefined;
+  const exportFormat = query.export === 'json' ? 'json' : query.export === 'markdown' ? 'markdown' : undefined;
   return {
     ...(kind ? { kind } : {}),
     ...(typeof query.runId === 'string' && query.runId.trim() ? { runId: query.runId.trim() } : {}),
     ...(typeof query.search === 'string' && query.search.trim() ? { search: query.search.trim().toLowerCase() } : {}),
+    ...(exportFormat ? { export: exportFormat } : {}),
   };
 }
 
@@ -9056,6 +9154,46 @@ function appendExternalWriteAudit(
     ...(metadata ?? {}),
     externalWriteAudit: [entry, ...((metadata?.externalWriteAudit ?? []).slice(0, 99))],
   };
+}
+
+function appendLaunchExternalWriteAudit(
+  metadata: ProjectPlanMetadata | undefined,
+  runs: PlanningExecutionRun[],
+  actions: PlanningExecutionAction[],
+): ProjectPlanMetadata {
+  return runs.reduce((current, run) => {
+    const action = actions.find((item) => item.id === run.actionId);
+    return action ? appendExternalWriteAudit(current, run, action) : current;
+  }, metadata ?? {});
+}
+
+function appendPlanOperationAudit(
+  metadata: ProjectPlanMetadata | undefined,
+  input: {
+    operation: NonNullable<ProjectPlanExternalWriteAuditEntry['operation']>;
+    target: string;
+    summary: string;
+    status: PlanningExecutionRun['status'];
+  },
+): ProjectPlanMetadata {
+  const entry: ProjectPlanExternalWriteAuditEntry = {
+    id: `write-audit-${randomUUID()}`,
+    operation: input.operation,
+    target: input.target,
+    mode: 'record-only',
+    status: input.status,
+    summary: input.summary,
+    createdAt: Date.now(),
+  };
+  return {
+    ...(metadata ?? {}),
+    externalWriteAudit: [entry, ...((metadata?.externalWriteAudit ?? []).slice(0, 99))],
+  };
+}
+
+function isDisposableSmokePlan(plan: ProjectPlan): boolean {
+  const marker = `${plan.name}\n${plan.intent?.purpose ?? ''}\n${plan.metadata?.archiveReason ?? ''}`.toLowerCase();
+  return plan.metadata?.smokePlan === true || marker.includes('hosted smoke');
 }
 
 function buildPlanOpsEvidence(plan: ProjectPlan): ProjectPlanOpsEvidence[] {

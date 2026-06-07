@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checkHostedOpsStatus } from './check-hosted-ops-status.ts';
+import { checkHostedDeploymentDrift } from './check-hosted-deployment-drift.ts';
 import { checkHostedProviderConnections } from './check-hosted-provider-connections.ts';
 import { checkHostedProviderReadiness } from './check-hosted-provider-readiness.ts';
 
@@ -24,8 +25,9 @@ export async function exportHostedOpsEvidence(
     || process.env.OD_OPS_EVIDENCE_OUTPUT
     || path.join('docs', 'deployment', 'evidence', `${generatedAt.slice(0, 10)}-hosted-post-deploy.md`);
 
-  const [ops, providerReadiness, providerConnections] = await Promise.all([
+  const [ops, deploymentDrift, providerReadiness, providerConnections] = await Promise.all([
     checkHostedOpsStatus(),
+    checkHostedDeploymentDrift(),
     checkHostedProviderReadiness(),
     checkHostedProviderConnections(),
   ]);
@@ -45,6 +47,11 @@ export async function exportHostedOpsEvidence(
       `- CLI source: \`${ops.cli.source}\``,
       `- CLI checks: ${ops.cli.checkIds.map((id) => `\`${id}\``).join(', ')}`,
     ] : []),
+    '',
+    'Deployment drift:',
+    '',
+    `- Base URL: \`${deploymentDrift.baseUrl}\``,
+    ...deploymentDrift.checks.map((check) => `- \`${check.id}\`: \`${check.status}\` expected \`${check.expected}\`, actual \`${check.actual}\``),
     '',
     'Provider readiness:',
     '',
@@ -70,7 +77,9 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch((error) => {
+  main().then(() => {
+    process.exit(0);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });

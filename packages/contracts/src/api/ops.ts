@@ -56,6 +56,8 @@ export interface OpsStatusResponse {
     tunnelTarget?: string;
     expectedTunnelTarget?: string;
     coolifyAppUuid?: string;
+    deploymentUuid?: string;
+    commit?: string;
     driftChecks?: OpsStatusCheck[];
   };
   restore?: {

@@ -27,6 +27,7 @@ interface HostedDeploymentDriftOptions {
   resolveCnameImpl?: typeof resolveCname;
   resolveCloudflareDnsTargetImpl?: typeof resolveCloudflareDnsTarget;
   checkCoolifyBackupReadinessImpl?: typeof checkCoolifyBackupReadiness;
+  timeoutMs?: number;
 }
 
 export async function checkHostedDeploymentDrift(
@@ -41,8 +42,9 @@ export async function checkHostedDeploymentDrift(
   const cnameResolver = options.resolveCnameImpl || resolveCname;
   const cloudflareDnsResolver = options.resolveCloudflareDnsTargetImpl || resolveCloudflareDnsTarget;
   const coolifyChecker = options.checkCoolifyBackupReadinessImpl || checkCoolifyBackupReadiness;
+  const timeoutMs = options.timeoutMs ?? Number(process.env.OD_DEPLOYMENT_DRIFT_TIMEOUT_MS || 30_000);
 
-  const status = await getJson(`${baseUrl}/api/daemon/status`);
+  const status = await getJson(`${baseUrl}/api/daemon/status`, timeoutMs);
   const dnsTarget = await resolveDnsTarget(host, cnameResolver, cloudflareDnsResolver);
   const coolify = await coolifyChecker({ appUuid: expectedCoolifyAppUuid });
   const checks = [
@@ -113,8 +115,10 @@ function buildDriftCheck(id: string, expected: string, actual: string): HostedDe
   };
 }
 
-async function getJson(url: string): Promise<{ status: number; body: JsonObject }> {
-  const response = await fetch(url);
+async function getJson(url: string, timeoutMs: number): Promise<{ status: number; body: JsonObject }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const response = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeout));
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`${url} failed with ${response.status}: ${JSON.stringify(body)}`);
   return { status: response.status, body: body as JsonObject };
@@ -127,7 +131,9 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch((error) => {
+  main().then(() => {
+    process.exit(0);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });

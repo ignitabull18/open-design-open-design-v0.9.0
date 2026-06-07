@@ -117,6 +117,13 @@ node --experimental-strip-types deploy/scripts/smoke-hosted-planner.ts
 
 ## Hosted monitor and smoke
 
+Use the repository Node 24 runtime for local script runs. On machines where the
+default shell has moved ahead of Node 24, prefix commands with:
+
+```bash
+PATH="/opt/homebrew/Cellar/node@24/24.16.0/bin:$PATH"
+```
+
 Run the lightweight monitor on a schedule and after Cloudflare/Coolify route
 changes:
 
@@ -141,7 +148,8 @@ It verifies:
   planning session cookie both work.
 
 Run the smoke after deploy, after token rotation, and after changing Cloudflare
-routes. It creates one persisted plan and one section-agent run.
+routes. It creates one persisted plan and one section-agent run, then archives
+that disposable hosted smoke plan after the persistence and SSE checks pass.
 
 ```bash
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
@@ -158,7 +166,8 @@ Required success shape:
   "planId": "plan-...",
   "runId": "plan-run-...",
   "version": "0.9.0",
-  "eventCount": 1
+  "eventCount": 1,
+  "archived": true
 }
 ```
 
@@ -172,8 +181,17 @@ provider credentials:
 OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
 OD_API_TOKEN="$OD_API_TOKEN" \
 OD_PLAN_ID=<production-plan-id> \
+OD_OPS_STATUS_OUTPUT=/app/.od/ops-status.json \
+OD_COOLIFY_DEPLOYMENT_UUID=<deployment-uuid> \
+OD_DEPLOY_COMMIT=<git-sha> \
 node --experimental-strip-types deploy/scripts/run-hosted-post-deploy.ts
 ```
+
+When `OD_OPS_STATUS_OUTPUT` is set, the post-deploy gate writes a runtime
+`ops-status.json` containing Cloudflare DNS drift proof, Coolify app/storage
+proof, the latest deployment UUID, the deployed commit, backup status, and the
+current evidence bundle pointer. The hosted Planning page reads this file
+through `/api/ops/status`.
 
 For Docker/Compose style updates, `deploy/scripts/update.sh` can run this gate
 automatically after the local health check:
@@ -230,6 +248,27 @@ Write a markdown ops artifact through the CLI mirror:
 OD_API_TOKEN="$OD_API_TOKEN" \
 od ops evidence --daemon-url https://open-design.ignitabull.org \
   --output docs/deployment/evidence/$(date -u +%F)-ops-status.md
+```
+
+Plan artifacts can be exported from either surface:
+
+```bash
+od plan artifacts <plan-id> --output /tmp/open-design-artifacts.md
+od plan artifacts <plan-id> --output /tmp/open-design-artifacts.json --output-format json
+```
+
+Release promotion evidence can point at a specific artifact:
+
+```bash
+od plan promote <plan-id> --tag open-design-hosted-YYYY-MM-DD \
+  --commit <git-sha> \
+  --evidence-artifact <artifact-id>
+```
+
+Cleanup old hosted smoke plans after verification:
+
+```bash
+od plan cleanup-smoke --daemon-url https://open-design.ignitabull.org
 ```
 
 If Coolify CLI access is unavailable, use the Coolify app terminal/logs screen

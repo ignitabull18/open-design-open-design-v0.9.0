@@ -14,7 +14,8 @@ import type {
   ProjectPlan,
   ProjectPlanExternalWriteAuditEntry,
   ProjectPlanOpsEvidence,
-  ProjectPlanProviderPolicy,
+  ProjectPlanOpsEvidenceResponse,
+  ProjectPlanProviderPolicyReport,
   ProjectPlanReadinessReport,
   RunProjectPlanSectionsRequest,
   ProjectToolConnection,
@@ -91,16 +92,6 @@ const HOSTED_OPERATIONS_ITEMS = [
   },
 ];
 
-type ProviderPolicyReport = {
-  requiredToolIds: ProjectToolConnection['toolId'][];
-  missingRequiredToolIds: ProjectToolConnection['toolId'][];
-  staleRequiredToolIds: ProjectToolConnection['toolId'][];
-  blockedRequiredToolIds: ProjectToolConnection['toolId'][];
-  scheduledChecksEnabled: boolean;
-  staleAfterMs: number;
-  lastCheckedAt: number | null;
-};
-
 const INITIAL_STACK: ProjectStackDecision = {
   frontend: 'next',
   backend: 'hono',
@@ -175,13 +166,14 @@ export function PlanningView() {
   const [apiToken, setApiToken] = useState('');
   const [authSaving, setAuthSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [includeArchivedPlans, setIncludeArchivedPlans] = useState(false);
   const [ideationByPlanId, setIdeationByPlanId] = useState<Record<string, ProjectIdeationSession[]>>({});
   const [readinessByPlanId, setReadinessByPlanId] = useState<Record<string, ProjectPlanReadinessReport>>({});
   const [proofByPlanId, setProofByPlanId] = useState<Record<string, ProjectLaunchProofReport>>({});
   const [launchPreviewByPlanId, setLaunchPreviewByPlanId] = useState<Record<string, ProjectLaunchPreview>>({});
   const [opsStatus, setOpsStatus] = useState<OpsStatusResponse | null>(null);
-  const [planOpsByPlanId, setPlanOpsByPlanId] = useState<Record<string, any>>({});
-  const [providerPolicyByPlanId, setProviderPolicyByPlanId] = useState<Record<string, any>>({});
+  const [planOpsByPlanId, setPlanOpsByPlanId] = useState<Record<string, ProjectPlanOpsEvidenceResponse>>({});
+  const [providerPolicyByPlanId, setProviderPolicyByPlanId] = useState<Record<string, ProjectPlanProviderPolicyReport>>({});
   const [planOpsSaving, setPlanOpsSaving] = useState<string | null>(null);
   const [ideationPrompt, setIdeationPrompt] = useState('Explore stack directions for this project and call out what tools I need to connect first.');
   const [brainstorming, setBrainstorming] = useState(false);
@@ -221,7 +213,7 @@ export function PlanningView() {
       setError(null);
       try {
         const [plansResult, toolsResult, capabilitiesResult] = await Promise.all([
-          listProjectPlans(),
+          listProjectPlans({ includeArchived: includeArchivedPlans }),
           listPlanningTools(),
           listProviderCapabilitySnapshots(),
         ]);
@@ -244,7 +236,7 @@ export function PlanningView() {
       } finally {
         if (!options.cancelled?.()) setLoading(false);
       }
-  }, []);
+  }, [includeArchivedPlans]);
 
   useEffect(() => {
     let cancelled = false;
@@ -673,15 +665,15 @@ export function PlanningView() {
     }
   }
 
-  async function handleUpdateProviderPolicy(requiredToolIds: ProjectToolConnection['toolId'][]) {
+  async function handleUpdateProviderPolicy(input: { requiredToolIds?: ProjectToolConnection['toolId'][]; staleAfterMs?: number; scheduledChecksEnabled?: boolean }) {
     if (!selectedPlan) return;
     setPlanOpsSaving('provider-policy');
     setError(null);
     try {
       const result = await updateProjectPlanProviderPolicy(selectedPlan.id, {
-        requiredToolIds,
-        staleAfterMs: selectedProviderPolicy?.policy?.staleAfterMs,
-        scheduledChecksEnabled: selectedProviderPolicy?.policy?.scheduledChecksEnabled,
+        requiredToolIds: input.requiredToolIds ?? selectedProviderPolicy?.policy?.requiredToolIds,
+        staleAfterMs: input.staleAfterMs ?? selectedProviderPolicy?.policy?.staleAfterMs,
+        scheduledChecksEnabled: input.scheduledChecksEnabled ?? selectedProviderPolicy?.policy?.scheduledChecksEnabled,
       });
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       setProviderPolicyByPlanId((curr) => ({ ...curr, [result.plan.id]: result.providerPolicy }));
@@ -702,7 +694,7 @@ export function PlanningView() {
         name: `${selectedPlan.name} copy`,
         resetExecution: true,
       });
-      const plansResult = await listProjectPlans();
+      const plansResult = await listProjectPlans({ includeArchived: includeArchivedPlans });
       setPlans(plansResult.plans);
       setSelectedId(result.plan.id);
     } catch (err) {
@@ -712,16 +704,16 @@ export function PlanningView() {
     }
   }
 
-  async function handleArchivePlan() {
+  async function handleArchivePlan(archived = true) {
     if (!selectedPlan) return;
-    if (typeof window !== 'undefined' && !window.confirm(`Archive "${selectedPlan.name}"?`)) return;
+    if (typeof window !== 'undefined' && !window.confirm(`${archived ? 'Archive' : 'Unarchive'} "${selectedPlan.name}"?`)) return;
     setPlanOpsSaving('archive');
     setError(null);
     try {
-      await archiveProjectPlan(selectedPlan.id, { archived: true, reason: 'Archived from Planning UI.' });
-      const plansResult = await listProjectPlans();
+      const result = await archiveProjectPlan(selectedPlan.id, { archived, reason: archived ? 'Archived from Planning UI.' : undefined });
+      const plansResult = await listProjectPlans({ includeArchived: includeArchivedPlans || !archived });
       setPlans(plansResult.plans);
-      setSelectedId(plansResult.plans[0]?.id ?? null);
+      setSelectedId(archived ? plansResult.plans[0]?.id ?? null : result.plan.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -747,13 +739,13 @@ export function PlanningView() {
     }
   }
 
-  async function handlePromoteRelease() {
+  async function handlePromoteRelease(input: { tag?: string; commit?: string; evidenceArtifactId?: string } = {}) {
     if (!selectedPlan) return;
     if (typeof window !== 'undefined' && !window.confirm(`Record release promotion evidence for "${selectedPlan.name}"?`)) return;
     setPlanOpsSaving('promote');
     setError(null);
     try {
-      const result = await promoteProjectPlanRelease(selectedPlan.id);
+      const result = await promoteProjectPlanRelease(selectedPlan.id, input);
       setPlans((curr) => curr.map((plan) => (plan.id === result.plan.id ? result.plan : plan)));
       await refreshReadiness(result.plan.id);
     } catch (err) {
@@ -1043,7 +1035,17 @@ export function PlanningView() {
           </div>
 
           <div className="planning-view__plans">
-            <h2>Stored projects</h2>
+            <div className="planning-view__plans-head">
+              <h2>Stored projects</h2>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeArchivedPlans}
+                  onChange={(event) => setIncludeArchivedPlans(event.target.checked)}
+                />
+                <span>Archived</span>
+              </label>
+            </div>
             {loading ? <p>Loading plans...</p> : null}
             {!loading && plans.length === 0 ? <p>No stored project plans yet.</p> : null}
             {plans.map((plan) => (
@@ -1054,7 +1056,7 @@ export function PlanningView() {
                 onClick={() => setSelectedId(plan.id)}
               >
                 <strong>{plan.name}</strong>
-                <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}</span>
+                <span>{plan.stack.frontend ?? 'next'} · {plan.stack.database ?? 'none'} · {plan.stack.auth ?? 'none'}{plan.metadata?.archivedAt ? ' · archived' : ''}</span>
               </button>
             ))}
           </div>
@@ -1303,6 +1305,13 @@ function HostedOperationsPanel({ opsStatus }: { opsStatus: OpsStatusResponse | n
       </div>
       {opsStatus ? (
         <div className="planning-view__ops-detail-grid">
+          <article className="planning-view__latest-deployment">
+            <strong>Latest deployment</strong>
+            <small>Commit: {opsStatus.deployment?.commit ?? '-'}</small>
+            <small>Deployment: {opsStatus.deployment?.deploymentUuid ?? opsStatus.deployment?.coolifyAppUuid ?? '-'}</small>
+            <small>Live check: {strongestOpsStatus(opsStatus.checks)}</small>
+            <small>Evidence: {opsStatus.evidence?.bundlePath ?? '-'}</small>
+          </article>
           <OpsDetailBlock
             title="Deployment"
             rows={[
@@ -1310,6 +1319,8 @@ function HostedOperationsPanel({ opsStatus }: { opsStatus: OpsStatusResponse | n
               ['Tunnel target', opsStatus.deployment?.tunnelTarget],
               ['Expected tunnel', opsStatus.deployment?.expectedTunnelTarget],
               ['Coolify app', opsStatus.deployment?.coolifyAppUuid],
+              ['Commit', opsStatus.deployment?.commit],
+              ['Deployment UUID', opsStatus.deployment?.deploymentUuid],
             ]}
             checks={deploymentChecks}
           />
@@ -1471,12 +1482,8 @@ function PlanDetail({
   readiness: ProjectPlanReadinessReport | null;
   proof: ProjectLaunchProofReport | null;
   launchPreview: ProjectLaunchPreview | null;
-  planOps: {
-    opsEvidence: ProjectPlanOpsEvidence[];
-    externalWriteAudit: ProjectPlanExternalWriteAuditEntry[];
-    providerPolicy: { policy: ProjectPlanProviderPolicy; report: ProviderPolicyReport };
-  } | null;
-  providerPolicy: { policy: ProjectPlanProviderPolicy; report: ProviderPolicyReport } | null;
+  planOps: ProjectPlanOpsEvidenceResponse | null;
+  providerPolicy: ProjectPlanProviderPolicyReport | null;
   planOpsSaving: string | null;
   ideationPrompt: string;
   ideationSessions: ProjectIdeationSession[];
@@ -1502,11 +1509,11 @@ function PlanDetail({
   ) => void;
   onExecuteLaunchSequence: () => void;
   onClonePlan: () => void;
-  onArchivePlan: () => void;
+  onArchivePlan: (archived?: boolean) => void;
   onCheckAllTools: (requiredOnly?: boolean) => void;
-  onUpdateProviderPolicy: (requiredToolIds: ProjectToolConnection['toolId'][]) => void;
+  onUpdateProviderPolicy: (input: { requiredToolIds?: ProjectToolConnection['toolId'][]; staleAfterMs?: number; scheduledChecksEnabled?: boolean }) => void;
   onRetryAction: (actionId: ProjectPlan['executionActions'][number]['id']) => void;
-  onPromoteRelease: () => void;
+  onPromoteRelease: (input?: { tag?: string; commit?: string; evidenceArtifactId?: string }) => void;
   executionTargets: Record<string, string>;
   onExecutionTargetChange: (actionId: ProjectPlan['executionActions'][number]['id'], targetDir: string) => void;
   deliveryTargets: Record<string, ProjectPlan['delivery'][number]['target'] | ''>;
@@ -1953,6 +1960,16 @@ function PlanDetail({
               >
                 Export markdown
               </a>
+              <a
+                className="planning-view__secondary planning-view__download-link"
+                href={planningArtifactsExportUrl(plan.id, {
+                  ...(artifactKindFilter === 'all' ? {} : { kind: artifactKindFilter }),
+                  ...(artifactSearch.trim() ? { search: artifactSearch.trim() } : {}),
+                  exportFormat: 'json',
+                })}
+              >
+                Export bundle
+              </a>
             </div>
             {filteredArtifacts.slice(0, 12).map((artifact) => (
               <details key={artifact.id} className="planning-view__artifact-preview">
@@ -2154,27 +2171,30 @@ function PlanningOpsPanel({
   onPromoteRelease,
 }: {
   plan: ProjectPlan;
-  planOps: {
-    opsEvidence: ProjectPlanOpsEvidence[];
-    externalWriteAudit: ProjectPlanExternalWriteAuditEntry[];
-    providerPolicy: { policy: ProjectPlanProviderPolicy; report: ProviderPolicyReport };
-  } | null;
-  providerPolicy: { policy: ProjectPlanProviderPolicy; report: ProviderPolicyReport } | null;
+  planOps: ProjectPlanOpsEvidenceResponse | null;
+  providerPolicy: ProjectPlanProviderPolicyReport | null;
   saving: string | null;
   executionSaving: string | null;
   onClonePlan: () => void;
-  onArchivePlan: () => void;
+  onArchivePlan: (archived?: boolean) => void;
   onCheckAllTools: (requiredOnly?: boolean) => void;
-  onUpdateProviderPolicy: (requiredToolIds: ProjectToolConnection['toolId'][]) => void;
-  onPromoteRelease: () => void;
+  onUpdateProviderPolicy: (input: { requiredToolIds?: ProjectToolConnection['toolId'][]; staleAfterMs?: number; scheduledChecksEnabled?: boolean }) => void;
+  onPromoteRelease: (input?: { tag?: string; commit?: string; evidenceArtifactId?: string }) => void;
 }) {
   const activePolicy = providerPolicy ?? planOps?.providerPolicy ?? null;
-  const report = activePolicy?.report ?? null;
-  const requiredToolIds = new Set<ProjectToolConnection['toolId']>(report?.requiredToolIds ?? []);
+  const requiredToolIds = new Set<ProjectToolConnection['toolId']>(activePolicy?.policy.requiredToolIds ?? []);
+  const [opsKindFilter, setOpsKindFilter] = useState<ProjectPlanOpsEvidence['kind'] | 'all'>('all');
+  const [opsStatusFilter, setOpsStatusFilter] = useState<ProjectPlanOpsEvidence['status'] | 'all'>('all');
+  const [promotionTag, setPromotionTag] = useState(plan.metadata?.releasePromotion?.tag ?? '');
+  const [promotionCommit, setPromotionCommit] = useState(plan.metadata?.releasePromotion?.commit ?? '');
+  const [promotionArtifactId, setPromotionArtifactId] = useState('');
+  const currentStaleDays = Math.max(1, Math.round((activePolicy?.policy.staleAfterMs ?? 7 * 86_400_000) / 86_400_000));
   const latestToolChecks = [...(plan.toolChecks ?? [])]
     .sort((a, b) => b.checkedAt - a.checkedAt)
     .slice(0, 5);
   const latestOpsEvidence = [...(planOps?.opsEvidence ?? [])]
+    .filter((item) => opsKindFilter === 'all' || item.kind === opsKindFilter)
+    .filter((item) => opsStatusFilter === 'all' || item.status === opsStatusFilter)
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 5);
   const latestAudit = [...(planOps?.externalWriteAudit ?? [])]
@@ -2188,7 +2208,7 @@ function PlanningOpsPanel({
     } else {
       next.delete(toolId);
     }
-    onUpdateProviderPolicy([...next]);
+    onUpdateProviderPolicy({ requiredToolIds: [...next] });
   }
 
   return (
@@ -2196,9 +2216,9 @@ function PlanningOpsPanel({
       <div className="planning-view__ops-header">
         <div>
           <h3>Plan operations</h3>
-          {report ? (
+          {activePolicy ? (
             <span>
-              {report.requiredToolIds.length} required · {report.missingRequiredToolIds.length} missing · {report.staleRequiredToolIds.length} stale
+              {activePolicy.policy.requiredToolIds.length} required · {activePolicy.missingToolIds.length} missing · {activePolicy.staleToolIds.length} stale
             </span>
           ) : (
             <span>Policy loading</span>
@@ -2208,10 +2228,15 @@ function PlanningOpsPanel({
           <button type="button" className="planning-view__secondary" disabled={saving === 'clone'} onClick={onClonePlan}>
             {saving === 'clone' ? 'Cloning...' : 'Clone'}
           </button>
-          <button type="button" className="planning-view__secondary" disabled={saving === 'archive'} onClick={onArchivePlan}>
-            {saving === 'archive' ? 'Archiving...' : 'Archive'}
+          <button
+            type="button"
+            className="planning-view__secondary"
+            disabled={saving === 'archive'}
+            onClick={() => onArchivePlan(!plan.metadata?.archivedAt)}
+          >
+            {saving === 'archive' ? 'Saving...' : plan.metadata?.archivedAt ? 'Unarchive' : 'Archive'}
           </button>
-          <button type="button" className="planning-view__secondary" disabled={saving === 'promote'} onClick={onPromoteRelease}>
+          <button type="button" className="planning-view__secondary" disabled={saving === 'promote'} onClick={() => onPromoteRelease()}>
             {saving === 'promote' ? 'Recording...' : 'Promote release'}
           </button>
         </div>
@@ -2232,11 +2257,27 @@ function PlanningOpsPanel({
               </label>
             ))}
           </div>
-          {report ? (
-            <small>
-              Schedule {report.scheduledChecksEnabled ? 'enabled' : 'disabled'} · stale after {Math.round(report.staleAfterMs / 86_400_000)} day(s)
-            </small>
-          ) : null}
+          <div className="planning-view__policy-controls">
+            <label>
+              <span>Stale days</span>
+              <input
+                type="number"
+                min={1}
+                value={currentStaleDays}
+                disabled={saving === 'provider-policy'}
+                onChange={(event) => onUpdateProviderPolicy({ staleAfterMs: Math.max(1, Number(event.target.value || 1)) * 86_400_000 })}
+              />
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={activePolicy?.policy.scheduledChecksEnabled === true}
+                disabled={saving === 'provider-policy'}
+                onChange={(event) => onUpdateProviderPolicy({ scheduledChecksEnabled: event.target.checked })}
+              />
+              <span>Scheduled checks</span>
+            </label>
+          </div>
           <div className="planning-view__capability-actions">
             <button
               type="button"
@@ -2265,10 +2306,59 @@ function PlanningOpsPanel({
         </article>
         <article>
           <strong>Ops evidence</strong>
+          <div className="planning-view__ops-filters">
+            <select value={opsKindFilter} onChange={(event) => setOpsKindFilter(event.target.value as ProjectPlanOpsEvidence['kind'] | 'all')}>
+              <option value="all">All kinds</option>
+              <option value="health">health</option>
+              <option value="deployment-drift">deployment-drift</option>
+              <option value="backup-restore">backup-restore</option>
+              <option value="alert-delivery">alert-delivery</option>
+              <option value="release-checklist">release-checklist</option>
+              <option value="evidence-bundle">evidence-bundle</option>
+            </select>
+            <select value={opsStatusFilter} onChange={(event) => setOpsStatusFilter(event.target.value as ProjectPlanOpsEvidence['status'] | 'all')}>
+              <option value="all">All statuses</option>
+              <option value="ok">ok</option>
+              <option value="warning">warning</option>
+              <option value="blocked">blocked</option>
+            </select>
+          </div>
           {latestOpsEvidence.length === 0 ? <small>No ops evidence recorded.</small> : null}
           {latestOpsEvidence.map((item) => (
             <small key={item.id}>{item.kind}: {item.status} · {formatDateTime(item.createdAt)} · {item.summary}</small>
           ))}
+        </article>
+        <article>
+          <strong>Release promotion</strong>
+          <label className="planning-view__compact-field">
+            <span>Tag</span>
+            <input value={promotionTag} placeholder="planning-release-YYYY-MM-DD" onChange={(event) => setPromotionTag(event.target.value)} />
+          </label>
+          <label className="planning-view__compact-field">
+            <span>Commit</span>
+            <input value={promotionCommit} placeholder="git sha" onChange={(event) => setPromotionCommit(event.target.value)} />
+          </label>
+          <label className="planning-view__compact-field">
+            <span>Evidence</span>
+            <select value={promotionArtifactId} onChange={(event) => setPromotionArtifactId(event.target.value)}>
+              <option value="">Generated bundle</option>
+              {(plan.executionArtifacts ?? []).slice(0, 12).map((artifact) => (
+                <option key={artifact.id} value={artifact.id}>{artifact.kind}: {artifact.title}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="planning-view__secondary"
+            disabled={saving === 'promote'}
+            onClick={() => onPromoteRelease({
+              ...(promotionTag.trim() ? { tag: promotionTag.trim() } : {}),
+              ...(promotionCommit.trim() ? { commit: promotionCommit.trim() } : {}),
+              ...(promotionArtifactId ? { evidenceArtifactId: promotionArtifactId } : {}),
+            })}
+          >
+            {saving === 'promote' ? 'Recording...' : 'Record promotion'}
+          </button>
         </article>
         <article>
           <strong>External write audit</strong>

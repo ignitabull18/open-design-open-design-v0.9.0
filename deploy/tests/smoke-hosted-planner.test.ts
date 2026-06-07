@@ -64,6 +64,7 @@ async function startMockPlanner() {
       return json(res, 200, { plan, workflow: {} });
     }
     if (path === `/api/plans/${plan.id}` && req.method === 'PATCH') return json(res, 200, { plan });
+    if (path === `/api/plans/${plan.id}/archive` && req.method === 'POST') return json(res, 200, { plan: { ...plan, metadata: { archivedAt: Date.now() } } });
     if (path === `/api/plans/${plan.id}/sections/planning/runs` && req.method === 'POST') {
       plan.executionRuns = [run];
       return json(res, 201, { plan, run, artifacts: [] });
@@ -106,6 +107,7 @@ test('hosted planner smoke verifies auth, persistence, replay, and SSE', async (
     version: 'test-version',
     eventCount: 1,
     sseEventCount: 1,
+    archived: true,
   });
 });
 

@@ -310,6 +310,26 @@
   color: var(--text-strong);
 }
 
+.planning-view__plans-head {
+  display: flex;
+  flex: 0 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.planning-view__plans-head h2 {
+  flex: initial;
+}
+
+.planning-view__plans-head label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .planning-view__tools span {
   padding: 5px 8px;
 }
@@ -1300,13 +1320,43 @@
 }
 
 .planning-view__artifact-toolbar select,
-.planning-view__artifact-toolbar input {
+.planning-view__artifact-toolbar input,
+.planning-view__policy-controls input,
+.planning-view__compact-field input,
+.planning-view__compact-field select,
+.planning-view__ops-filters select {
   min-height: 32px;
   padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--text);
+}
+
+.planning-view__policy-controls,
+.planning-view__ops-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.planning-view__policy-controls label,
+.planning-view__compact-field {
+  display: grid;
+  gap: 4px;
+}
+
+.planning-view__policy-controls label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+}
+
+.planning-view__policy-controls span,
+.planning-view__compact-field span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .planning-view__download-link {
@@ -1321,6 +1371,10 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg);
+}
+
+.planning-view__latest-deployment {
+  min-width: 0;
 }
 
 .planning-view__ops-card-head {

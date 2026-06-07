@@ -23,6 +23,7 @@ export interface HostedReleaseChecklistResult {
 interface HostedReleaseChecklistOptions {
   skipLocalChecks?: boolean;
   skipLiveChecks?: boolean;
+  stepTimeoutMs?: number;
   execFileImpl?: typeof execFileAsync;
 }
 
@@ -31,15 +32,16 @@ export async function runHostedReleaseChecklist(
 ): Promise<HostedReleaseChecklistResult> {
   const generatedAt = new Date().toISOString();
   const execImpl = options.execFileImpl || execFileAsync;
+  const stepTimeoutMs = options.stepTimeoutMs ?? Number(process.env.OD_RELEASE_STEP_TIMEOUT_MS || 600_000);
   const steps: HostedReleaseChecklistStep[] = [];
   if (options.skipLocalChecks || process.env.OD_RELEASE_SKIP_LOCAL_CHECKS === '1') {
     steps.push({ id: 'local-checks', status: 'skipped', summary: 'Local guard/typecheck/deploy tests were skipped by option.' });
   } else {
-    await runCommandStep(steps, execImpl, 'deploy-tests', 'sh', ['-lc', 'node --import tsx --test deploy/tests/*.test.ts']);
-    await runCommandStep(steps, execImpl, 'guard', 'pnpm', ['guard']);
-    await runCommandStep(steps, execImpl, 'contracts-typecheck', 'pnpm', ['--filter', '@open-design/contracts', 'typecheck']);
-    await runCommandStep(steps, execImpl, 'daemon-typecheck', 'pnpm', ['--filter', '@open-design/daemon', 'typecheck']);
-    await runCommandStep(steps, execImpl, 'web-typecheck', 'pnpm', ['--filter', '@open-design/web', 'typecheck']);
+    await runCommandStep(steps, execImpl, 'deploy-tests', 'sh', ['-lc', 'node --import tsx --test deploy/tests/*.test.ts'], stepTimeoutMs);
+    await runCommandStep(steps, execImpl, 'guard', 'pnpm', ['guard'], stepTimeoutMs);
+    await runCommandStep(steps, execImpl, 'contracts-typecheck', 'pnpm', ['--filter', '@open-design/contracts', 'typecheck'], stepTimeoutMs);
+    await runCommandStep(steps, execImpl, 'daemon-typecheck', 'pnpm', ['--filter', '@open-design/daemon', 'typecheck'], stepTimeoutMs);
+    await runCommandStep(steps, execImpl, 'web-typecheck', 'pnpm', ['--filter', '@open-design/web', 'typecheck'], stepTimeoutMs);
   }
   if (options.skipLiveChecks || process.env.OD_RELEASE_SKIP_LIVE_CHECKS === '1') {
     steps.push({ id: 'live-checks', status: 'skipped', summary: 'Live hosted post-deploy, drift, and evidence export checks were skipped by option.' });
@@ -47,16 +49,16 @@ export async function runHostedReleaseChecklist(
     await runFunctionStep(steps, 'hosted-post-deploy', async () => {
       const result = await runHostedPostDeploy();
       return `post-deploy ok with ${result.providerConnections.connectedProviders.join(', ')}`;
-    });
+    }, stepTimeoutMs);
     await runFunctionStep(steps, 'deployment-drift', async () => {
       const result = await checkHostedDeploymentDrift();
       if (!result.ok) throw new Error(result.checks.filter((check) => check.status === 'drift').map((check) => `${check.id}: expected ${check.expected}, got ${check.actual}`).join('; '));
       return `${result.checks.length} drift checks passed`;
-    });
+    }, stepTimeoutMs);
     await runFunctionStep(steps, 'ops-evidence-export', async () => {
       const result = await exportHostedOpsEvidence();
       return `wrote ${result.outputPath}`;
-    });
+    }, stepTimeoutMs);
   }
   return {
     ok: steps.every((step) => step.status === 'passed' || step.status === 'skipped'),
@@ -71,15 +73,16 @@ async function runCommandStep(
   id: string,
   command: string,
   args: string[],
+  timeoutMs: number,
 ): Promise<void> {
   await runFunctionStep(steps, id, async () => {
     const result = await execImpl(command, args, {
       env: localCheckEnv(),
-      timeout: 600_000,
+      timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
     });
     return `${command} ${args.join(' ')} passed${result.stdout ? `: ${result.stdout.slice(0, 200).trim()}` : ''}`;
-  });
+  }, timeoutMs + 1_000);
 }
 
 function localCheckEnv(): NodeJS.ProcessEnv {
@@ -107,11 +110,26 @@ async function runFunctionStep(
   steps: HostedReleaseChecklistStep[],
   id: string,
   fn: () => Promise<string>,
+  timeoutMs: number,
 ): Promise<void> {
   try {
-    steps.push({ id, status: 'passed', summary: await fn() });
+    steps.push({ id, status: 'passed', summary: await withTimeout(fn(), timeoutMs, id) });
   } catch (error) {
     steps.push({ id, status: 'failed', summary: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, id: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${id} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -122,7 +140,9 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch((error) => {
+  main().then(() => {
+    process.exit(0);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
