@@ -136,15 +136,43 @@ OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev \
 node --experimental-strip-types deploy/scripts/export-hosted-ops-evidence.ts
 ```
 
+To export the latest restore-drill proof into the evidence folder:
+
+```bash
+OD_BACKUP_DRILL_MANIFEST=/root/open-design-backups/latest-restore-drill.json \
+node --experimental-strip-types deploy/scripts/export-hosted-restore-evidence.ts
+```
+
 Alert delivery proof is separate from alert configuration. To prove the ntfy or
-webhook path accepts messages, run the monitor with success alerts enabled from
+webhook path accepts messages and write evidence, run the alert proof script from
 the host or an operator shell that has `OD_ALERT_WEBHOOK_URL` configured:
 
 ```bash
-OD_ALERT_ON_SUCCESS=1 \
 OD_ALERT_WEBHOOK_URL="$OD_ALERT_WEBHOOK_URL" \
 OD_ALERT_WEBHOOK_TOKEN="$OD_ALERT_WEBHOOK_TOKEN" \
-node --experimental-strip-types deploy/scripts/monitor-hosted-planner.ts
+node --experimental-strip-types deploy/scripts/prove-hosted-alert-delivery.ts
+```
+
+Before a release, check that the public route, Coolify app UUID, tunnel target,
+and daemon runtime env have not drifted from the documented production values:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_EXPECTED_TUNNEL_TARGET=80432e44-51c1-45bc-b6d8-098c423606de.cfargotunnel.com \
+COOLIFY_APP_UUID=jrdtaush3izl7bz10f9gg9qo \
+node --experimental-strip-types deploy/scripts/check-hosted-deployment-drift.ts
+```
+
+The operator release checklist combines local checks, the live post-deploy gate,
+drift detection, and evidence export:
+
+```bash
+OD_HOSTED_BASE_URL=https://open-design.ignitabull.org \
+OD_API_TOKEN="$OD_API_TOKEN" \
+OD_PLAN_ID=<production-plan-id> \
+OD_REQUIRED_TOOL_IDS=github,cloudflare-hosting,supermemory \
+OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev \
+node --experimental-strip-types deploy/scripts/run-hosted-release-checklist.ts
 ```
 
 To make a Docker/Compose update fail closed when the hosted gate is missing or

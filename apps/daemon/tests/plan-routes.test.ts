@@ -1062,10 +1062,12 @@ describe('planning routes', () => {
     const updatedProof = await jsonFetch(`${baseUrl}/api/plans/${artifact.body.plan.id}/proof`);
     const updatedProofGates = new Map<string, ProjectLaunchProofGate>(updatedProof.body.proof.gates.map((gate: ProjectLaunchProofGate) => [gate.id, gate]));
     expect(updatedProofGates.get('project-management')).toMatchObject({
-      status: 'ready',
-      missingEvidence: [],
+      status: 'not_started',
+      missingEvidence: expect.arrayContaining([
+        expect.stringContaining('confirmed project-management run'),
+      ]),
+      artifactIds: [],
     });
-    expect(updatedProofGates.get('project-management')!.artifactIds).toContain(artifact.body.artifact.id);
   });
 
   it('rejects unknown standalone artifact kinds', async () => {
@@ -1149,6 +1151,74 @@ describe('planning routes', () => {
       expect.objectContaining({ toolId: 'github', status: 'blocked' }),
     ]));
     expect(checked.body.artifacts[0].content).toContain('stderr: gh: not logged in');
+  });
+
+  it('runs explicit live checks for the expanded provider set', async () => {
+    const toolCheckCalls: Array<{ command: string; args: string[] }> = [];
+    const baseUrl = await startPlanServer({
+      toolCheckRunner: async (request) => {
+        toolCheckCalls.push({
+          command: request.command,
+          args: request.args,
+        });
+        return {
+          exitCode: 0,
+          stdout: 'ok',
+          stderr: '',
+          durationMs: 4,
+        };
+      },
+    });
+    const selectedTools = [
+      'stripe',
+      'linear',
+      'vercel',
+      'coolify',
+      'hostinger',
+      'openrouter',
+      'ollama-cloud',
+      'supermemory',
+      'composio',
+      'better-auth',
+      'cloudflare-access',
+      'supabase-auth',
+    ].map((toolId) => ({ toolId, status: 'wanted' }));
+    const created = await jsonFetch(`${baseUrl}/api/plans`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Provider Check Matrix',
+        intent: { purpose: 'Verify all selected provider checks before launch.' },
+        selectedTools,
+      }),
+    });
+
+    for (const { toolId } of selectedTools) {
+      const checked = await jsonFetch(`${baseUrl}/api/plans/${created.body.plan.id}/tools/${toolId}/check`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      expect(checked.status).toBe(201);
+      expect(checked.body.toolCheck).toMatchObject({ toolId, status: 'connected' });
+    }
+
+    expect(toolCheckCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'vercel', args: ['whoami'] }),
+      expect.objectContaining({ command: 'pnpm', args: ['wrangler', 'whoami'] }),
+      expect.objectContaining({ command: 'supabase', args: ['projects', 'list'] }),
+    ]));
+    const envCheckCalls = toolCheckCalls.filter((call) => call.command === process.execPath);
+    expect(envCheckCalls).toHaveLength(9);
+    expect(envCheckCalls.map((call) => call.args.join(' '))).toEqual(expect.arrayContaining([
+      expect.stringContaining('STRIPE_SECRET_KEY'),
+      expect.stringContaining('LINEAR_API_KEY'),
+      expect.stringContaining('COOLIFY_URL'),
+      expect.stringContaining('HOSTINGER_SSH_HOST'),
+      expect.stringContaining('OPENROUTER_API_KEY'),
+      expect.stringContaining('OLLAMA_CLOUD_API_KEY'),
+      expect.stringContaining('SUPERMEMORY_API_KEY'),
+      expect.stringContaining('COMPOSIO_API_KEY'),
+      expect.stringContaining('BETTER_AUTH_SECRET'),
+    ]));
   });
 
   it('records manual selected tool status with evidence', async () => {

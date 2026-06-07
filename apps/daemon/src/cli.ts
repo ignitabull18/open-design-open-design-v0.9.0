@@ -175,7 +175,7 @@ const DAEMON_BOOLEAN_FLAGS = new Set([
 ]);
 const LIBRARY_STRING_FLAGS = new Set(['daemon-url', 'query', 'tag']);
 const LIBRARY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
-const OPS_STRING_FLAGS = new Set(['daemon-url', 'token', 'token-file']);
+const OPS_STRING_FLAGS = new Set(['daemon-url', 'token', 'token-file', 'output']);
 const OPS_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const PROJECT_STRING_FLAGS = new Set([
   'daemon-url', 'name', 'skill', 'design-system', 'plugin', 'metadata-json',
@@ -4611,6 +4611,29 @@ async function planDaemonUrl(flags) {
   return cliDaemonUrl(flags);
 }
 
+function installPlanFetchAuth(base, flags) {
+  const token = typeof flags.token === 'string'
+    ? flags.token.trim()
+    : flags['token-file']
+      ? readTextFlag(flags['token-file'], '--token-file').trim()
+      : (process.env.OD_API_TOKEN || '').trim();
+  if (!token) return;
+  const nativeFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (input, init = {}) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input?.url ?? '';
+    if (!url.startsWith(`${base}/api/plans`) && !url.startsWith(`${base}/api/planning`)) {
+      return nativeFetch(input, init);
+    }
+    const headers = new Headers(init.headers ?? (typeof input !== 'string' && !(input instanceof URL) ? input.headers : undefined));
+    if (!headers.has('authorization')) headers.set('authorization', `Bearer ${token}`);
+    return nativeFetch(input, { ...init, headers });
+  };
+}
+
 function safeReadJsonFile(p) {
   try {
     if (p === '-') return JSON.parse(readFileSync(0, 'utf8'));
@@ -4686,6 +4709,7 @@ Common options:
   const rest = args.slice(1);
   const flags = parseFlags(rest, { string: PLAN_STRING_FLAGS, boolean: PLAN_BOOLEAN_FLAGS });
   const base = (await planDaemonUrl(flags)).replace(/\/$/, '');
+  installPlanFetchAuth(base, flags);
   switch (sub) {
     case 'session': {
       const token = typeof flags.token === 'string'
@@ -6683,13 +6707,15 @@ async function runOps(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
   od ops status [--json] [--daemon-url <url>] [--token <token>|--token-file <path|->]
+  od ops evidence [--output <path>] [--json] [--daemon-url <url>] [--token <token>|--token-file <path|->]
 
-Print hosted operations status from /api/ops/status. Use --token or OD_API_TOKEN
-when querying a hosted daemon protected by OD_API_TOKEN.`);
+Print hosted operations status or write a markdown evidence artifact from
+/api/ops/status. Use --token or OD_API_TOKEN when querying a hosted daemon
+protected by OD_API_TOKEN.`);
     process.exit(args.length === 0 ? 2 : 0);
   }
   const sub = args[0];
-  if (sub !== 'status') {
+  if (sub !== 'status' && sub !== 'evidence') {
     console.error(`unknown subcommand: od ops ${sub}`);
     process.exit(2);
   }
@@ -6713,11 +6739,58 @@ when querying a hosted daemon protected by OD_API_TOKEN.`);
   }
   if (!resp.ok) return structuredHttpFailure(resp);
   const data = await resp.json();
+  if (sub === 'evidence') {
+    const outputPath = typeof flags.output === 'string' && flags.output.trim()
+      ? flags.output.trim()
+      : `docs/deployment/evidence/${new Date().toISOString().slice(0, 10)}-ops-status.md`;
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, renderOpsEvidenceMarkdown(data), 'utf8');
+    if (flags.json) return process.stdout.write(JSON.stringify({ ok: true, outputPath, generatedAt: data.generatedAt ?? new Date().toISOString() }, null, 2) + '\n');
+    console.log(`Wrote ops evidence to ${outputPath}`);
+    return;
+  }
   if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
   console.log(`[ops] ${data.service ?? 'open-design'} source=${data.source ?? 'unknown'}`);
   for (const check of Array.isArray(data.checks) ? data.checks : []) {
     console.log(`  ${check.status ?? 'unknown'}  ${check.label ?? check.id}: ${check.summary ?? ''}`);
   }
+}
+
+function renderOpsEvidenceMarkdown(data) {
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  return [
+    `# Hosted Ops Evidence - ${String(data?.generatedAt || new Date().toISOString()).slice(0, 10)}`,
+    '',
+    `Generated at: \`${data?.generatedAt || new Date().toISOString()}\``,
+    `Service: \`${data?.service || 'open-design'}\``,
+    `Source: \`${data?.source || 'unknown'}\``,
+    '',
+    'Checks:',
+    '',
+    ...(checks.length
+      ? checks.map((check) => `- \`${check.id || check.label || 'unknown'}\`: \`${check.status || 'unknown'}\` - ${check.summary || ''}`)
+      : ['- No checks returned.']),
+    '',
+    'Rate limit:',
+    '',
+    `- Enabled: \`${String(data?.rateLimit?.enabled ?? false)}\``,
+    `- Window ms: \`${String(data?.rateLimit?.windowMs ?? '')}\``,
+    `- Max requests: \`${String(data?.rateLimit?.maxRequests ?? '')}\``,
+    '',
+    'Backup:',
+    '',
+    `- Offsite target: \`${data?.backup?.offsiteTarget || ''}\``,
+    `- Restore check: \`${data?.backup?.restoreCheck || ''}\``,
+    `- Checked at: \`${data?.backup?.checkedAt || ''}\``,
+    '',
+    'Monitor:',
+    '',
+    `- Checked at: \`${data?.monitor?.checkedAt || ''}\``,
+    `- Alert target: \`${data?.monitor?.alertTarget || ''}\``,
+    '',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------

@@ -224,6 +224,14 @@ OD_API_TOKEN="$OD_API_TOKEN" \
 od ops status --daemon-url https://open-design.ignitabull.org --json
 ```
 
+Write a markdown ops artifact through the CLI mirror:
+
+```bash
+OD_API_TOKEN="$OD_API_TOKEN" \
+od ops evidence --daemon-url https://open-design.ignitabull.org \
+  --output docs/deployment/evidence/$(date -u +%F)-ops-status.md
+```
+
 If Coolify CLI access is unavailable, use the Coolify app terminal/logs screen
 for the same application UUID and keep any copied output free of
 `OD_API_TOKEN`, provider API keys, and session cookies.
@@ -255,7 +263,7 @@ Minimum readiness inventory:
 
 | Provider | Required for | Hosted status rule |
 | --- | --- | --- |
-| GitHub | repo creation and issue handoff | `od plan check-tool <plan> --tool github --json` returns connected or deferred with notes |
+| GitHub | repo creation and issue handoff | `OD_API_TOKEN="$OD_API_TOKEN" od plan check-tool <plan> --tool github --daemon-url https://open-design.ignitabull.org --json` returns connected or deferred with notes |
 | Cloudflare | hosted route and deployment proof | `/api/health` works on `open-design.ignitabull.org`; deployment target records Cloudflare proof |
 | Cloudflare AI Gateway | AI runtime planning | connected or deferred before AI delivery is marked ready |
 | Trigger.dev | workflow automation planning | connected or deferred before workflow delivery is marked ready |
@@ -309,6 +317,17 @@ model calls through AI Gateway yet. Narrow the set with
   `OD_PROVIDER_CONNECTION_IDS=supermemory,composio,trigger-dev`.
 - Evidence export: run `deploy/scripts/export-hosted-ops-evidence.ts` after a
   green post-deploy gate to write the release evidence bundle.
+- Restore evidence export: run
+  `deploy/scripts/export-hosted-restore-evidence.ts` after the weekly restore
+  drill updates `/root/open-design-backups/latest-restore-drill.json`.
+- Alert delivery proof: run `deploy/scripts/prove-hosted-alert-delivery.ts` with
+  the production alert webhook configured and attach the generated evidence.
+- Deployment drift: run `deploy/scripts/check-hosted-deployment-drift.ts` before
+  release to compare the Cloudflare tunnel target, Coolify app UUID, and daemon
+  runtime env against the documented production values.
+- Release checklist: run `deploy/scripts/run-hosted-release-checklist.ts` for the
+  combined local checks, live post-deploy gate, drift detection, and evidence
+  export report.
 - Hardening: protected APIs return `401` without auth, monitor alerts have a
   delivery target, backups leave the host, restore drill manifest is current,
   and public-origin changes include a rate-limit/auth review.

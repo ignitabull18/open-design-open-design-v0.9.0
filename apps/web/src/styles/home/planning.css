@@ -1074,6 +1074,66 @@
   color: var(--text-muted);
 }
 
+.planning-view__artifact-browser {
+  display: grid;
+  gap: 8px;
+}
+
+.planning-view__artifact-browser h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.planning-view__artifact-preview {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__artifact-preview summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.planning-view__artifact-preview summary strong {
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.planning-view__artifact-preview summary span,
+.planning-view__artifact-preview small {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.planning-view__artifact-preview small {
+  display: block;
+  padding: 0 10px 8px;
+  overflow-wrap: anywhere;
+}
+
+.planning-view__artifact-preview pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .planning-view__runtime,
 .planning-view__actions,
 .planning-view__capabilities {

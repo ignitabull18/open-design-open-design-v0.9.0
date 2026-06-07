@@ -1579,13 +1579,18 @@ function PlanDetail({
           </article>
         ))}
         {(plan.executionArtifacts ?? []).length > 0 ? (
-          <div className="planning-view__task-list">
+          <div className="planning-view__artifact-browser">
             <h3>Artifacts</h3>
-            <ul>
-              {(plan.executionArtifacts ?? []).slice(0, 5).map((artifact) => (
-                <li key={artifact.id}>{artifact.kind}: {artifact.title}</li>
-              ))}
-            </ul>
+            {(plan.executionArtifacts ?? []).slice(0, 8).map((artifact) => (
+              <details key={artifact.id} className="planning-view__artifact-preview">
+                <summary>
+                  <strong>{artifact.title}</strong>
+                  <span>{artifact.kind} · {formatDateTime(artifact.createdAt)}</span>
+                </summary>
+                {artifact.runId ? <small>Run: {artifact.runId}</small> : null}
+                <pre>{artifact.content}</pre>
+              </details>
+            ))}
           </div>
         ) : null}
         <form

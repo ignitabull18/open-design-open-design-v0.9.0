@@ -2090,12 +2090,12 @@ function buildLaunchProofGates(plan: ProjectPlan): ProjectLaunchProofGate[] {
     buildActionLaunchProofGate({
       id: 'project-management',
       label: 'Project-management handoff',
-      status: projectManagementRun?.status === 'completed' || hasArtifactKind(plan, 'project-management-plan') ? 'ready' : projectManagementRun?.status === 'blocked' || projectManagementRun?.status === 'failed' ? 'blocked' : projectManagementRun ? 'in_progress' : 'not_started',
-      summary: projectManagementRun?.summary ?? 'Project-management handoff artifact or external issue/doc proof is missing.',
+      status: projectManagementRun?.status === 'completed' ? 'ready' : projectManagementRun?.status === 'blocked' || projectManagementRun?.status === 'failed' ? 'blocked' : projectManagementRun ? 'in_progress' : 'not_started',
+      summary: projectManagementRun?.summary ?? 'Project-management handoff external issue/doc proof is missing.',
       proof: projectManagementRun?.evidence ?? [],
-      missingEvidence: projectManagementRun?.status === 'completed' || hasArtifactKind(plan, 'project-management-plan') ? [] : ['Create GitHub Issues, Linear issues, or Google Docs handoff proof.'],
+      missingEvidence: projectManagementRun?.status === 'completed' ? [] : ['Create GitHub Issues, Linear issues, or Google Docs handoff proof through a confirmed project-management run.'],
       runIds: runIdsByAction('project-management'),
-      artifactIds: artifactIdsByKind('project-management-plan'),
+      artifactIds: projectManagementRun?.artifactIds ?? [],
     }),
   ];
   return gates;
@@ -7582,6 +7582,9 @@ function buildToolCheckInvocation(
   switch (toolId) {
     case 'github':
     case 'github-issues':
+      if (process.env.GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim()) {
+        return buildGitHubTokenCheckInvocation();
+      }
       return { command: 'gh', args: ['auth', 'status'] };
     case 'cloudflare-hosting':
     case 'cloudflare-data':
@@ -7592,14 +7595,59 @@ function buildToolCheckInvocation(
       return { command: 'vercel', args: ['whoami'] };
     case 'onepassword':
       return { command: 'op', args: ['whoami'] };
+    case 'stripe':
+      return buildEnvToolCheckInvocation(toolId, ['STRIPE_SECRET_KEY']);
+    case 'linear':
+      return buildEnvToolCheckInvocation(toolId, ['LINEAR_API_KEY']);
+    case 'coolify':
+      return buildEnvToolCheckInvocation(toolId, ['COOLIFY_URL', 'COOLIFY_TOKEN']);
+    case 'hostinger':
+      return buildEnvToolCheckInvocation(toolId, ['HOSTINGER_SSH_HOST', 'HOSTINGER_SSH_USER']);
+    case 'openrouter':
+      return buildEnvToolCheckInvocation(toolId, ['OPENROUTER_API_KEY']);
+    case 'ollama-cloud':
+      return buildEnvToolCheckInvocation(toolId, ['OLLAMA_CLOUD_API_KEY', 'OLLAMA_API_KEY'], 'any');
+    case 'composio':
+      return buildEnvToolCheckInvocation(toolId, ['COMPOSIO_API_KEY']);
+    case 'supermemory':
+      return buildEnvToolCheckInvocation(toolId, ['SUPERMEMORY_API_KEY']);
+    case 'better-auth':
+      return buildEnvToolCheckInvocation(toolId, ['BETTER_AUTH_SECRET']);
     case 'supabase-database':
     case 'supabase-auth':
       return { command: 'supabase', args: ['projects', 'list'] };
     case 'trigger-dev':
-      return { command: 'npx', args: ['trigger.dev@latest', 'whoami'] };
+      return buildEnvToolCheckInvocation(toolId, ['TRIGGER_ACCESS_TOKEN', 'TRIGGER_SECRET_KEY'], 'any');
     default:
       return null;
   }
+}
+
+function buildGitHubTokenCheckInvocation(): { command: string; args: string[] } {
+  const script = [
+    'const token=String(process.env.GITHUB_TOKEN||process.env.GH_TOKEN||"").trim();',
+    'if(!token){console.error("missing GITHUB_TOKEN or GH_TOKEN");process.exit(1);}',
+    'fetch("https://api.github.com/user",{headers:{authorization:`Bearer ${token}`,"user-agent":"open-design-plan-check"}})',
+    '.then(async(response)=>{if(!response.ok){console.error(`github api ${response.status}: ${(await response.text()).slice(0,200)}`);process.exit(1);} const body=await response.json(); console.log(`github token ready: ${body.login||"authenticated"}`);})',
+    '.catch((error)=>{console.error(error instanceof Error?error.message:String(error));process.exit(1);});',
+  ].join('');
+  return { command: process.execPath, args: ['-e', script] };
+}
+
+function buildEnvToolCheckInvocation(
+  toolId: PlanningToolId,
+  envNames: string[],
+  mode: 'all' | 'any' = 'all',
+): { command: string; args: string[] } {
+  const script = [
+    `const names=${JSON.stringify(envNames)};`,
+    `const mode=${JSON.stringify(mode)};`,
+    'const present=names.filter((name)=>String(process.env[name]||"").trim());',
+    'const ok=mode==="any"?present.length>0:present.length===names.length;',
+    'if(!ok){console.error(`missing ${mode==="any"?"one of ":""}${names.filter((name)=>!present.includes(name)).join(",")}`);process.exit(1);}',
+    `console.log(${JSON.stringify(toolId)} + " env ready: " + present.join(","));`,
+  ].join('');
+  return { command: process.execPath, args: ['-e', script] };
 }
 
 function buildCloudflareToolCheckInvocation(packageManager: ProjectStackDecision['packageManager']): { command: string; args: string[] } {
