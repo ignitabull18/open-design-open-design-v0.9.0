@@ -106,6 +106,46 @@ test('deployment drift check compares Cloudflare, Coolify, and daemon runtime va
   }
 });
 
+test('deployment drift check falls back to Cloudflare DNS records for proxied hostnames', async () => {
+  const server = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true, bindHost: '0.0.0.0', dataDir: '/app/.od' }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.listen(0, '127.0.0.1', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    const noPublicCname = Object.assign(new Error('queryCname ENODATA'), { code: 'ENODATA' });
+    const result = await checkHostedDeploymentDrift({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      expectedTunnelTarget: 'expected-tunnel.cfargotunnel.com',
+      expectedCoolifyAppUuid: 'app-1',
+      resolveCnameImpl: async () => {
+        throw noPublicCname;
+      },
+      resolveCloudflareDnsTargetImpl: async () => 'expected-tunnel.cfargotunnel.com',
+      checkCoolifyBackupReadinessImpl: async () => ({
+        ok: true,
+        appUuid: 'app-1',
+        appName: 'Open Design',
+        storageUuid: 'storage-1',
+        storageName: 'volume-1',
+        mountPath: '/app/.od',
+        backupCommand: 'backup',
+        restoreCommand: 'restore',
+      }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.checks[0]?.actual, 'expected-tunnel.cfargotunnel.com');
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
 test('release checklist can emit a skipped operator report without live dependencies', async () => {
   const result = await runHostedReleaseChecklist({
     skipLocalChecks: true,

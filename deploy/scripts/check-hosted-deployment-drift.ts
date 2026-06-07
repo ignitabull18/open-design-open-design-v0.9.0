@@ -25,6 +25,7 @@ interface HostedDeploymentDriftOptions {
   expectedBindHost?: string;
   expectedDataDir?: string;
   resolveCnameImpl?: typeof resolveCname;
+  resolveCloudflareDnsTargetImpl?: typeof resolveCloudflareDnsTarget;
   checkCoolifyBackupReadinessImpl?: typeof checkCoolifyBackupReadiness;
 }
 
@@ -38,13 +39,14 @@ export async function checkHostedDeploymentDrift(
   const expectedBindHost = options.expectedBindHost || process.env.OD_EXPECTED_BIND_HOST || '0.0.0.0';
   const expectedDataDir = options.expectedDataDir || process.env.OD_EXPECTED_DATA_DIR || '/app/.od';
   const cnameResolver = options.resolveCnameImpl || resolveCname;
+  const cloudflareDnsResolver = options.resolveCloudflareDnsTargetImpl || resolveCloudflareDnsTarget;
   const coolifyChecker = options.checkCoolifyBackupReadinessImpl || checkCoolifyBackupReadiness;
 
   const status = await getJson(`${baseUrl}/api/daemon/status`);
-  const cname = await cnameResolver(host);
+  const dnsTarget = await resolveDnsTarget(host, cnameResolver, cloudflareDnsResolver);
   const coolify = await coolifyChecker({ appUuid: expectedCoolifyAppUuid });
   const checks = [
-    buildDriftCheck('cloudflare-cname', expectedTunnelTarget, String(cname[0] || '').replace(/\.$/, '')),
+    buildDriftCheck('cloudflare-cname', expectedTunnelTarget, dnsTarget),
     buildDriftCheck('coolify-app-uuid', expectedCoolifyAppUuid, coolify.appUuid),
     buildDriftCheck('daemon-bind-host', expectedBindHost, String(status.body.bindHost || '')),
     buildDriftCheck('daemon-data-dir', expectedDataDir, String(status.body.dataDir || '')),
@@ -54,6 +56,52 @@ export async function checkHostedDeploymentDrift(
     baseUrl,
     checks,
   };
+}
+
+async function resolveDnsTarget(
+  host: string,
+  cnameResolver: typeof resolveCname,
+  cloudflareDnsResolver: typeof resolveCloudflareDnsTarget,
+): Promise<string> {
+  try {
+    const cname = await cnameResolver(host);
+    return String(cname[0] || '').replace(/\.$/, '');
+  } catch (error) {
+    if (!isMissingCnameError(error)) throw error;
+    return cloudflareDnsResolver(host);
+  }
+}
+
+function isMissingCnameError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: string }).code === 'ENODATA';
+}
+
+async function resolveCloudflareDnsTarget(host: string): Promise<string> {
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID || process.env.CF_ZONE_ID;
+  const token = process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
+  if (!zoneId || !token) {
+    throw new Error(`No public CNAME for ${host}; set CLOUDFLARE_ZONE_ID and CLOUDFLARE_API_TOKEN to inspect proxied Cloudflare DNS records.`);
+  }
+  const params = new URLSearchParams({ type: 'CNAME', name: host, per_page: '1' });
+  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(zoneId)}/dns_records?${params}`, {
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+  });
+  const body = await response.json().catch(() => ({})) as JsonObject;
+  if (!response.ok || body.success === false) {
+    throw new Error(`Cloudflare DNS lookup failed with ${response.status}: ${JSON.stringify(body)}`);
+  }
+  const record = Array.isArray(body.result) ? body.result[0] : undefined;
+  const content = typeof record?.content === 'string' ? record.content : '';
+  if (!content) {
+    throw new Error(`Cloudflare DNS lookup found no CNAME record for ${host}.`);
+  }
+  return content.replace(/\.$/, '');
 }
 
 function buildDriftCheck(id: string, expected: string, actual: string): HostedDeploymentDriftCheck {

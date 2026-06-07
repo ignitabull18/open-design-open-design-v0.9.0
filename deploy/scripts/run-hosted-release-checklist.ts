@@ -73,9 +73,34 @@ async function runCommandStep(
   args: string[],
 ): Promise<void> {
   await runFunctionStep(steps, id, async () => {
-    const result = await execImpl(command, args, { timeout: 600_000, maxBuffer: 10 * 1024 * 1024 });
+    const result = await execImpl(command, args, {
+      env: localCheckEnv(),
+      timeout: 600_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
     return `${command} ${args.join(' ')} passed${result.stdout ? `: ${result.stdout.slice(0, 200).trim()}` : ''}`;
   });
+}
+
+function localCheckEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    'OD_API_TOKEN',
+    'OD_PLAN_ID',
+    'OD_PROVIDER_CONNECTION_IDS',
+    'SUPERMEMORY_API_KEY',
+    'SUPERMEMORY_CODEX_API_KEY',
+    'COMPOSIO_API_KEY',
+    'TRIGGER_ACCESS_TOKEN',
+    'TRIGGER_SECRET_KEY',
+    'CLOUDFLARE_API_TOKEN',
+    'CF_API_TOKEN',
+    'CLOUDFLARE_ZONE_ID',
+    'CF_ZONE_ID',
+  ]) {
+    delete env[key];
+  }
+  return env;
 }
 
 async function runFunctionStep(
