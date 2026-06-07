@@ -1327,9 +1327,33 @@ describe('planning routes', () => {
     expect(runnerCalls).toHaveLength(1);
     expect(runnerCalls[0]).toMatchObject({
       command: 'pnpm',
-      args: expect.arrayContaining(['create', 'better-t-stack@latest', 'scaffold-studio']),
+      args: expect.arrayContaining(['create', 'better-t-stack@latest', 'create-json', '--input']),
       cwd: path.join(scaffoldRoot, 'workspace'),
       outputDir: path.join(scaffoldRoot, 'workspace', 'scaffold-studio'),
+    });
+    const call = runnerCalls[0]!;
+    expect(call).toBeDefined();
+    const inputIndex = call.args.indexOf('--input');
+    expect(inputIndex).toBeGreaterThanOrEqual(0);
+    const inputArg = call.args[inputIndex + 1]!;
+    expect(inputArg).toBeDefined();
+    expect(JSON.parse(inputArg)).toMatchObject({
+      projectName: 'scaffold-studio',
+      frontend: ['next'],
+      backend: 'hono',
+      runtime: 'workers',
+      database: 'supabase',
+      orm: 'drizzle',
+      auth: 'better-auth',
+      payments: 'none',
+      examples: ['none'],
+      webDeploy: 'none',
+      serverDeploy: 'none',
+      packageManager: 'pnpm',
+      install: false,
+      git: false,
+      directoryConflict: 'error',
+      disableAnalytics: true,
     });
     expect(executed.body.run).toMatchObject({
       actionId: 'scaffold',
@@ -3254,6 +3278,12 @@ describe('planning routes', () => {
     expect(updated.status).toBe(200);
     expect(updated.body.plan.scaffold.command).toContain('--backend convex');
     expect(updated.body.plan.scaffold.command).toContain('--database none');
+    expect(updated.body.plan.scaffold.command).toContain('--orm none');
+    expect(updated.body.plan.scaffold.command).toContain('--payments none');
+    expect(updated.body.plan.scaffold.command).toContain('--examples none');
+    expect(updated.body.plan.scaffold.command).toContain('--web-deploy none');
+    expect(updated.body.plan.scaffold.command).toContain('--server-deploy none');
+    expect(updated.body.plan.scaffold.command).not.toContain('--orm drizzle');
     expect(updated.body.plan.selectedTools).toEqual(expect.arrayContaining([
       expect.objectContaining({ toolId: 'coolify' }),
       expect.objectContaining({ toolId: 'convex' }),

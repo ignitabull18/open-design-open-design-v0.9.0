@@ -88,6 +88,28 @@ interface ScaffoldCommandResult {
 
 type ScaffoldCommandRunner = (request: ScaffoldCommandRequest) => Promise<ScaffoldCommandResult>;
 
+interface BetterStackCreateInput {
+  projectName: string;
+  frontend: string[];
+  backend: string;
+  runtime: string;
+  database: string;
+  orm: string;
+  api: string;
+  auth: string;
+  payments: string;
+  examples: string[];
+  webDeploy: string;
+  serverDeploy: string;
+  addons: string[];
+  addonOptions?: Record<string, unknown>;
+  packageManager: string;
+  install: boolean;
+  git: boolean;
+  directoryConflict: 'error';
+  disableAnalytics: boolean;
+}
+
 interface RepoCommandRequest {
   command: string;
   args: string[];
@@ -2546,18 +2568,23 @@ function buildScaffoldPlan(
   const slug = slugify(name || 'new-project');
   const pm = stack.packageManager ?? 'pnpm';
   const runner = pm === 'bun' ? 'bun create' : pm === 'pnpm' ? 'pnpm create' : pm === 'yarn' ? 'yarn create' : 'npm create';
+  const orm = dbFlag(stack) === 'none' ? 'none' : stack.orm ?? 'drizzle';
   const args = [
     `${runner} better-t-stack@latest ${slug}`,
     `--frontend ${stack.frontend ?? 'next'}`,
     `--backend ${stack.backend ?? 'hono'}`,
     `--runtime ${stack.runtime ?? 'workers'}`,
     `--database ${dbFlag(stack)}`,
-    `--orm ${stack.orm ?? 'drizzle'}`,
+    `--orm ${orm}`,
     `--api ${stack.api ?? 'trpc'}`,
     `--auth ${stack.auth === 'better-auth' ? 'better-auth' : 'none'}`,
+    `--payments ${stack.payments === 'stripe' ? 'none' : stack.payments ?? 'none'}`,
+    '--examples none',
+    '--web-deploy none',
+    '--server-deploy none',
   ];
   const addons = stack.addons?.length ? stack.addons : defaultAddons(stack);
-  if (addons.length > 0) args.push(`--addons ${addons.join(',')}`);
+  if (addons.length > 0) args.push(`--addons ${addons.join(' ')}`);
   const postScaffoldTasks = [
     'Initialize Git and create the GitHub repository with gh after scaffold validation.',
     'Store generated secrets and provider API keys in 1Password before writing local env files.',
@@ -4139,31 +4166,77 @@ function buildActionArtifact(
 function buildScaffoldInvocation(plan: ProjectPlan): { command: string; args: string[] } {
   const pm = plan.stack.packageManager ?? 'pnpm';
   const slug = slugify(plan.repo.name ?? plan.name ?? 'new-project');
+  const input = buildBetterStackCreateInput(plan.stack, slug);
   const args = [
     'create',
     'better-t-stack@latest',
-    slug,
-    '--frontend',
-    plan.stack.frontend ?? 'next',
-    '--backend',
-    plan.stack.backend ?? 'hono',
-    '--runtime',
-    plan.stack.runtime ?? 'workers',
-    '--database',
-    dbFlag(plan.stack),
-    '--orm',
-    plan.stack.orm ?? 'drizzle',
-    '--api',
-    plan.stack.api ?? 'trpc',
-    '--auth',
-    plan.stack.auth === 'better-auth' ? 'better-auth' : 'none',
+    'create-json',
+    '--input',
+    JSON.stringify(input),
   ];
-  const addons = plan.stack.addons?.length ? plan.stack.addons : defaultAddons(plan.stack);
-  if (addons.length > 0) args.push('--addons', addons.join(','));
   return {
     command: pm,
     args,
   };
+}
+
+function buildBetterStackCreateInput(stack: ProjectStackDecision, projectName: string): BetterStackCreateInput {
+  const addons = stack.addons?.length ? stack.addons : defaultAddons(stack);
+  const addonOptions = buildBetterStackAddonOptions(addons);
+  return {
+    projectName,
+    frontend: [stack.frontend ?? 'next'],
+    backend: stack.backend ?? 'hono',
+    runtime: stack.runtime ?? 'workers',
+    database: dbFlag(stack),
+    orm: dbFlag(stack) === 'none' ? 'none' : stack.orm ?? 'drizzle',
+    api: stack.api ?? 'trpc',
+    auth: stack.auth === 'better-auth' ? 'better-auth' : 'none',
+    payments: stack.payments === 'stripe' ? 'none' : stack.payments ?? 'none',
+    examples: ['none'],
+    webDeploy: 'none',
+    serverDeploy: 'none',
+    addons,
+    ...(Object.keys(addonOptions).length ? { addonOptions } : {}),
+    packageManager: stack.packageManager ?? 'pnpm',
+    install: false,
+    git: false,
+    directoryConflict: 'error',
+    disableAnalytics: true,
+  };
+}
+
+function buildBetterStackAddonOptions(addons: string[]): Record<string, unknown> {
+  const options: Record<string, unknown> = {};
+  if (addons.includes('mcp')) {
+    options.mcp = {
+      scope: 'project',
+      servers: ['better-t-stack', 'context7'],
+      agents: ['codex'],
+    };
+  }
+  if (addons.includes('skills')) {
+    options.skills = {
+      scope: 'project',
+      agents: ['codex'],
+      selections: [],
+    };
+  }
+  if (addons.includes('ultracite')) {
+    options.ultracite = {
+      linter: 'biome',
+      editors: [],
+      agents: ['codex'],
+      hooks: [],
+    };
+  }
+  if (addons.includes('fumadocs')) {
+    options.fumadocs = {
+      template: 'next-mdx',
+      search: 'orama',
+    };
+  }
+  return options;
 }
 
 function buildRepoCreateInvocation(
