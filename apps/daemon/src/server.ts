@@ -4543,45 +4543,61 @@ export async function startServer({
     try {
       const raw = await fs.promises.readFile(statusPath, 'utf8');
       const parsed = JSON.parse(raw);
+      const checks = normalizeOpsStatusChecks(parsed.checks);
+      const categories = normalizeOpsStatusCategories(parsed.categories, checks);
+      const evidence = normalizeOpsEvidence(parsed.evidence);
       const payload = /** @type {OpsStatusResponse} */ ({
         ok: true,
         generatedAt,
         source: 'runtime-file',
         service: String(parsed.service || 'open-design-hosted-planner'),
-        checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+        checks,
+        ...(categories.length > 0 ? { categories } : {}),
+        ...(evidence ? { evidence } : {}),
         rateLimit: {
           enabled: apiToken.length > 0,
           windowMs: publicApiRateLimitWindow,
           maxRequests: publicApiRateLimitLimit,
         },
-        ...(parsed.backup ? { backup: parsed.backup } : {}),
-        ...(parsed.monitor ? { monitor: parsed.monitor } : {}),
+        ...(normalizePlainObject(parsed.backup) ? { backup: normalizePlainObject(parsed.backup) } : {}),
+        ...(normalizePlainObject(parsed.monitor) ? { monitor: normalizePlainObject(parsed.monitor) } : {}),
+        ...(normalizePlainObject(parsed.deployment) ? { deployment: normalizeOpsDeployment(parsed.deployment) } : {}),
+        ...(normalizePlainObject(parsed.restore) ? { restore: normalizePlainObject(parsed.restore) } : {}),
+        ...(normalizePlainObject(parsed.release) ? { release: normalizeOpsRelease(parsed.release) } : {}),
       });
       return res.json(payload);
     } catch {
+      const fallbackChecks = [
+        {
+          id: 'ops-status-file',
+          label: 'Ops status file',
+          status: 'unknown',
+          summary: `No ops-status.json found under ${RUNTIME_DATA_DIR}.`,
+          checkedAt: generatedAt,
+        },
+        {
+          id: 'api-rate-limit',
+          label: 'API rate limit',
+          status: apiToken.length > 0 ? 'ok' : 'unknown',
+          summary: apiToken.length > 0
+            ? `${publicApiRateLimitLimit} requests per ${publicApiRateLimitWindow}ms per public peer.`
+            : 'OD_API_TOKEN is not set, so hosted public API throttling is inactive.',
+          checkedAt: generatedAt,
+        },
+      ];
       const payload = /** @type {OpsStatusResponse} */ ({
         ok: true,
         generatedAt,
         source: 'fallback',
         service: 'open-design-hosted-planner',
-        checks: [
-          {
-            id: 'ops-status-file',
-            label: 'Ops status file',
-            status: 'unknown',
-            summary: `No ops-status.json found under ${RUNTIME_DATA_DIR}.`,
-            checkedAt: generatedAt,
-          },
-          {
-            id: 'api-rate-limit',
-            label: 'API rate limit',
-            status: apiToken.length > 0 ? 'ok' : 'unknown',
-            summary: apiToken.length > 0
-              ? `${publicApiRateLimitLimit} requests per ${publicApiRateLimitWindow}ms per public peer.`
-              : 'OD_API_TOKEN is not set, so hosted public API throttling is inactive.',
-            checkedAt: generatedAt,
-          },
-        ],
+        checks: fallbackChecks,
+        categories: [{
+          id: 'runtime',
+          label: 'Runtime',
+          status: apiToken.length > 0 ? 'warn' : 'unknown',
+          summary: 'Hosted runtime has not written an ops status file yet.',
+          checks: fallbackChecks,
+        }],
         rateLimit: {
           enabled: apiToken.length > 0,
           windowMs: publicApiRateLimitWindow,
@@ -14280,6 +14296,119 @@ function sanitizeSlug(text) {
     .replace(/[\s_]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
+}
+
+const OPS_STATUS_VALUES = new Set(['ok', 'warn', 'error', 'unknown']);
+
+function normalizeOpsStatus(status) {
+  return OPS_STATUS_VALUES.has(status) ? status : 'unknown';
+}
+
+function normalizePlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function normalizeOpsStatusChecks(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((check, index) => {
+      if (!check || typeof check !== 'object') return null;
+      const id = String(check.id || check.label || `check-${index + 1}`).trim();
+      const label = String(check.label || check.id || `Check ${index + 1}`).trim();
+      return {
+        id: id || `check-${index + 1}`,
+        label: label || id || `Check ${index + 1}`,
+        status: normalizeOpsStatus(check.status),
+        summary: String(check.summary || ''),
+        ...(typeof check.checkedAt === 'string' ? { checkedAt: check.checkedAt } : {}),
+      };
+    })
+    .filter(Boolean);
+}
+
+function highestOpsStatus(checks) {
+  if (checks.some((check) => check.status === 'error')) return 'error';
+  if (checks.some((check) => check.status === 'warn')) return 'warn';
+  if (checks.some((check) => check.status === 'unknown')) return 'unknown';
+  return 'ok';
+}
+
+function normalizeOpsStatusCategories(value, fallbackChecks) {
+  if (Array.isArray(value) && value.length > 0) {
+    return value
+      .map((category, index) => {
+        if (!category || typeof category !== 'object') return null;
+        const checks = normalizeOpsStatusChecks(category.checks);
+        const id = String(category.id || category.label || `category-${index + 1}`).trim();
+        const label = String(category.label || category.id || `Category ${index + 1}`).trim();
+        return {
+          id: id || `category-${index + 1}`,
+          label: label || id || `Category ${index + 1}`,
+          status: normalizeOpsStatus(category.status || highestOpsStatus(checks)),
+          summary: String(category.summary || ''),
+          checks,
+        };
+      })
+      .filter(Boolean);
+  }
+  if (!fallbackChecks.length) return [];
+  return [{
+    id: 'checks',
+    label: 'Checks',
+    status: highestOpsStatus(fallbackChecks),
+    summary: `${fallbackChecks.length} hosted operation checks reported.`,
+    checks: fallbackChecks,
+  }];
+}
+
+function normalizeOpsEvidence(value) {
+  const evidence = normalizePlainObject(value);
+  if (!evidence) return null;
+  const artifacts = Array.isArray(evidence.artifacts)
+    ? evidence.artifacts
+      .map((artifact, index) => {
+        if (!artifact || typeof artifact !== 'object') return null;
+        const id = String(artifact.id || artifact.label || `artifact-${index + 1}`).trim();
+        const label = String(artifact.label || artifact.id || `Artifact ${index + 1}`).trim();
+        return {
+          id: id || `artifact-${index + 1}`,
+          label: label || id || `Artifact ${index + 1}`,
+          status: normalizeOpsStatus(artifact.status),
+          summary: String(artifact.summary || ''),
+          ...(typeof artifact.path === 'string' ? { path: artifact.path } : {}),
+          ...(typeof artifact.url === 'string' ? { url: artifact.url } : {}),
+          ...(typeof artifact.generatedAt === 'string' ? { generatedAt: artifact.generatedAt } : {}),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  return {
+    artifacts,
+    ...(typeof evidence.bundlePath === 'string' ? { bundlePath: evidence.bundlePath } : {}),
+    ...(typeof evidence.generatedAt === 'string' ? { generatedAt: evidence.generatedAt } : {}),
+  };
+}
+
+function normalizeOpsDeployment(value) {
+  const deployment = normalizePlainObject(value) || {};
+  return {
+    ...(typeof deployment.baseUrl === 'string' ? { baseUrl: deployment.baseUrl } : {}),
+    ...(typeof deployment.tunnelTarget === 'string' ? { tunnelTarget: deployment.tunnelTarget } : {}),
+    ...(typeof deployment.expectedTunnelTarget === 'string' ? { expectedTunnelTarget: deployment.expectedTunnelTarget } : {}),
+    ...(typeof deployment.coolifyAppUuid === 'string' ? { coolifyAppUuid: deployment.coolifyAppUuid } : {}),
+    ...(Array.isArray(deployment.driftChecks) ? { driftChecks: normalizeOpsStatusChecks(deployment.driftChecks) } : {}),
+  };
+}
+
+function normalizeOpsRelease(value) {
+  const release = normalizePlainObject(value) || {};
+  return {
+    ...(typeof release.channel === 'string' ? { channel: release.channel } : {}),
+    ...(typeof release.version === 'string' ? { version: release.version } : {}),
+    ...(typeof release.tag === 'string' ? { tag: release.tag } : {}),
+    ...(typeof release.promotedAt === 'string' ? { promotedAt: release.promotedAt } : {}),
+    ...(Array.isArray(release.checklist) ? { checklist: normalizeOpsStatusChecks(release.checklist) } : {}),
+  };
 }
 
 function assembleExample(templateHtml, slidesHtml, title) {

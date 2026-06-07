@@ -1047,8 +1047,9 @@ describe('planning routes', () => {
     expect(updated.body.readiness.items).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'action:project-management',
-        status: 'ready',
-        summary: expect.stringContaining('handoff artifact exists'),
+        status: 'not_started',
+        summary: expect.stringContaining('have not been created yet'),
+        evidence: expect.arrayContaining(['draftArtifacts: 1']),
       }),
       expect.objectContaining({
         id: 'launch:path-proof',
@@ -1342,7 +1343,7 @@ describe('planning routes', () => {
       frontend: ['next'],
       backend: 'hono',
       runtime: 'workers',
-      database: 'supabase',
+      database: 'postgres',
       orm: 'drizzle',
       auth: 'better-auth',
       payments: 'none',

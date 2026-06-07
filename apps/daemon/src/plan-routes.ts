@@ -5,6 +5,8 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type {
   CheckProjectPlanToolRequest,
+  ArchiveProjectPlanRequest,
+  CloneProjectPlanRequest,
   CreateProjectPlanArtifactRequest,
   CreateProjectIdeationRequest,
   ExecuteProjectPlanLaunchRequest,
@@ -31,6 +33,11 @@ import type {
   PlanningToolOption,
   PlanningToolCheck,
   PlanningToolId,
+  ProjectPlanArtifactsQuery,
+  ProjectPlanExternalWriteAuditEntry,
+  ProjectPlanMetadata,
+  ProjectPlanOpsEvidence,
+  ProjectPlanProviderPolicy,
   ProjectIdeaOption,
   ProjectIdeationSession,
   ProjectIntentBrief,
@@ -53,6 +60,7 @@ import type {
   ScaffoldExecutionPlan,
   ScaffoldPlan,
   UpdateProviderCapabilityRefreshScheduleRequest,
+  UpdateProjectPlanProviderPolicyRequest,
   UpdateProjectSectionRequest,
   UpdateProjectPlanRequest,
   UpdateProjectPlanToolStatusRequest,
@@ -336,6 +344,7 @@ interface ProjectPlanBuildInput {
   executionArtifacts?: PlanningExecutionArtifact[];
   toolChecks?: PlanningToolCheck[];
   scaffoldExecution?: ScaffoldExecutionPlan;
+  metadata?: ProjectPlanMetadata;
   createdAt: number;
   updatedAt: number;
 }
@@ -1125,9 +1134,12 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
-  app.get('/api/plans', (_req, res) => {
+  app.get('/api/plans', (req, res) => {
     try {
-      res.json({ plans: listPlans(db) });
+      const includeArchived = req.query.includeArchived === 'true';
+      const plans = (listPlans(db) as ProjectPlan[])
+        .filter((plan) => includeArchived || !plan.metadata?.archivedAt);
+      res.json({ plans });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
     }
@@ -1166,6 +1178,46 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
     }
   });
 
+  app.post('/api/plans/:id/clone', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeCloneBody(req.body || {});
+      const clone = clonePlanForRequest(existing, body);
+      const inserted = insertPlan(db, clone);
+      res.status(201).json({ plan: inserted, clonedFromPlanId: existing.id });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/archive', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeArchiveBody(req.body || {});
+      const { archivedAt: _archivedAt, archiveReason: _archiveReason, ...restMetadata } = existing.metadata ?? {};
+      const metadata: ProjectPlanMetadata = {
+        ...restMetadata,
+        ...(body.archived === false
+          ? {}
+          : {
+            archivedAt: Date.now(),
+            ...(body.reason ? { archiveReason: body.reason } : {}),
+          }),
+      };
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        metadata,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
   app.get('/api/plans/:id/ideation', (req, res) => {
     try {
       const plan = getPlan(db, req.params.id);
@@ -1183,6 +1235,37 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       res.json(buildExecutionResponse(plan));
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id/artifacts', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      const query = normalizeArtifactsQuery(req.query as Record<string, unknown>);
+      const artifacts = filterPlanArtifacts(plan, query);
+      if (req.query.export === 'markdown') {
+        res.setHeader('content-type', 'text/markdown; charset=utf-8');
+        res.setHeader('content-disposition', `attachment; filename="${slugify(plan.name)}-planning-artifacts.md"`);
+        return res.send(buildArtifactExport(artifacts));
+      }
+      res.json({ plan, artifacts, filters: query, totalCount: plan.executionArtifacts?.length ?? 0 });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id/artifacts/:artifactId/download', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      const artifact = (plan.executionArtifacts ?? []).find((item) => item.id === req.params.artifactId);
+      if (!artifact) return res.status(404).json({ error: 'plan artifact not found' });
+      res.setHeader('content-type', 'text/markdown; charset=utf-8');
+      res.setHeader('content-disposition', `attachment; filename="${slugify(artifact.title)}.md"`);
+      res.send(buildArtifactExport([artifact]));
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
     }
   });
 
@@ -1254,6 +1337,113 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       res.json({ plan, proof: buildLaunchProofReport(plan) });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id/provider-policy', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan, providerPolicy: buildProviderPolicyReport(plan) });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.patch('/api/plans/:id/provider-policy', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const body = normalizeProviderPolicyBody(req.body || {}, existing);
+      const current = normalizeProviderPolicy(existing.metadata?.providerPolicy, (existing.selectedTools ?? []).map((tool) => tool.toolId));
+      const metadata: ProjectPlanMetadata = {
+        ...(existing.metadata ?? {}),
+        providerPolicy: {
+          ...current,
+          ...body,
+        },
+      };
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        metadata,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.json({ plan: updated, providerPolicy: buildProviderPolicyReport(updated) });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.get('/api/plans/:id/ops-evidence', (req, res) => {
+    try {
+      const plan = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!plan) return res.status(404).json({ error: 'plan not found' });
+      res.json({
+        plan,
+        opsEvidence: buildPlanOpsEvidence(plan),
+        externalWriteAudit: plan.metadata?.externalWriteAudit ?? [],
+        providerPolicy: buildProviderPolicyReport(plan),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/release-promotion', (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const tag = typeof req.body?.tag === 'string' && req.body.tag.trim() ? req.body.tag.trim() : `planning-${slugify(existing.name)}-${new Date().toISOString().slice(0, 10)}`;
+      const commit = typeof req.body?.commit === 'string' && req.body.commit.trim() ? req.body.commit.trim() : undefined;
+      const artifact: PlanningExecutionArtifact = {
+        id: `plan-artifact-${randomUUID()}`,
+        planId: existing.id,
+        kind: 'launch-summary',
+        title: `Release promotion ${tag}`,
+        content: [
+          `Tag: ${tag}`,
+          commit ? `Commit: ${commit}` : '',
+          `Generated at: ${new Date().toISOString()}`,
+          '',
+          'Launch proof:',
+          buildLaunchProofReport(existing).summary,
+          '',
+          'Ops evidence:',
+          ...buildPlanOpsEvidence(existing).map((item) => `- ${item.kind}: ${item.status} - ${item.summary}`),
+        ].filter(Boolean).join('\n'),
+        createdAt: Date.now(),
+      };
+      const metadata: ProjectPlanMetadata = {
+        ...(existing.metadata ?? {}),
+        releasePromotion: {
+          tag,
+          ...(commit ? { commit } : {}),
+          evidenceArtifactId: artifact.id,
+          promotedAt: artifact.createdAt,
+        },
+        opsEvidence: [
+          {
+            id: `ops-release-${randomUUID()}`,
+            kind: 'evidence-bundle',
+            status: 'ok',
+            summary: `Release promotion evidence bundle generated for ${tag}.`,
+            artifactId: artifact.id,
+            createdAt: artifact.createdAt,
+          },
+          ...(existing.metadata?.opsEvidence ?? []),
+        ],
+      };
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        executionArtifacts: [...(existing.executionArtifacts ?? []), artifact],
+        metadata,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({ plan: updated, artifact, releasePromotion: updated.metadata.releasePromotion });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
     }
   });
 
@@ -1350,6 +1540,14 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const body = normalizeActionExecutionBody(req.params.actionId, req.body || {});
       const action = existing.executionActions.find((item) => item.id === body.actionId);
       if (!action) return res.status(404).json({ error: 'plan action not found' });
+      const dependencyErrors = validateActionDependencies(existing, action.id, body);
+      if (dependencyErrors.length > 0) {
+        return res.status(409).json({
+          error: 'action dependencies incomplete',
+          action,
+          missing: dependencyErrors,
+        });
+      }
       if (action.requiresConfirmation && !body.confirmed) {
         return res.status(409).json({
           error: 'confirmation required',
@@ -1371,10 +1569,57 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       const updated = updatePlan(db, req.params.id, {
         ...existing,
         ...planPatch,
+        metadata: appendExternalWriteAudit(existing.metadata, run, action),
         updatedAt: Date.now(),
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
       res.status(run.status === 'blocked' ? 202 : 201).json({ plan: updated, run, artifacts });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/actions/:actionId/retry', async (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const actionId = cleanRequiredString(req.params.actionId, 'actionId') as PlanningExecutionAction['id'];
+      if (!isPlanningExecutionActionId(actionId)) return res.status(400).json({ error: 'unknown actionId' });
+      const action = existing.executionActions.find((item) => item.id === actionId);
+      if (!action) return res.status(404).json({ error: 'plan action not found' });
+      const latest = findLatestRun(existing, (run) => run.actionId === actionId);
+      const body = normalizeActionExecutionBody(req.params.actionId, {
+        ...(req.body || {}),
+        confirmed: true,
+        targetDir: typeof req.body?.targetDir === 'string' ? req.body.targetDir : targetDirFromRun(latest),
+      });
+      const dependencyErrors = validateActionDependencies(existing, action.id, body);
+      if (dependencyErrors.length > 0) {
+        return res.status(409).json({
+          error: 'action dependencies incomplete',
+          action,
+          missing: dependencyErrors,
+        });
+      }
+      const { planPatch, run, artifacts } = await executePlanningAction(existing, action, body, {
+        scaffoldRoot,
+        scaffoldRunner,
+        repoRunner,
+        deployRunner,
+        deployHealthChecker,
+        providerSourceFetcher,
+        providerSetupRunner,
+        projectManagementRunner,
+        databaseMigrationRunner,
+      });
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        ...planPatch,
+        metadata: appendExternalWriteAudit(existing.metadata, run, action),
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(run.status === 'blocked' ? 202 : 201).json({ plan: updated, run, artifacts, retriedRunId: latest?.id });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message ?? err) });
     }
@@ -1577,6 +1822,56 @@ export function registerPlanRoutes(app: Express, ctx: RegisterPlanRoutesDeps) {
       }) as ProjectPlan | null;
       if (!updated) return res.status(404).json({ error: 'plan not found' });
       res.status(201).json({ plan: updated, run, toolCheck, artifacts });
+    } catch (err: any) {
+      res.status(400).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  app.post('/api/plans/:id/tools/check', async (req, res) => {
+    try {
+      const existing = getPlan(db, req.params.id) as ProjectPlan | null;
+      if (!existing) return res.status(404).json({ error: 'plan not found' });
+      const requestedToolIds = Array.isArray(req.body?.toolIds)
+        ? req.body.toolIds.map((item: unknown) => cleanRequiredString(item, 'toolIds[]') as PlanningToolId)
+        : req.body?.requiredOnly === true
+          ? buildProviderPolicyReport(existing).policy.requiredToolIds
+          : (existing.selectedTools ?? []).filter((tool) => tool.status !== 'deferred').map((tool) => tool.toolId);
+      const toolIds = [...new Set(requestedToolIds)].filter((toolId): toolId is PlanningToolId =>
+        APPROVED_TOOLS.some((tool) => tool.id === toolId),
+      );
+      const runs: PlanningExecutionRun[] = [];
+      const artifacts: PlanningExecutionArtifact[] = [];
+      const toolChecks: PlanningToolCheck[] = [];
+      let selectedTools = existing.selectedTools ?? [];
+      for (const toolId of toolIds) {
+        const checked = await checkPlanningTool({ ...existing, selectedTools }, toolId, { toolCheckRunner });
+        runs.push(checked.run);
+        artifacts.push(...checked.artifacts);
+        toolChecks.push(checked.toolCheck);
+        selectedTools = checked.selectedTools;
+      }
+      const nextToolChecks = [
+        ...toolChecks,
+        ...(existing.toolChecks ?? []).filter((check) => !toolIds.includes(check.toolId)),
+      ];
+      const metadata: ProjectPlanMetadata = {
+        ...(existing.metadata ?? {}),
+        providerPolicy: {
+          ...normalizeProviderPolicy(existing.metadata?.providerPolicy, (existing.selectedTools ?? []).map((tool) => tool.toolId)),
+          lastRunAllAt: Date.now(),
+        },
+      };
+      const updated = updatePlan(db, req.params.id, {
+        ...existing,
+        selectedTools,
+        executionRuns: [...(existing.executionRuns ?? []), ...runs],
+        executionArtifacts: [...(existing.executionArtifacts ?? []), ...artifacts],
+        toolChecks: nextToolChecks,
+        metadata,
+        updatedAt: Date.now(),
+      }) as ProjectPlan | null;
+      if (!updated) return res.status(404).json({ error: 'plan not found' });
+      res.status(201).json({ plan: updated, runs, toolChecks, artifacts, providerPolicy: buildProviderPolicyReport(updated) });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message ?? err) });
     }
@@ -1942,6 +2237,44 @@ function buildPlanReadinessReport(plan: ProjectPlan): ProjectPlanReadinessReport
   };
 }
 
+function validateActionDependencies(
+  plan: ProjectPlan,
+  actionId: PlanningExecutionAction['id'],
+  body: Pick<ExecuteProjectPlanActionRequest, 'targetDir'> = {},
+): string[] {
+  const errors: string[] = [];
+  const hasExplicitTargetDir = typeof body.targetDir === 'string' && body.targetDir.trim().length > 0;
+  const completedAction = (candidate: PlanningExecutionAction['id']) =>
+    Boolean(findLatestRun(plan, (run) => run.actionId === candidate && run.status === 'completed'))
+    || plan.executionActions.some((item) => item.id === candidate && item.status === 'completed');
+  const hasArtifactKind = (kind: PlanningExecutionArtifact['kind']) =>
+    (plan.executionArtifacts ?? []).some((artifact) => artifact.kind === kind);
+  const scaffoldComplete = plan.scaffoldExecution?.status === 'completed' || completedAction('scaffold') || hasExplicitTargetDir;
+  const providerSetupComplete = completedAction('provider-setup') || hasArtifactKind('provider-setup') || hasExplicitTargetDir;
+  const databaseMaterialized = completedAction('database-materialize') || hasArtifactKind('database-materialization') || hasExplicitTargetDir;
+
+  if (actionId === 'repo-create' && !scaffoldComplete) {
+    errors.push('Complete scaffold before creating the repository.');
+  }
+  if (['provider-setup', 'database-materialize', 'design-materialize'].includes(actionId) && !scaffoldComplete) {
+    errors.push(`Complete scaffold before running ${actionId}.`);
+  }
+  if (actionId === 'database-migrate' && !databaseMaterialized) {
+    errors.push('Materialize database files before running migrations.');
+  }
+  if (actionId === 'deploy-runtime') {
+    if (plan.repo.status !== 'created' && !hasExplicitTargetDir) errors.push('Create the repository before deployment.');
+    if (!providerSetupComplete) errors.push('Complete provider setup before deployment.');
+  }
+  if (actionId === 'project-management') {
+    const answered = Object.values(plan.sectionAnswers ?? {}).filter((answer) => answer?.status === 'answered').length;
+    if (answered === 0 && (plan.executionArtifacts ?? []).length === 0 && !hasExplicitTargetDir) {
+      errors.push('Accept at least one planning section before creating project-management handoff.');
+    }
+  }
+  return errors;
+}
+
 function buildLaunchProofReport(plan: ProjectPlan): ProjectLaunchProofReport {
   const readiness = buildPlanReadinessReport(plan);
   const gates = buildLaunchProofGates(plan);
@@ -1990,9 +2323,11 @@ function buildLaunchProofGates(plan: ProjectPlan): ProjectLaunchProofGate[] {
   const selectedTools = plan.selectedTools ?? [];
   const checkedToolIds = new Set((plan.toolChecks ?? []).map((check) => check.toolId));
   const blockedToolChecks = (plan.toolChecks ?? []).filter((check) => check.status === 'blocked');
+  const providerPolicy = buildProviderPolicyReport(plan);
   const missingToolChecks = selectedTools
     .filter((tool) => !checkedToolIds.has(tool.toolId) && tool.status !== 'deferred')
     .map((tool) => `Run or defer provider check for ${tool.toolId}.`);
+  const staleToolChecks = providerPolicy.staleToolIds.map((toolId) => `Refresh stale provider check for ${toolId}.`);
   const providerSetupRun = latestRun((run) => run.actionId === 'provider-setup');
   const databaseMaterializeRun = latestRun((run) => run.actionId === 'database-materialize');
   const databaseMigrationRun = latestRun((run) => run.actionId === 'database-migrate');
@@ -2018,11 +2353,16 @@ function buildLaunchProofGates(plan: ProjectPlan): ProjectLaunchProofGate[] {
     {
       id: 'provider-checks',
       label: 'Provider checks',
-      status: blockedToolChecks.length > 0 ? 'blocked' : missingToolChecks.length === 0 ? 'ready' : (plan.toolChecks ?? []).length > 0 ? 'in_progress' : 'not_started',
+      status: blockedToolChecks.length > 0 || providerPolicy.blockedToolIds.length > 0
+        ? 'blocked'
+        : missingToolChecks.length === 0 && staleToolChecks.length === 0
+          ? 'ready'
+          : (plan.toolChecks ?? []).length > 0 ? 'in_progress' : 'not_started',
       summary: `${(plan.toolChecks ?? []).length}/${selectedTools.length} selected tools have check records.`,
       proof: (plan.toolChecks ?? []).map((check) => `${check.toolId}: ${check.status}`),
       missingEvidence: [
         ...missingToolChecks,
+        ...staleToolChecks,
         ...blockedToolChecks.map((check) => `Resolve blocked provider check for ${check.toolId}: ${check.summary}`),
       ],
       runIds: runIdsByAction('provider-research'),
@@ -2244,11 +2584,12 @@ function buildToolReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
   const connected = selected.filter((tool) => tool.status === 'connected');
   const checkedIds = new Set((plan.toolChecks ?? []).map((check) => check.toolId));
   const unchecked = selected.filter((tool) => !checkedIds.has(tool.toolId) && tool.status !== 'deferred');
+  const providerPolicy = buildProviderPolicyReport(plan);
   const status: ProjectPlanReadinessStatus = selected.length === 0
     ? 'blocked'
-    : blocked.length > 0
+    : blocked.length > 0 || providerPolicy.blockedToolIds.length > 0
       ? 'blocked'
-      : unchecked.length > 0
+      : unchecked.length > 0 || providerPolicy.staleToolIds.length > 0
         ? 'in_progress'
         : connected.length > 0 || selected.every((tool) => tool.status === 'deferred')
           ? 'ready'
@@ -2265,10 +2606,14 @@ function buildToolReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
     evidence: [
       `selected: ${selected.map((tool) => `${tool.toolId}:${tool.status}`).join(', ') || 'none'}`,
       `checks: ${(plan.toolChecks ?? []).map((check) => `${check.toolId}:${check.status}`).join(', ') || 'none'}`,
+      `required: ${providerPolicy.policy.requiredToolIds.join(', ') || 'none'}`,
+      `stale: ${providerPolicy.staleToolIds.join(', ') || 'none'}`,
     ],
     nextSteps: status === 'ready'
       ? []
-      : unchecked.length > 0
+      : providerPolicy.staleToolIds.length > 0
+        ? providerPolicy.staleToolIds.slice(0, 4).map((toolId) => `Refresh provider check for ${toolId}.`)
+        : unchecked.length > 0
         ? unchecked.slice(0, 4).map((tool) => `Run a provider check for ${tool.toolId}.`)
         : ['Select at least one source-control, hosting, database, auth, and runtime tool.'],
   };
@@ -2423,15 +2768,30 @@ function buildDeploymentReadinessItem(plan: ProjectPlan): ProjectPlanReadinessIt
 }
 
 function buildProjectManagementReadinessItem(plan: ProjectPlan): ProjectPlanReadinessItem {
-  return buildArtifactBackedReadinessItem(plan, {
+  const latestRun = findLatestRun(plan, (run) => run.actionId === 'project-management');
+  const status: ProjectPlanReadinessStatus = latestRun?.status === 'completed'
+    ? 'ready'
+    : latestRun?.status === 'blocked' || latestRun?.status === 'failed'
+      ? 'blocked'
+      : latestRun
+        ? 'in_progress'
+        : 'not_started';
+  return {
     id: 'action:project-management',
     label: 'Project-management handoff',
     actionId: 'project-management',
-    artifactKind: 'project-management-plan',
-    readySummary: 'Project-management handoff artifact exists.',
-    pendingSummary: 'Project-management issues or document handoff have not been created yet.',
-    nextSteps: ['Execute project-management handoff for GitHub Issues, Linear, or Google Docs.'],
-  });
+    status,
+    summary: status === 'ready'
+      ? 'Project-management handoff was created through a confirmed external-write run.'
+      : status === 'blocked'
+        ? 'Project-management handoff run is blocked or failed.'
+        : 'Project-management issues or document handoff have not been created yet.',
+    evidence: [
+      ...(latestRun ? [`latestRun: ${latestRun.status}`, `runId: ${latestRun.id}`] : []),
+      `draftArtifacts: ${(plan.executionArtifacts ?? []).filter((artifact) => artifact.kind === 'project-management-plan').length}`,
+    ],
+    nextSteps: status === 'ready' ? [] : ['Execute project-management handoff for GitHub Issues, Linear, or Google Docs.'],
+  };
 }
 
 function buildArtifactBackedReadinessItem(
@@ -2554,6 +2914,7 @@ function buildProjectPlan(input: ProjectPlanBuildInput): ProjectPlan {
       status: repoStatus ?? 'planned',
     },
     delivery: input.delivery?.length ? input.delivery : defaultDelivery(stack),
+    metadata: normalizePlanMetadata(input.metadata, selectedTools),
     createdAt: input.createdAt,
     updatedAt: input.updatedAt,
   };
@@ -4057,6 +4418,15 @@ async function executeScaffoldAction(
   if (status === 'completed' && !outputExists) status = 'failed';
   const handoffWrites = status === 'completed' ? await writeScaffoldHandoffFiles(plan, target.outputDir, runId) : [];
   const artifact = buildScaffoldArtifact(plan, action, runId, target, invocation, result, status, handoffWrites);
+  const validationArtifact = buildScaffoldValidationArtifact(
+    plan,
+    runId,
+    target,
+    result,
+    status,
+    outputExists,
+    handoffWrites,
+  );
   const run: PlanningExecutionRun = {
     id: runId,
     planId: plan.id,
@@ -4071,7 +4441,7 @@ async function executeScaffoldAction(
     command: [invocation.command, ...invocation.args].join(' '),
     startedAt: now,
     completedAt: Date.now(),
-    artifactIds: [artifact.id],
+    artifactIds: [artifact.id, validationArtifact.id],
     evidence: [
       `cwd: ${target.parentDir}`,
       `outputDir: ${target.outputDir}`,
@@ -4101,14 +4471,14 @@ async function executeScaffoldAction(
   return {
     planPatch: {
       executionRuns: [...(plan.executionRuns ?? []), run],
-      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact],
+      executionArtifacts: [...(plan.executionArtifacts ?? []), artifact, validationArtifact],
       executionActions,
       scaffoldExecution,
       repo: plan.repo,
       delivery: plan.delivery,
     },
     run,
-    artifacts: [artifact],
+    artifacts: [artifact, validationArtifact],
   };
 }
 
@@ -6262,6 +6632,44 @@ function buildScaffoldArtifact(
       '',
       'stderr:',
       result.stderr || '<empty>',
+    ].join('\n'),
+    createdAt: Date.now(),
+  };
+}
+
+function buildScaffoldValidationArtifact(
+  plan: ProjectPlan,
+  runId: string,
+  target: { parentDir: string; outputDir: string },
+  result: ScaffoldCommandResult,
+  status: PlanningExecutionRun['status'],
+  outputExists: boolean,
+  handoffWrites: ProjectMaterializedWrite[],
+): PlanningExecutionArtifact {
+  const checks = [
+    { label: 'Command exit code', ok: result.exitCode === 0, detail: String(result.exitCode) },
+    { label: 'Output directory exists', ok: outputExists, detail: target.outputDir },
+    { label: 'Handoff bundle written', ok: handoffWrites.length > 0, detail: `${handoffWrites.length} file(s)` },
+  ];
+  return {
+    id: `plan-artifact-${randomUUID()}`,
+    planId: plan.id,
+    runId,
+    kind: 'scaffold-plan',
+    title: 'Scaffold validation summary',
+    content: [
+      `Plan: ${plan.name}`,
+      `Status: ${status}`,
+      `Workspace: ${target.parentDir}`,
+      `Output directory: ${target.outputDir}`,
+      '',
+      'Validation checks:',
+      ...checks.map((check) => `- ${check.ok ? 'pass' : 'fail'}: ${check.label} (${check.detail})`),
+      '',
+      'Handoff files:',
+      ...(handoffWrites.length
+        ? handoffWrites.map((write) => `- ${write.relativePath} (${write.bytes} bytes)`)
+        : ['- None written.']),
     ].join('\n'),
     createdAt: Date.now(),
   };
@@ -8478,6 +8886,234 @@ function normalizeDelivery(value: unknown): DeliveryPlan[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error('delivery must be an array');
   return value as DeliveryPlan[];
+}
+
+function normalizePlanMetadata(value: unknown, selectedTools: ProjectToolConnection[] = []): ProjectPlanMetadata {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value as ProjectPlanMetadata : {};
+  const defaultRequired = selectedTools
+    .filter((tool) => tool.status !== 'deferred')
+    .map((tool) => tool.toolId);
+  return {
+    ...(typeof row.clonedFromPlanId === 'string' && row.clonedFromPlanId.trim() ? { clonedFromPlanId: row.clonedFromPlanId.trim() } : {}),
+    ...(typeof row.archivedAt === 'number' ? { archivedAt: row.archivedAt } : {}),
+    ...(typeof row.archiveReason === 'string' && row.archiveReason.trim() ? { archiveReason: row.archiveReason.trim() } : {}),
+    providerPolicy: normalizeProviderPolicy(row.providerPolicy, defaultRequired),
+    externalWriteAudit: Array.isArray(row.externalWriteAudit) ? row.externalWriteAudit.slice(0, 100) : [],
+    opsEvidence: Array.isArray(row.opsEvidence) ? row.opsEvidence.slice(0, 100) : [],
+    ...(row.releasePromotion ? { releasePromotion: row.releasePromotion } : {}),
+  };
+}
+
+function normalizeProviderPolicy(value: unknown, defaultRequiredToolIds: PlanningToolId[] = []): ProjectPlanProviderPolicy {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<ProjectPlanProviderPolicy> : {};
+  const requiredToolIds = Array.isArray(row.requiredToolIds)
+    ? row.requiredToolIds.filter((toolId): toolId is PlanningToolId => APPROVED_TOOLS.some((tool) => tool.id === toolId))
+    : defaultRequiredToolIds;
+  return {
+    requiredToolIds: [...new Set(requiredToolIds)],
+    staleAfterMs: typeof row.staleAfterMs === 'number' && row.staleAfterMs > 0 ? row.staleAfterMs : 7 * 24 * 60 * 60 * 1000,
+    scheduledChecksEnabled: row.scheduledChecksEnabled === true,
+    ...(typeof row.lastRunAllAt === 'number' ? { lastRunAllAt: row.lastRunAllAt } : {}),
+  };
+}
+
+function normalizeProviderPolicyBody(body: Record<string, unknown>, plan: ProjectPlan): UpdateProjectPlanProviderPolicyRequest {
+  const selectedIds = new Set((plan.selectedTools ?? []).map((tool) => tool.toolId));
+  const requiredToolIds = Array.isArray(body.requiredToolIds)
+    ? body.requiredToolIds.map((item) => cleanRequiredString(item, 'requiredToolIds[]') as PlanningToolId)
+    : undefined;
+  if (requiredToolIds?.some((toolId) => !selectedIds.has(toolId))) {
+    throw new Error('requiredToolIds must be selected tools on this plan');
+  }
+  return {
+    ...(requiredToolIds ? { requiredToolIds } : {}),
+    ...(typeof body.staleAfterMs === 'number' && body.staleAfterMs > 0 ? { staleAfterMs: body.staleAfterMs } : {}),
+    ...(typeof body.scheduledChecksEnabled === 'boolean' ? { scheduledChecksEnabled: body.scheduledChecksEnabled } : {}),
+  };
+}
+
+function normalizeCloneBody(body: Record<string, unknown>): CloneProjectPlanRequest {
+  return {
+    ...(typeof body.name === 'string' && body.name.trim() ? { name: body.name.trim() } : {}),
+    resetExecution: body.resetExecution !== false,
+  };
+}
+
+function normalizeArchiveBody(body: Record<string, unknown>): ArchiveProjectPlanRequest {
+  return {
+    archived: body.archived !== false,
+    ...(typeof body.reason === 'string' && body.reason.trim() ? { reason: body.reason.trim() } : {}),
+  };
+}
+
+function normalizeArtifactsQuery(query: Record<string, unknown>): ProjectPlanArtifactsQuery {
+  const kind = typeof query.kind === 'string' && query.kind.trim()
+    ? query.kind.trim() as PlanningExecutionArtifact['kind']
+    : undefined;
+  return {
+    ...(kind ? { kind } : {}),
+    ...(typeof query.runId === 'string' && query.runId.trim() ? { runId: query.runId.trim() } : {}),
+    ...(typeof query.search === 'string' && query.search.trim() ? { search: query.search.trim().toLowerCase() } : {}),
+  };
+}
+
+function filterPlanArtifacts(plan: ProjectPlan, query: ProjectPlanArtifactsQuery): PlanningExecutionArtifact[] {
+  return (plan.executionArtifacts ?? []).filter((artifact) => {
+    if (query.kind && artifact.kind !== query.kind) return false;
+    if (query.runId && artifact.runId !== query.runId) return false;
+    if (query.search) {
+      const haystack = `${artifact.title}\n${artifact.kind}\n${artifact.content}`.toLowerCase();
+      if (!haystack.includes(query.search)) return false;
+    }
+    return true;
+  });
+}
+
+function buildArtifactExport(artifacts: PlanningExecutionArtifact[]): string {
+  return artifacts.map((artifact) => [
+    `# ${artifact.title}`,
+    '',
+    `- id: \`${artifact.id}\``,
+    `- kind: \`${artifact.kind}\``,
+    artifact.runId ? `- run: \`${artifact.runId}\`` : '',
+    `- created: \`${new Date(artifact.createdAt).toISOString()}\``,
+    '',
+    artifact.content,
+  ].filter(Boolean).join('\n')).join('\n\n---\n\n');
+}
+
+function clonePlanForRequest(plan: ProjectPlan, body: CloneProjectPlanRequest): ProjectPlan {
+  const now = Date.now();
+  const { archivedAt: _archivedAt, archiveReason: _archiveReason, ...restMetadata } = plan.metadata ?? {};
+  const { url: _url, ...repoWithoutUrl } = plan.repo;
+  return buildProjectPlan({
+    ...plan,
+    id: `plan-${randomUUID()}`,
+    name: body.name ?? `${plan.name} copy`,
+    executionRuns: body.resetExecution === false ? plan.executionRuns : [],
+    executionEvents: body.resetExecution === false ? plan.executionEvents : [],
+    executionArtifacts: body.resetExecution === false ? plan.executionArtifacts : [],
+    toolChecks: body.resetExecution === false ? plan.toolChecks : [],
+    scaffoldExecution: body.resetExecution === false ? plan.scaffoldExecution : { status: 'not_started' },
+    repo: body.resetExecution === false ? plan.repo : { ...repoWithoutUrl, status: 'planned' },
+    metadata: {
+      ...restMetadata,
+      clonedFromPlanId: plan.id,
+      externalWriteAudit: body.resetExecution === false ? plan.metadata.externalWriteAudit ?? [] : [],
+      opsEvidence: body.resetExecution === false ? plan.metadata.opsEvidence ?? [] : [],
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function buildProviderPolicyReport(plan: ProjectPlan) {
+  const policy = normalizeProviderPolicy(plan.metadata?.providerPolicy, (plan.selectedTools ?? []).map((tool) => tool.toolId));
+  const checksByTool = new Map((plan.toolChecks ?? []).map((check) => [check.toolId, check]));
+  const now = Date.now();
+  const required = policy.requiredToolIds.map((toolId) => {
+    const check = checksByTool.get(toolId);
+    const selected = (plan.selectedTools ?? []).find((tool) => tool.toolId === toolId);
+    const stale = check ? now - check.checkedAt > policy.staleAfterMs : true;
+    return {
+      toolId,
+      status: check?.status ?? selected?.status ?? 'wanted',
+      stale,
+      checkedAt: check?.checkedAt,
+      summary: check?.summary ?? 'No provider check evidence recorded.',
+    };
+  });
+  return {
+    policy,
+    required,
+    staleToolIds: required.filter((item) => item.stale).map((item) => item.toolId),
+    missingToolIds: required.filter((item) => !item.checkedAt).map((item) => item.toolId),
+    blockedToolIds: required.filter((item) => item.status === 'blocked').map((item) => item.toolId),
+  };
+}
+
+function appendExternalWriteAudit(
+  metadata: ProjectPlanMetadata | undefined,
+  run: PlanningExecutionRun,
+  action: PlanningExecutionAction,
+): ProjectPlanMetadata {
+  const target = run.evidence.find((item) => item.startsWith('repo: '))
+    ?? run.evidence.find((item) => item.startsWith('sourceDir: '))
+    ?? run.evidence.find((item) => item.startsWith('targetDir: '))
+    ?? run.evidence.find((item) => item.startsWith('deliveryTarget: '))
+    ?? action.id;
+  const entry: ProjectPlanExternalWriteAuditEntry = {
+    id: `write-audit-${randomUUID()}`,
+    actionId: action.id,
+    target,
+    mode: run.mode,
+    status: run.status,
+    summary: run.summary,
+    runId: run.id,
+    createdAt: Date.now(),
+  };
+  return {
+    ...(metadata ?? {}),
+    externalWriteAudit: [entry, ...((metadata?.externalWriteAudit ?? []).slice(0, 99))],
+  };
+}
+
+function buildPlanOpsEvidence(plan: ProjectPlan): ProjectPlanOpsEvidence[] {
+  const existing = plan.metadata?.opsEvidence ?? [];
+  const proof = buildLaunchProofReport(plan);
+  const deploymentArtifactId = (plan.executionArtifacts ?? []).find((artifact) => artifact.kind === 'deployment-plan')?.id;
+  const alertArtifactId = (plan.executionArtifacts ?? []).find((artifact) => /alert/i.test(`${artifact.title}\n${artifact.content}`))?.id;
+  const generated: ProjectPlanOpsEvidence[] = [
+    {
+      id: 'ops-health-readiness',
+      kind: 'health',
+      status: proof.status === 'ready' ? 'ok' : proof.blockedGateCount > 0 ? 'blocked' : 'warning',
+      summary: proof.summary,
+      createdAt: proof.generatedAt,
+    },
+    {
+      id: 'ops-deployment-drift',
+      kind: 'deployment-drift',
+      status: plan.delivery.length > 0 && plan.delivery.every((delivery) => delivery.status === 'deployed') ? 'ok' : 'warning',
+      summary: plan.delivery.length > 0
+        ? `Delivery targets: ${plan.delivery.map((delivery) => `${delivery.target}:${delivery.status}`).join(', ')}.`
+        : 'No delivery target recorded.',
+      createdAt: proof.generatedAt,
+    },
+    {
+      id: 'ops-backup-restore',
+      kind: 'backup-restore',
+      status: hasArtifactKind(plan, 'deployment-plan') ? 'ok' : 'warning',
+      summary: 'Backup and restore evidence is tracked through deployment-plan artifacts and hosted ops evidence exports.',
+      ...(deploymentArtifactId ? { artifactId: deploymentArtifactId } : {}),
+      createdAt: proof.generatedAt,
+    },
+    {
+      id: 'ops-alert-delivery',
+      kind: 'alert-delivery',
+      status: (plan.executionArtifacts ?? []).some((artifact) => /alert/i.test(`${artifact.title}\n${artifact.content}`)) ? 'ok' : 'warning',
+      summary: 'Alert delivery proof is expected as an execution artifact when a live alert destination is configured.',
+      ...(alertArtifactId ? { artifactId: alertArtifactId } : {}),
+      createdAt: proof.generatedAt,
+    },
+    {
+      id: 'ops-release-checklist',
+      kind: 'release-checklist',
+      status: proof.status === 'ready' ? 'ok' : 'warning',
+      summary: `Release proof gates ready: ${proof.readyGateCount}/${proof.totalGateCount}.`,
+      createdAt: proof.generatedAt,
+    },
+  ];
+  return [...existing, ...generated].slice(0, 100);
+}
+
+function targetDirFromRun(run: PlanningExecutionRun | undefined): string | undefined {
+  if (!run) return undefined;
+  for (const evidence of run.evidence ?? []) {
+    const match = /^(?:targetDir|sourceDir|outputDir):\s*(.+)$/u.exec(evidence);
+    if (match?.[1]) return match[1].trim();
+  }
+  return undefined;
 }
 
 function cleanRequiredString(value: unknown, field: string): string {

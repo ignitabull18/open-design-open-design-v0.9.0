@@ -271,6 +271,48 @@ export interface PlanningToolCheck {
   checkedAt: number;
 }
 
+export interface ProjectPlanExternalWriteAuditEntry {
+  id: string;
+  actionId?: PlanningExecutionAction['id'];
+  target: string;
+  mode: PlanningExecutionRun['mode'];
+  status: PlanningExecutionRun['status'];
+  summary: string;
+  runId?: string;
+  createdAt: number;
+}
+
+export interface ProjectPlanProviderPolicy {
+  requiredToolIds: PlanningToolId[];
+  staleAfterMs: number;
+  scheduledChecksEnabled: boolean;
+  lastRunAllAt?: number;
+}
+
+export interface ProjectPlanOpsEvidence {
+  id: string;
+  kind: 'health' | 'deployment-drift' | 'backup-restore' | 'alert-delivery' | 'release-checklist' | 'evidence-bundle';
+  status: 'ok' | 'warning' | 'blocked';
+  summary: string;
+  artifactId?: string;
+  createdAt: number;
+}
+
+export interface ProjectPlanMetadata {
+  clonedFromPlanId?: string;
+  archivedAt?: number;
+  archiveReason?: string;
+  providerPolicy?: ProjectPlanProviderPolicy;
+  externalWriteAudit?: ProjectPlanExternalWriteAuditEntry[];
+  opsEvidence?: ProjectPlanOpsEvidence[];
+  releasePromotion?: {
+    tag?: string;
+    commit?: string;
+    evidenceArtifactId?: string;
+    promotedAt?: number;
+  };
+}
+
 export interface ScaffoldExecutionPlan {
   status: 'not_started' | 'planned' | 'blocked' | 'completed';
   targetDir?: string;
@@ -318,6 +360,7 @@ export interface ProjectPlan {
   scaffold: ScaffoldPlan;
   repo: RepoPlan;
   delivery: DeliveryPlan[];
+  metadata: ProjectPlanMetadata;
   createdAt: number;
   updatedAt: number;
 }
@@ -413,6 +456,28 @@ export interface CreateProjectPlanArtifactRequest {
   kind: PlanningExecutionArtifact['kind'];
   title: string;
   content: string;
+}
+
+export interface CloneProjectPlanRequest {
+  name?: string;
+  resetExecution?: boolean;
+}
+
+export interface ArchiveProjectPlanRequest {
+  archived?: boolean;
+  reason?: string;
+}
+
+export interface UpdateProjectPlanProviderPolicyRequest {
+  requiredToolIds?: PlanningToolId[];
+  staleAfterMs?: number;
+  scheduledChecksEnabled?: boolean;
+}
+
+export interface ProjectPlanArtifactsQuery {
+  kind?: PlanningExecutionArtifact['kind'];
+  runId?: string;
+  search?: string;
 }
 
 export type ProjectPlanReadinessStatus = 'ready' | 'in_progress' | 'blocked' | 'not_started';

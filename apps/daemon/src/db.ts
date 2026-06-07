@@ -236,6 +236,7 @@ function migrate(db: SqliteDb): void {
       scaffold_json TEXT NOT NULL,
       repo_json TEXT NOT NULL,
       delivery_json TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -369,6 +370,9 @@ function migrate(db: SqliteDb): void {
   }
   if (!planCols.some((c: DbRow) => c.name === 'scaffold_execution_json')) {
     db.exec(`ALTER TABLE plans ADD COLUMN scaffold_execution_json TEXT NOT NULL DEFAULT '{}'`);
+  }
+  if (!planCols.some((c: DbRow) => c.name === 'metadata_json')) {
+    db.exec(`ALTER TABLE plans ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`);
   }
   // schedule_json holds the full RoutineSchedule object (kind discriminator
   // plus kind-specific fields like time/timezone/weekday). The legacy
@@ -1562,6 +1566,7 @@ const PLAN_COLS = `id, name,
   scaffold_json AS scaffoldJson,
   repo_json AS repoJson,
   delivery_json AS deliveryJson,
+  metadata_json AS metadataJson,
   created_at AS createdAt,
   updated_at AS updatedAt`;
 
@@ -1586,9 +1591,9 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
         database_design_json, agent_lanes_json, ideation_questions_json,
         workspace_sections_json, section_answers_json, section_workboard_json, provider_capabilities_json,
         runtime_plan_json, execution_actions_json, execution_runs_json, execution_events_json, execution_artifacts_json,
-        tool_checks_json, scaffold_execution_json, scaffold_json, repo_json, delivery_json,
+        tool_checks_json, scaffold_execution_json, scaffold_json, repo_json, delivery_json, metadata_json,
         created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     plan.id,
     plan.name,
@@ -1612,6 +1617,7 @@ export function insertPlan(db: SqliteDb, plan: DbRow) {
     JSON.stringify(plan.scaffold ?? {}),
     JSON.stringify(plan.repo ?? {}),
     JSON.stringify(plan.delivery ?? []),
+    JSON.stringify(plan.metadata ?? {}),
     plan.createdAt,
     plan.updatedAt,
   );
@@ -1651,6 +1657,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
             scaffold_json = ?,
             repo_json = ?,
             delivery_json = ?,
+            metadata_json = ?,
             updated_at = ?
       WHERE id = ?`,
   ).run(
@@ -1675,6 +1682,7 @@ export function updatePlan(db: SqliteDb, id: string, patch: DbRow) {
     JSON.stringify(merged.scaffold ?? {}),
     JSON.stringify(merged.repo ?? {}),
     JSON.stringify(merged.delivery ?? []),
+    JSON.stringify(merged.metadata ?? {}),
     merged.updatedAt,
     id,
   );
@@ -1732,6 +1740,7 @@ function normalizePlan(row: DbRow) {
     scaffold: parseJsonObject(row.scaffoldJson, {}),
     repo: parseJsonObject(row.repoJson, {}),
     delivery: parseJsonObject(row.deliveryJson, []),
+    metadata: parseJsonObject(row.metadataJson, {}),
     createdAt: Number(row.createdAt),
     updatedAt: Number(row.updatedAt),
   };

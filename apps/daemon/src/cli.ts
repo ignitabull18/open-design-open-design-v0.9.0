@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { runDaemonCliStartup } from './daemon-startup.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
@@ -190,8 +190,9 @@ const PLAN_STRING_FLAGS = new Set([
   'answers-json', 'action', 'prompt', 'prompt-file', 'token', 'token-file',
   'target-dir', 'delivery-target', 'project-management-target', 'tool', 'sections', 'mode',
   'kind', 'title', 'content-file', 'schedule', 'status', 'notes',
+  'reason', 'run-id', 'search', 'output', 'required-tools', 'stale-after-ms', 'tag', 'commit', 'artifact',
 ]);
-const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule', 'watch']);
+const PLAN_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'confirmed', 'refresh', 'ready', 'persist', 'validate-providers', 'run-due', 'force', 'enable-schedule', 'disable-schedule', 'watch', 'include-archived', 'reset-execution', 'unarchive', 'required-only']);
 // `od automation …` mirrors the Automations tab. Same surface, same
 // /api/routines store. The CLI form is the embeddability contract:
 // external agents (hermes-agent, openclaw, etc.) can drive Open Design
@@ -4652,8 +4653,12 @@ async function runPlan(args) {
   od plan capabilities [--refresh|--run-due] [--force] [--persist]
                        [--schedule <spec>] [--enable-schedule|--disable-schedule] [--json]
                                                  List, refresh, or schedule provider capability snapshots.
-  od plan list [--json]                          List stored plans.
+  od plan list [--include-archived] [--json]     List stored plans.
   od plan info <id> [--json]                     Print one stored plan.
+  od plan clone <id> [--name <title>] [--reset-execution] [--json]
+                                                 Clone a plan for a fresh project/customer.
+  od plan archive <id> [--reason <text>] [--unarchive] [--json]
+                                                 Archive or restore a stored plan.
   od plan create --name <title> --intent-json <path|->
                  [--stack-json <path|->] [--tools-json <path|->]
                  [--repo-json <path|->] [--delivery-json <path|->]
@@ -4684,17 +4689,30 @@ async function runPlan(args) {
                  [--target-dir <path>] [--delivery-target <target>]
                  [--project-management-target <target>] [--validate-providers] [--json]
                                                  Execute or record one plan action.
+  od plan retry <id> --action <name> [--target-dir <path>] [--json]
+                                                 Retry the latest run for one action.
   od plan run-section <id> --section <name> [--watch] [--json]
                                                  Run a section planning agent and store its output.
   od plan run-sections <id> [--sections a,b] [--ready] [--mode parallel|sequential] [--watch] [--json]
                                                  Run several section planning agents in one stored batch.
   od plan check-tool <id> --tool <tool-id> [--json]
                                                  Check plan-specific provider evidence for one tool.
+  od plan check-tools <id> [--required-only] [--json]
+                                                 Run checks for all selected or required provider tools.
   od plan tool-status <id> --tool <tool-id> --status wanted|connected|deferred|blocked
                  [--notes <text>] [--json]      Mark one selected tool connection status.
+  od plan provider-policy <id> [--required-tools a,b] [--stale-after-ms n]
+                 [--enable-schedule|--disable-schedule] [--json]
+                                                 Show or update required-provider and stale-check policy.
   od plan artifact <id> --kind <kind> --title <title> --content-file <path|->
                                                  Create one plan execution artifact.
-  od plan artifacts <id> [--json]                List generated plan execution artifacts.
+  od plan artifacts <id> [--kind <kind>] [--run-id <id>] [--search <text>]
+                 [--output <path>] [--json]      List or export generated plan execution artifacts.
+  od plan artifact-download <id> --artifact <artifact-id> --output <path>
+                                                 Download one artifact as Markdown.
+  od plan ops-evidence <id> [--json]             Show ops evidence, provider policy, and write audit.
+  od plan promote <id> [--tag <tag>] [--commit <sha>] [--json]
+                                                 Create a release-promotion evidence bundle artifact.
   od plan ideas <id>                             List brainstorm sessions.
   od plan brainstorm <id> --prompt <text>
   od plan brainstorm <id> --prompt-file <path|->
@@ -4791,7 +4809,7 @@ Common options:
       return;
     }
     case 'list': {
-      const resp = await fetch(`${base}/api/plans`);
+      const resp = await fetch(`${base}/api/plans${flags['include-archived'] ? '?includeArchived=true' : ''}`);
       if (!resp.ok) return structuredHttpFailure(resp);
       const data = await resp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
@@ -4813,6 +4831,52 @@ Common options:
       }
       const data = await fetchPlan(base, id);
       process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      return;
+    }
+    case 'clone': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan clone <id> [--name <title>] [--reset-execution] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/clone`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(typeof flags.name === 'string' ? { name: flags.name } : {}),
+          resetExecution: flags['reset-execution'] !== false,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/clone failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] cloned ${id} -> ${data.plan?.id ?? '-'}`);
+      return;
+    }
+    case 'archive': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan archive <id> [--reason <text>] [--unarchive] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/archive`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          archived: flags.unarchive !== true,
+          ...(typeof flags.reason === 'string' ? { reason: flags.reason } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/archive failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] ${flags.unarchive ? 'unarchived' : 'archived'} ${id}`);
       return;
     }
     case 'create': {
@@ -5050,6 +5114,30 @@ Common options:
       console.log(data.run?.summary ?? '');
       return;
     }
+    case 'retry': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const actionId = typeof flags.action === 'string' ? flags.action.trim() : '';
+      if (!id || !actionId) {
+        console.error('Usage: od plan retry <id> --action <name> [--target-dir <path>] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}/retry`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(typeof flags['target-dir'] === 'string' ? { targetDir: flags['target-dir'] } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/actions/${actionId}/retry failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(resp.status === 409 ? 2 : 1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] retry ${data.run?.id ?? '-'} ${data.run?.status ?? '-'}`);
+      console.log(data.run?.summary ?? '');
+      return;
+    }
     case 'launch': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
@@ -5171,6 +5259,27 @@ Common options:
       console.log(data.toolCheck?.summary ?? '');
       return;
     }
+    case 'check-tools': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan check-tools <id> [--required-only] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/tools/check`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requiredOnly: flags['required-only'] === true }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/tools/check failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] provider checks ${(data.toolChecks ?? []).length}`);
+      for (const check of data.toolChecks ?? []) console.log(`${check.toolId}\t${check.status}\t${check.summary}`);
+      return;
+    }
     case 'tool-status': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       const toolId = typeof flags.tool === 'string' ? flags.tool.trim() : '';
@@ -5198,13 +5307,60 @@ Common options:
       if (data.toolCheck?.summary) console.log(data.toolCheck.summary);
       return;
     }
+    case 'provider-policy': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan provider-policy <id> [--required-tools a,b] [--stale-after-ms n] [--enable-schedule|--disable-schedule] [--json]');
+        process.exit(2);
+      }
+      const wantsPatch = flags['required-tools'] || flags['stale-after-ms'] || flags['enable-schedule'] || flags['disable-schedule'];
+      const body = {
+        ...(typeof flags['required-tools'] === 'string'
+          ? { requiredToolIds: flags['required-tools'].split(',').map((item) => item.trim()).filter(Boolean) }
+          : {}),
+        ...(typeof flags['stale-after-ms'] === 'string' ? { staleAfterMs: Number(flags['stale-after-ms']) } : {}),
+        ...(flags['enable-schedule'] || flags['disable-schedule'] ? { scheduledChecksEnabled: flags['enable-schedule'] === true } : {}),
+      };
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/provider-policy`, {
+        method: wantsPatch ? 'PATCH' : 'GET',
+        ...(wantsPatch ? {
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        } : {}),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`${wantsPatch ? 'PATCH' : 'GET'} /api/plans/${id}/provider-policy failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      const report = data.providerPolicy ?? {};
+      console.log(`[plan] provider policy ${id}`);
+      console.log(`Required: ${(report.policy?.requiredToolIds ?? []).join(', ') || 'none'}`);
+      console.log(`Stale: ${(report.staleToolIds ?? []).join(', ') || 'none'}`);
+      console.log(`Blocked: ${(report.blockedToolIds ?? []).join(', ') || 'none'}`);
+      return;
+    }
     case 'artifacts': {
       const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
       if (!id) {
-        console.error('Usage: od plan artifacts <id> [--json]');
+        console.error('Usage: od plan artifacts <id> [--kind <kind>] [--run-id <id>] [--search <text>] [--output <path>] [--json]');
         process.exit(2);
       }
-      const data = await fetchPlanExecution(base, id);
+      const params = new URLSearchParams();
+      if (typeof flags.kind === 'string') params.set('kind', flags.kind);
+      if (typeof flags['run-id'] === 'string') params.set('runId', flags['run-id']);
+      if (typeof flags.search === 'string') params.set('search', flags.search);
+      if (typeof flags.output === 'string') params.set('export', 'markdown');
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/artifacts${params.toString() ? `?${params.toString()}` : ''}`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      if (typeof flags.output === 'string') {
+        const text = await resp.text();
+        writeFileSync(flags.output, text);
+        console.log(`[plan] wrote artifacts ${flags.output}`);
+        return;
+      }
+      const data = await resp.json();
       const artifacts = data.artifacts ?? [];
       if (flags.json) return process.stdout.write(JSON.stringify({ artifacts }, null, 2) + '\n');
       if (artifacts.length === 0) {
@@ -5214,6 +5370,58 @@ Common options:
       for (const artifact of artifacts) {
         console.log(`${artifact.id}\t${artifact.kind}\t${artifact.title}`);
       }
+      return;
+    }
+    case 'artifact-download': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      const artifactId = typeof flags.artifact === 'string' ? flags.artifact.trim() : '';
+      if (!id || !artifactId || !flags.output) {
+        console.error('Usage: od plan artifact-download <id> --artifact <artifact-id> --output <path>');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/download`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      writeFileSync(flags.output, await resp.text());
+      console.log(`[plan] wrote artifact ${flags.output}`);
+      return;
+    }
+    case 'ops-evidence': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan ops-evidence <id> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/ops-evidence`);
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] ops evidence ${id}`);
+      for (const item of data.opsEvidence ?? []) console.log(`${item.status}\t${item.kind}\t${item.summary}`);
+      console.log(`Writes: ${(data.externalWriteAudit ?? []).length}`);
+      return;
+    }
+    case 'promote': {
+      const [id] = positionalArgs(rest, PLAN_STRING_FLAGS);
+      if (!id) {
+        console.error('Usage: od plan promote <id> [--tag <tag>] [--commit <sha>] [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/plans/${encodeURIComponent(id)}/release-promotion`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(typeof flags.tag === 'string' ? { tag: flags.tag } : {}),
+          ...(typeof flags.commit === 'string' ? { commit: flags.commit } : {}),
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        console.error(`POST /api/plans/${id}/release-promotion failed: ${resp.status} ${JSON.stringify(data)}`);
+        process.exit(1);
+      }
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[plan] promoted ${id}: ${data.releasePromotion?.tag ?? '-'}`);
+      console.log(`Evidence artifact: ${data.artifact?.id ?? '-'}`);
       return;
     }
     case 'artifact': {
@@ -6790,7 +6998,55 @@ function renderOpsEvidenceMarkdown(data) {
     `- Checked at: \`${data?.monitor?.checkedAt || ''}\``,
     `- Alert target: \`${data?.monitor?.alertTarget || ''}\``,
     '',
+    'Deployment:',
+    '',
+    `- Base URL: \`${data?.deployment?.baseUrl || ''}\``,
+    `- Tunnel target: \`${data?.deployment?.tunnelTarget || ''}\``,
+    `- Expected tunnel: \`${data?.deployment?.expectedTunnelTarget || ''}\``,
+    `- Coolify app UUID: \`${data?.deployment?.coolifyAppUuid || ''}\``,
+    ...markdownCheckList(data?.deployment?.driftChecks, 'Drift checks'),
+    '',
+    'Restore:',
+    '',
+    `- Manifest path: \`${data?.restore?.manifestPath || ''}\``,
+    `- Backup file: \`${data?.restore?.backupFile || ''}\``,
+    `- Offsite target: \`${data?.restore?.offsiteTarget || ''}\``,
+    `- Restore check: \`${data?.restore?.restoreCheck || ''}\``,
+    `- Checked at: \`${data?.restore?.checkedAt || ''}\``,
+    '',
+    'Evidence:',
+    '',
+    `- Bundle path: \`${data?.evidence?.bundlePath || ''}\``,
+    `- Generated at: \`${data?.evidence?.generatedAt || ''}\``,
+    ...markdownArtifactList(data?.evidence?.artifacts),
+    '',
+    'Release:',
+    '',
+    `- Channel: \`${data?.release?.channel || ''}\``,
+    `- Version: \`${data?.release?.version || ''}\``,
+    `- Tag: \`${data?.release?.tag || ''}\``,
+    `- Promoted at: \`${data?.release?.promotedAt || ''}\``,
+    ...markdownCheckList(data?.release?.checklist, 'Checklist'),
+    '',
   ].join('\n');
+}
+
+function markdownCheckList(checks, title) {
+  if (!Array.isArray(checks) || checks.length === 0) return [];
+  return [
+    '',
+    `${title}:`,
+    '',
+    ...checks.map((check) => `- \`${check.id || check.label || 'unknown'}\`: \`${check.status || 'unknown'}\` - ${check.summary || ''}`),
+  ];
+}
+
+function markdownArtifactList(artifacts) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return ['- Artifacts: none'];
+  return artifacts.map((artifact) => {
+    const location = artifact.path || artifact.url || '';
+    return `- \`${artifact.id || artifact.label || 'artifact'}\`: \`${artifact.status || 'unknown'}\` - ${artifact.summary || ''}${location ? ` (${location})` : ''}`;
+  });
 }
 
 // ---------------------------------------------------------------------------

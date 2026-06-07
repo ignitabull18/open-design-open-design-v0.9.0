@@ -1263,6 +1263,57 @@
   gap: 8px;
 }
 
+.planning-view__ops-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.planning-view__ops-header,
+.planning-view__artifact-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.planning-view__ops-header h3,
+.planning-view__artifact-toolbar h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.planning-view__ops-header > div:first-child,
+.planning-view__artifact-toolbar label,
+.planning-view__policy-tools {
+  display: grid;
+  gap: 5px;
+}
+
+.planning-view__artifact-toolbar label {
+  min-width: min(180px, 100%);
+}
+
+.planning-view__artifact-toolbar select,
+.planning-view__artifact-toolbar input {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.planning-view__download-link {
+  color: var(--text-strong);
+  text-decoration: none;
+}
+
 .planning-view__ops-grid article {
   display: grid;
   gap: 4px;
@@ -1272,12 +1323,21 @@
   background: var(--bg);
 }
 
+.planning-view__ops-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .planning-view__ops-grid strong {
   color: var(--text-strong);
   font-size: 12.5px;
 }
 
-.planning-view__ops-grid span {
+.planning-view__ops-grid span,
+.planning-view__ops-checks span,
+.planning-view__ops-artifacts span {
   width: fit-content;
   padding: 3px 7px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
@@ -1287,26 +1347,122 @@
   font-weight: 650;
 }
 
-.planning-view__ops-grid span[data-status="ok"] {
+.planning-view__ops-grid span[data-status="ok"],
+.planning-view__ops-checks span[data-status="ok"],
+.planning-view__ops-artifacts span[data-status="ok"] {
   border-color: color-mix(in srgb, #15803d 42%, var(--border));
   color: #15803d;
 }
 
 .planning-view__ops-grid span[data-status="warn"],
-.planning-view__ops-grid span[data-status="unknown"] {
+.planning-view__ops-grid span[data-status="unknown"],
+.planning-view__ops-checks span[data-status="warn"],
+.planning-view__ops-checks span[data-status="unknown"],
+.planning-view__ops-artifacts span[data-status="warn"],
+.planning-view__ops-artifacts span[data-status="unknown"] {
   border-color: color-mix(in srgb, #a16207 42%, var(--border));
   color: #a16207;
 }
 
-.planning-view__ops-grid span[data-status="error"] {
+.planning-view__ops-grid span[data-status="error"],
+.planning-view__ops-checks span[data-status="error"],
+.planning-view__ops-artifacts span[data-status="error"] {
   border-color: color-mix(in srgb, #b91c1c 42%, var(--border));
   color: #b91c1c;
 }
 
-.planning-view__ops-grid small {
+.planning-view__ops-grid small,
+.planning-view__ops-detail small {
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.planning-view__policy-tools label {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.planning-view__policy-tools span {
+  width: auto;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.planning-view__ops-checks,
+.planning-view__ops-artifacts {
+  display: grid;
+  gap: 5px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-view__ops-checks li,
+.planning-view__ops-artifacts li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+}
+
+.planning-view__ops-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.planning-view__ops-detail {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.planning-view__ops-detail strong {
+  color: var(--text-strong);
+  font-size: 12.5px;
+}
+
+.planning-view__ops-detail dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.planning-view__ops-detail dl > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.planning-view__ops-detail dt,
+.planning-view__ops-detail dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.planning-view__ops-detail dt {
+  color: var(--text-muted);
+}
+
+.planning-view__ops-detail dd {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .planning-view__action,
@@ -1531,7 +1687,8 @@
   .planning-view__section-dependency-grid,
   .planning-view__workboard-groups,
   .planning-view__lane,
-  .planning-view__ops-grid {
+  .planning-view__ops-grid,
+  .planning-view__ops-detail-grid {
     grid-template-columns: 1fr;
   }
 

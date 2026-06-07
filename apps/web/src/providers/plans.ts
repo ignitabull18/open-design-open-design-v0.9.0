@@ -137,6 +137,20 @@ export function listProjectPlans(): Promise<ProjectPlansResponse> {
   return jsonFetch<ProjectPlansResponse>('/api/plans');
 }
 
+export function cloneProjectPlan(planId: string, input: { name?: string; resetExecution?: boolean } = {}): Promise<ProjectPlanResponse> {
+  return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(planId)}/clone`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function archiveProjectPlan(planId: string, input: { archived?: boolean; reason?: string } = {}): Promise<ProjectPlanResponse> {
+  return jsonFetch<ProjectPlanResponse>(`/api/plans/${encodeURIComponent(planId)}/archive`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export function createProjectPlan(input: CreateProjectPlanRequest): Promise<ProjectPlanResponse> {
   return jsonFetch<ProjectPlanResponse>('/api/plans', {
     method: 'POST',
@@ -286,6 +300,21 @@ export function executeProjectPlanAction(
   );
 }
 
+export function retryProjectPlanAction(
+  planId: string,
+  input: { actionId: ExecuteProjectPlanActionRequest['actionId']; targetDir?: string },
+): Promise<ProjectPlanExecutionRunResponse> {
+  return jsonFetch<ProjectPlanExecutionRunResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/actions/${encodeURIComponent(input.actionId)}/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(input.targetDir ? { targetDir: input.targetDir } : {}),
+      }),
+    },
+  );
+}
+
 export function executeProjectPlanLaunch(
   planId: string,
   input: ExecuteProjectPlanLaunchRequest,
@@ -393,6 +422,65 @@ export function checkProjectPlanTool(
       body: JSON.stringify({}),
     },
   );
+}
+
+export function checkProjectPlanTools(
+  planId: string,
+  input: { requiredOnly?: boolean } = {},
+): Promise<ProjectPlanExecutionResponse> {
+  return jsonFetch<ProjectPlanExecutionResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/tools/check`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ requiredOnly: input.requiredOnly === true }),
+    },
+  );
+}
+
+export function getProjectPlanProviderPolicy(planId: string): Promise<any> {
+  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/provider-policy`);
+}
+
+export function updateProjectPlanProviderPolicy(
+  planId: string,
+  input: { requiredToolIds?: string[]; staleAfterMs?: number; scheduledChecksEnabled?: boolean },
+): Promise<any> {
+  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/provider-policy`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function getProjectPlanOpsEvidence(planId: string): Promise<any> {
+  return jsonFetch(`/api/plans/${encodeURIComponent(planId)}/ops-evidence`);
+}
+
+export function promoteProjectPlanRelease(
+  planId: string,
+  input: { tag?: string; commit?: string } = {},
+): Promise<ProjectPlanArtifactResponse> {
+  return jsonFetch<ProjectPlanArtifactResponse>(
+    `/api/plans/${encodeURIComponent(planId)}/release-promotion`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export function planningArtifactDownloadUrl(planId: string, artifactId: string): string {
+  return planningApiUrl(`/api/plans/${encodeURIComponent(planId)}/artifacts/${encodeURIComponent(artifactId)}/download`);
+}
+
+export function planningArtifactsExportUrl(
+  planId: string,
+  query: { kind?: string; runId?: string; search?: string } = {},
+): string {
+  const params = new URLSearchParams({ export: 'markdown' });
+  if (query.kind) params.set('kind', query.kind);
+  if (query.runId) params.set('runId', query.runId);
+  if (query.search) params.set('search', query.search);
+  return planningApiUrl(`/api/plans/${encodeURIComponent(planId)}/artifacts?${params.toString()}`);
 }
 
 export function createProjectPlanArtifact(
